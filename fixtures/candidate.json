@@ -1,0 +1,10 @@
+{
+  "symbol":"AAPL","price":100.05,"spy_price":500.0,"instrument_type":"cash_equity",
+  "catalyst":"Fixture-only earnings revision test","thesis":"Fixture validates controls, not an investment recommendation.",
+  "stop":98.0,"target":104.2,"horizon":"5 sessions","confidence":0.82,"risk_reward":2.024,
+  "earnings_sessions_away":8,"researched_at":"2026-08-29T13:38:44Z",
+  "sources":[
+    {"url":"https://example.com/fixture-primary","title":"Fixture primary source","published_at":"2026-08-29T13:30:00Z"},
+    {"url":"https://example.org/fixture-secondary","title":"Fixture independent source","published_at":"2026-08-29T13:31:00Z"}
+  ]
+}

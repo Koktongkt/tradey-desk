@@ -1,0 +1,72 @@
+{
+  "snapshot": {
+    "captured_at": "2026-08-29T13:38:44Z",
+    "buying_power": 1000.0,
+    "cash": 1000.0,
+    "positions": [],
+    "open_orders": [],
+    "asset": {"symbol": "AAPL", "tradable": true, "class": "us_equity", "exchange": "NASDAQ", "name": "Apple Inc.", "fractionable": false},
+    "quote": {"bid": 99.95, "ask": 100.05, "timestamp": "2026-08-29T13:38:44Z"},
+    "quote_feed": "alpaca_iex",
+    "average_volume": 10000000,
+    "volume_feed": "massive_consolidated",
+    "technical_bars_feed": "massive_consolidated_completed_daily",
+    "technical_bars": [
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-03"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-04"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-05"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-06"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-07"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-10"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-11"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-12"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-13"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-14"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-17"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-18"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-19"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-20"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-21"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-24"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-25"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-26"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-27"},
+      {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10000000, "timestamp": "2026-08-28"}
+    ],
+    "earnings_status": "upcoming",
+    "earnings_sessions_away": 8,
+    "trading_sessions": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08"]
+  },
+  "candidate": {
+    "candidate_id": "fixture-aapl",
+    "symbol": "AAPL",
+    "price": 100.05,
+    "spy_price": 500.0,
+    "instrument_type": "cash_equity",
+    "catalyst": "Fixture-only test",
+    "thesis": "Fixture validates controls only.",
+    "setup_type": "post_news_momentum",
+    "planned_exit_at": "2026-09-08T20:00:00Z",
+    "horizon_rationale": "Five-session fixture repricing window.",
+    "earnings_event_at": "2026-09-10T20:00:00Z",
+    "researched_at": "2026-08-29T13:38:44Z",
+    "sources": [
+      {"url": "https://example.com/a", "title": "A"},
+      {"url": "https://example.org/b", "title": "B"}
+    ]
+  },
+  "review_a": {
+    "proposal_hash": "fixture",
+    "decision": "APPROVE",
+    "component_scores": {"catalyst": 4, "price_volume_confirmation": 4, "technical_structure": 4, "market_regime": 4, "fundamental_trajectory": 4, "valuation_expectations": 4},
+    "fatal_flags": [],
+    "reason_codes": ["fixture_supported"]
+  },
+  "review_b": {
+    "proposal_hash": "fixture",
+    "decision": "APPROVE",
+    "component_scores": {"catalyst": 3, "price_volume_confirmation": 3, "technical_structure": 3, "market_regime": 3, "fundamental_trajectory": 3, "valuation_expectations": 3},
+    "fatal_flags": [],
+    "reason_codes": ["fixture_supported"]
+  }
+}
