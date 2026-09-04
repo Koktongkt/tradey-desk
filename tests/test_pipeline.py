@@ -25,8 +25,23 @@ class PipelineTests(unittest.TestCase):
         }
         self.assertTrue(alpha_radar.qualified(candidate,{"min_price_usd":10,"min_average_volume":1_000_000}))
 
+    def test_radar_rejects_candidate_when_one_share_exceeds_position_cap(self):
+        candidate={
+            "symbol":"COST","price":500.01,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://one.example/a"},{"url":"https://two.example/b"}],
+            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-08-29T14:00:00Z",
+            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-04T20:00:00Z",
+            "horizon_rationale":"short repricing window",
+        }
+        cfg={"min_price_usd":10,"max_position_usd":500,"allow_fractional_shares":False}
+        self.assertFalse(alpha_radar.qualified(candidate,cfg))
+
     def test_research_prompt_does_not_request_unproven_average_volume(self):
         self.assertNotIn("average_volume", alpha_radar.research_prompt())
+
+    def test_research_prompt_excludes_stocks_above_the_whole_share_cap(self):
+        prompt = alpha_radar.research_prompt({"max_position_usd": 500, "allow_fractional_shares": False})
+        self.assertIn("one whole share must cost no more than $500", prompt.lower())
 
     def test_research_prompt_requests_timestamp_not_model_counted_sessions(self):
         prompt = alpha_radar.research_prompt()

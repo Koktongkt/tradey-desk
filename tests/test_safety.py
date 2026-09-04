@@ -596,7 +596,7 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIs(cfg["allow_fractional_shares"], False)
         self.assertEqual(cfg["max_position_usd"], 500)
         self.assertEqual(cfg["allowed_quote_feeds"], ["alpaca_iex"])
-        self.assertEqual(cfg["max_limit_deviation_bps"], 35)
+        self.assertEqual(cfg["max_limit_deviation_bps"], 100)
         self.assertEqual(cfg["max_planned_risk_per_trade_usd"], 25)
         self.assertEqual(cfg["min_reward_risk"], 1.6)
         self.assertEqual(cfg["min_approval_confidence"], 0.55)

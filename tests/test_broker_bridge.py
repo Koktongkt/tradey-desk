@@ -5,6 +5,12 @@ from unittest.mock import patch
 import broker_mcp_bridge
 
 
+class _FixedDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 9, 1, 14, 0, tzinfo=tz or timezone.utc)
+
+
 class _FakeAlpaca:
     async def call(self, name, values=None):
         responses = {
@@ -42,7 +48,9 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["technical_bars_feed"], "massive_consolidated_completed_daily")
 
     async def test_snapshot_returns_exchange_sessions_through_planned_exit(self):
-        with patch("broker_mcp_bridge.consolidated_daily_bars", return_value=[{"volume": 12_000_000}]):
+        with patch("broker_mcp_bridge.datetime", _FixedDateTime), patch(
+            "broker_mcp_bridge.consolidated_daily_bars", return_value=[{"volume": 12_000_000}]
+        ):
             result = await broker_mcp_bridge.operation(
                 _FakeAlpaca(), "snapshot", {
                     "symbol": "AAPL", "planned_exit_at": "2026-09-03T20:00:00Z",
