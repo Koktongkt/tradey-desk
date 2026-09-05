@@ -182,6 +182,15 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("const orderMatchesFilters=",html)
         self.assertIn("populateOrderReasonFilter",html)
 
+    def test_dashboard_nests_matching_diagnostics_in_rejected_order_events(self):
+        html=public_dashboard.html_template()
+        self.assertIn("const attachBlockerDiagnostics=",html)
+        self.assertIn('class="event-diagnostics"',html)
+        self.assertIn('<summary>Blocker details</summary>',html)
+        self.assertIn("eventRows(orders)",html)
+        self.assertNotIn('id="diagnostic-events"',html)
+        self.assertNotIn('<h3>Blocker details</h3>',html)
+
     def test_dashboard_summarizes_traded_and_skipped_outcomes_by_horizon(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
