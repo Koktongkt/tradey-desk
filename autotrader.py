@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
 
 ROOT = Path(__file__).resolve().parent
+PRIVATE_DIR = ROOT / "private"
 BROKER_FIELDS = (
     "buying_power", "cash", "positions", "open_orders", "asset", "quote",
     "quote_feed", "average_volume", "volume_feed", "technical_bars", "technical_bars_feed",
@@ -371,11 +372,46 @@ def aggregate_proposal_reviews(proposal:dict[str,Any],reviews:list[Any],cfg:dict
     return {"approved":True,"reason":"dual_model_agreement","order":order,"reviewer_confidences":confidences}
 
 
-def validate_order(
+REVIEW_BUNDLE_EXCLUDED_SNAPSHOT_FIELDS = ("technical_bars", "trading_sessions", "positions", "open_orders")
+
+
+def build_review_bundle(candidate: dict[str, Any], snapshot: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
+    """Reviewer-facing bundle with raw broker arrays stripped.
+
+    technical_bars/trading_sessions/positions/open_orders are inputs the
+    deterministic proposal builder already consumed; reviewers judge the
+    hashed proposal plus provenance, liquidity, earnings, and sizing state.
+    Pure function of its inputs.
+    """
+    immutable = authoritative_bundle(candidate, snapshot, snapshot.get("captured_at") or utcnow())
+    slim_snapshot = {k: v for k, v in immutable["broker_snapshot"].items() if k not in REVIEW_BUNDLE_EXCLUDED_SNAPSHOT_FIELDS}
+    rubric = str(proposal.get("assigned_rubric") or "")
+    return {
+        "evidence": {"candidate": immutable["candidate"], "broker_snapshot": slim_snapshot, "snapshot_at": immutable["snapshot_at"]},
+        "proposal": proposal,
+        "rubric_weights": RUBRIC_WEIGHTS.get(rubric),
+    }
+
+
+DIAGNOSTIC_THRESHOLD_KEYS = {
+    "max_spread_bps", "max_limit_deviation_bps", "min_reward_risk",
+    "earnings_blackout_sessions", "min_average_volume", "max_quote_age_seconds",
+}
+
+
+def validate_order_with_details(
     order: dict[str, Any], snap: dict[str, Any], cfg: dict[str, Any], daily_orders: int,
     managed_exposure_usd: float = 0.0, preexisting_symbols: set[str] | None = None,
-) -> list[str]:
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Deterministic validation; returns errors plus per-reason diagnostics.
+
+    The details map carries the exact measured inputs and configured
+    threshold behind each rejection so blocker rows can be persisted
+    privately without changing normalized public reason codes.
+    """
     e: list[str] = []
+    d: dict[str, dict[str, Any]] = {}
+    quote_obj = snap.get("quote") or {}
     action, symbol = order.get("action"), str(order.get("symbol", "")).upper()
     if symbol in (preexisting_symbols or set()): e.append("preexisting_position_conflict")
     if action not in {"BUY", "SELL"}: e.append("unsupported_action")
@@ -395,10 +431,14 @@ def validate_order(
         if action == "BUY" and Decimal(str(managed_exposure_usd)) + basis > account_cap: e.append("account_cap_exceeded")
     bp = snap.get("buying_power")
     if bp is None: e.append("unknown_buying_power")
-    elif action == "BUY" and basis is not None and basis > min(Decimal(str(bp)), account_cap): e.append("insufficient_buying_power")
+    elif action == "BUY" and basis is not None and basis > min(Decimal(str(bp)), account_cap):
+        e.append("insufficient_buying_power")
+        d["insufficient_buying_power"] = {"buying_power": bp, "dollar_basis": float(basis)}
     cash=snap.get("cash")
     if cash is None: e.append("unknown_cash")
-    elif action=="BUY" and basis is not None and basis > Decimal(str(cash)): e.append("insufficient_cash")
+    elif action=="BUY" and basis is not None and basis > Decimal(str(cash)):
+        e.append("insufficient_cash")
+        d["insufficient_cash"] = {"cash": cash, "dollar_basis": float(basis)}
     if daily_orders >= cfg["max_daily_orders"]: e.append("daily_order_limit")
     asset = snap.get("asset")
     if not isinstance(asset, dict) or not asset.get("tradable"): e.append("broker_tradability_unverified")
@@ -422,21 +462,40 @@ def validate_order(
         )
         if not valid_volume:
             e.append("liquidity_failed")
+            d["liquidity_failed"] = {"average_volume": volume, "min_average_volume": cfg["min_average_volume"]}
     if snap.get("quote_feed") not in cfg.get("allowed_quote_feeds", []):
         e.append("quote_feed_unavailable")
+        d["quote_feed_unavailable"] = {"quote_feed": snap.get("quote_feed"), "allowed_quote_feeds": cfg.get("allowed_quote_feeds", [])}
     else:
-        spread = _spread_bps(snap.get("quote") or {})
-        if spread is None: e.append("unknown_spread")
-        elif spread > cfg["max_spread_bps"]: e.append("spread_too_wide")
-        quote=snap.get("quote") or {}
-        reference=quote.get("ask") if action=="BUY" else quote.get("bid")
+        spread = _spread_bps(quote_obj)
+        if spread is None:
+            e.append("unknown_spread")
+            d["unknown_spread"] = {"quote_feed": snap.get("quote_feed"), "bid": quote_obj.get("bid"), "ask": quote_obj.get("ask")}
+        elif spread > cfg["max_spread_bps"]:
+            e.append("spread_too_wide")
+            d["spread_too_wide"] = {
+                "bid": quote_obj.get("bid"), "ask": quote_obj.get("ask"),
+                "midpoint": (quote_obj["bid"] + quote_obj["ask"]) / 2,
+                "spread_bps": round(spread, 4), "quote_feed": snap.get("quote_feed"),
+                "max_spread_bps": cfg["max_spread_bps"],
+            }
+        reference=quote_obj.get("ask") if action=="BUY" else quote_obj.get("bid")
         if _valid_price(limit_price) and _valid_price(reference):
             deviation=abs(Decimal(str(limit_price))-Decimal(str(reference)))/Decimal(str(reference))*Decimal("10000")
-            if deviation>Decimal(str(cfg["max_limit_deviation_bps"])):e.append("limit_price_too_far_from_quote")
-    quote_ts=(snap.get("quote") or {}).get("timestamp")
+            if deviation>Decimal(str(cfg["max_limit_deviation_bps"])):
+                e.append("limit_price_too_far_from_quote")
+                d["limit_price_too_far_from_quote"] = {
+                    "limit_price": limit_price, "reference_price": reference,
+                    "reference_side": "ask" if action == "BUY" else "bid",
+                    "deviation_bps": float(round(deviation, 4)),
+                    "max_limit_deviation_bps": cfg["max_limit_deviation_bps"],
+                }
+    quote_ts=quote_obj.get("timestamp")
     try:
         quote_age=(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(str(quote_ts).replace("Z","+00:00"))).total_seconds()
-        if quote_age > cfg.get("max_quote_age_seconds",120): e.append("stale_quote")
+        if quote_age > cfg.get("max_quote_age_seconds",120):
+            e.append("stale_quote")
+            d["stale_quote"] = {"quote_age_seconds": round(quote_age, 2), "max_quote_age_seconds": cfg.get("max_quote_age_seconds", 120)}
     except Exception:
         e.append("quote_timestamp_unknown")
     earnings_status=snap.get("earnings_status")
@@ -444,7 +503,9 @@ def validate_order(
     if earnings_status=="reported":
         pass
     elif earnings_status=="upcoming" and isinstance(earnings,int) and not isinstance(earnings,bool) and earnings>=0:
-        if earnings <= cfg["earnings_blackout_sessions"]:e.append("near_term_earnings")
+        if earnings <= cfg["earnings_blackout_sessions"]:
+            e.append("near_term_earnings")
+            d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
     else:e.append("earnings_unknown")
     if any(o.get("status") in {"new", "accepted", "pending_new", "partially_filled", "held"} for o in (snap.get("open_orders") or [])):
         e.append("active_broker_order")
@@ -452,20 +513,72 @@ def validate_order(
     if positions is None: e.append("positions_unknown")
     elif action == "BUY":
         current = sum((Decimal(str(p.get("market_value") or 0)) for p in positions if str(p.get("symbol", "")).upper() == symbol), Decimal("0"))
-        if basis is not None and current + basis > position_cap: e.append("position_size_exceeded")
+        if basis is not None and current + basis > position_cap:
+            e.append("position_size_exceeded")
+            d["position_size_exceeded"] = {"current_position_value": float(current), "dollar_basis": float(basis), "max_position_usd": cfg["max_position_usd"]}
     elif action == "SELL":
         held = sum(float(p.get("qty") or 0) for p in positions if str(p.get("symbol", "")).upper() == symbol)
         if not valid_qty or qty > held: e.append("short_sale_forbidden")
     # Recalculate R:R; model-provided estimates never control validation.
     ratio=recomputed_reward_risk(order)
     if ratio is None:e.append("invalid_stop_or_target")
-    elif Decimal(str(ratio))<Decimal(str(cfg["min_reward_risk"])):e.append("weak_reward_to_risk")
+    elif Decimal(str(ratio))<Decimal(str(cfg["min_reward_risk"])):
+        e.append("weak_reward_to_risk")
+        d["weak_reward_to_risk"] = {"risk_reward": ratio, "min_reward_risk": cfg["min_reward_risk"]}
     risk_cap=cfg.get("max_planned_risk_per_trade_usd")
     if risk_cap is None:e.append("planned_risk_policy_missing")
     elif valid_qty and _valid_price(order.get("limit_price")) and _valid_price(order.get("stop")):
         planned_risk=abs(Decimal(str(order["limit_price"]))-Decimal(str(order["stop"]))) * Decimal(str(qty))
-        if planned_risk>Decimal(str(risk_cap)):e.append("planned_risk_exceeded")
-    return sorted(set(e))
+        if planned_risk>Decimal(str(risk_cap)):
+            e.append("planned_risk_exceeded")
+            d["planned_risk_exceeded"] = {"planned_risk_usd": float(planned_risk), "max_planned_risk_per_trade_usd": risk_cap}
+    return sorted(set(e)), d
+
+
+def validate_order(
+    order: dict[str, Any], snap: dict[str, Any], cfg: dict[str, Any], daily_orders: int,
+    managed_exposure_usd: float = 0.0, preexisting_symbols: set[str] | None = None,
+) -> list[str]:
+    return validate_order_with_details(
+        order, snap, cfg, daily_orders, managed_exposure_usd, preexisting_symbols,
+    )[0]
+
+
+def blocker_diagnostics_rows(
+    stage: str, symbol: Any, action: Any, errors: list[str], details: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One private structured row per rejection reason at this stage."""
+    rows = []
+    for reason in errors:
+        payload = details.get(reason) or {}
+        row: dict[str, Any] = {
+            "timestamp": utcnow(), "stage": stage, "reason": reason,
+            "measured": {k: v for k, v in payload.items() if k not in DIAGNOSTIC_THRESHOLD_KEYS},
+            "threshold": {k: v for k, v in payload.items() if k in DIAGNOSTIC_THRESHOLD_KEYS},
+        }
+        if symbol: row["symbol"] = str(symbol).upper()
+        if action: row["action"] = action
+        rows.append(row)
+    return rows
+
+
+def record_blocker_diagnostics(
+    stage: str, symbol: Any, action: Any, errors: list[str],
+    details: dict[str, dict[str, Any]], dry_run: bool = False,
+) -> None:
+    """Persist blocker diagnostics privately; never printed or published.
+
+    Real cycles append under private/; dry runs are isolated under
+    test_artifacts/ so simulated paths never touch operational files.
+    """
+    if not errors:
+        return
+    base = ROOT / "test_artifacts" if dry_run else ROOT / "private"
+    try:
+        for row in blocker_diagnostics_rows(stage, symbol, action, errors, details):
+            append_jsonl(base / "blocker_diagnostics.jsonl", row)
+    except Exception:
+        pass
 
 
 def idempotency_ref(order: dict[str, Any], trading_date: str) -> str:
@@ -558,11 +671,63 @@ def independent_reviews(bundle: dict[str, Any], cfg: dict[str, Any]) -> list[dic
         return [future.result() for future in futures]
 
 
+def bridge_command(operation: str) -> list[str]:
+    """Resolve the bridge invocation once.
+
+    The client fastmcp major version must match the server's fastmcp<4 pin;
+    uv is resolved by absolute path because cron contexts may not carry
+    /usr/local/bin on PATH.
+    """
+    return [
+        "/usr/local/bin/uv", "run", "--with", "fastmcp<4", "python",
+        str(ROOT / "broker_mcp_bridge.py"), operation,
+    ]
+
+
+def _record_bridge_diagnostics(operation: str, attempts_made: int, duration_ms: int, result: subprocess.CompletedProcess | None, failure_class: str) -> None:
+    """Append a private diagnostics row; never printed or merged into stdout."""
+    try:
+        row = {
+            "timestamp": utcnow(),
+            "operation": operation,
+            "failure_class": failure_class,
+            "attempts_made": attempts_made,
+            "duration_ms": duration_ms,
+            "returncode": getattr(result, "returncode", None),
+            "stderr_tail": (getattr(result, "stderr", "") or "")[-500:],
+            "stdout_head": (getattr(result, "stdout", "") or "")[:200],
+        }
+        append_jsonl(PRIVATE_DIR / "bridge_diagnostics.jsonl", row)
+    except Exception:
+        pass
+
+
 def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    cmd=["uv","run","--with","fastmcp","python",str(ROOT/"broker_mcp_bridge.py"),operation]
-    p=subprocess.run(cmd, input=json.dumps(payload or {}), text=True, capture_output=True, timeout=180)
-    if p.returncode != 0: raise RuntimeError("broker_mcp_failure")
-    return json.loads(p.stdout)
+    cmd = bridge_command(operation)
+    data = json.dumps(payload or {})
+    # Only read-only operations retry: execution must never be re-sent.
+    attempts = 2 if operation in {"snapshot", "review", "reconcile", "tools"} else 1
+    started = dt.datetime.now(dt.timezone.utc)
+    result = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = subprocess.run(cmd, input=data, text=True, capture_output=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            result = subprocess.CompletedProcess(cmd, 124, "", "timeout")
+        except Exception:
+            result = subprocess.CompletedProcess(cmd, 127, "", "launch_failure")
+        if result.returncode == 0:
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
+                _record_bridge_diagnostics(operation, attempt, duration_ms, result, "unparseable_output")
+                raise RuntimeError("broker_mcp_failure")
+        if attempt < attempts:
+            continue
+    duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
+    _record_bridge_diagnostics(operation, attempts, duration_ms, result, "nonzero_exit")
+    raise RuntimeError("broker_mcp_failure")
 
 
 def reconcile_pending_orders(
@@ -611,6 +776,37 @@ def research_acceptable(candidate:dict[str,Any],cfg:dict[str,Any],age_minutes:fl
     fresh=age_minutes <= cfg["max_research_age_minutes"]
     return ((fresh or allow_stale) and len(candidate.get("sources",[])) >= 2
             and bool(candidate.get("sources_verified_at")) and _dossier_intact(candidate))
+
+
+REVIEWED_SKIP_GRACE_MINUTES = 10
+
+
+def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> bool:
+    """True when this dossier hash already reached a completed review outcome.
+
+    A review row counts as completed only when at least one reviewer returned
+    actual content: rows whose reviewer entries are all None/missing are
+    subprocess failures (reviewer_unavailable), which must retry next cycle,
+    not suppress it.
+    """
+    expected = candidate.get("dossier_hash")
+    if not isinstance(expected, str):
+        return False
+    try:
+        lines = reviews_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("dossier_hash") != expected:
+            continue
+        reviews = row.get("reviews")
+        if isinstance(reviews, list) and any(isinstance(r, dict) and r.get("decision") for r in reviews):
+            return True
+    return False
 
 
 def output_paths(root:Path,dry_run:bool)->tuple[Path,Path,Path]:
@@ -667,6 +863,8 @@ def run(args: argparse.Namespace) -> int:
         age=(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(candidate["researched_at"].replace("Z","+00:00"))).total_seconds()/60
         if not research_acceptable(candidate,cfg,age,allow_stale=args.live_dry_run):
             print("BLOCKER stale_or_unverified_research"); return 2
+        if not args.live_dry_run and dossier_already_reviewed(candidate,reviews_path):
+            print("DECISION skipped already_reviewed"); return 0
         try:
             snapshot=_broker_bridge("snapshot", {"symbol":candidate["symbol"], "earnings_event_at":candidate.get("earnings_event_at"), "planned_exit_at":candidate.get("planned_exit_at")})
         except Exception:
@@ -684,15 +882,18 @@ def run(args: argparse.Namespace) -> int:
     if proposal_errors or proposal is None:
         print("BLOCKER " + ",".join(proposal_errors)); return 2
     daily=_daily_order_count(ledger)
-    precheck=scope_errors+validate_order({**proposal,"confidence":1.0},snapshot,cfg,daily,exposure,preexisting_symbols)
+    precheck_order={**proposal,"confidence":1.0}
+    precheck,precheck_details=validate_order_with_details(precheck_order,snapshot,cfg,daily,exposure,preexisting_symbols)
     if precheck:
-        print("BLOCKER " + ",".join(sorted(set(precheck)))); return 2
+        precheck=sorted(set(precheck))
+        record_blocker_diagnostics("precheck",proposal.get("symbol"),proposal.get("action"),precheck,precheck_details,dry_run=args.dry_run_fixture or args.live_dry_run)
+        print("BLOCKER " + ",".join(precheck)); return 2
     if not args.dry_run_fixture:
-        review_bundle={"evidence":immutable,"proposal":proposal,"rubric_weights":RUBRIC_WEIGHTS[proposal["assigned_rubric"]]}
+        review_bundle=build_review_bundle(candidate,snapshot,proposal)
         reviews=independent_reviews(review_bundle,cfg)
     else:
         reviews=[{**review,"proposal_hash":proposal["proposal_hash"]} for review in reviews]
-    append_jsonl(reviews_path, {"timestamp":utcnow(),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews})
+    append_jsonl(reviews_path, {"timestamp":utcnow(),"dossier_hash":candidate.get("dossier_hash"),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews})
     con=aggregate_proposal_reviews(proposal,reviews,cfg)
     record_shadow_if_live(args,candidate,proposal,con,utcnow())
     if not con["approved"]:
@@ -701,20 +902,26 @@ def run(args: argparse.Namespace) -> int:
         print("BLOCKER " + con["reason"]); return 2
     plan=normalize_order_metrics({k:con["order"].get(k) for k in con["order"] if k not in BROKER_FIELDS})
     daily=_daily_order_count(ledger)
-    errors=scope_errors+validate_order(plan,snapshot,cfg,daily,exposure,preexisting_symbols)
+    errors,final_details=validate_order_with_details(plan,snapshot,cfg,daily,exposure,preexisting_symbols)
+    errors=scope_errors+errors
     ref=idempotency_ref(plan,dt.datetime.now(dt.timezone.utc).date().isoformat())
     proposed={"timestamp":utcnow(),"status":"proposed","client_order_id":ref,"symbol":plan.get("symbol"),"action":plan.get("action"),"quantity":plan.get("quantity"),"order_type":plan.get("order_type"),"limit_price":plan.get("limit_price"),"evidence_id":private_id}
     append_jsonl(ledger,proposed)
     blockers=runtime_blockers(cfg)
     if errors or blockers or args.dry_run_fixture or args.live_dry_run:
         reason=errors + blockers + (["dry_run_no_execution"] if args.dry_run_fixture else []) + (["live_dry_run_no_execution"] if args.live_dry_run else [])
+        if errors:
+            record_blocker_diagnostics("final_validation",plan.get("symbol"),plan.get("action"),sorted(set(errors)),final_details,dry_run=args.dry_run_fixture or args.live_dry_run)
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":reason})
         print("BLOCKER " + ",".join(reason)); return 2
     try:
         fresh=_broker_bridge("review",{"order":plan,"earnings_event_at":candidate.get("earnings_event_at"),"planned_exit_at":candidate.get("planned_exit_at")})
         fresh_exposure,fresh_scope_errors=managed_exposure(fresh.get("positions") or [],read_jsonl(ROOT/"trade_journal.jsonl"))
-        fresh_errors=fresh_scope_errors+validate_order(plan,fresh,cfg,daily,fresh_exposure,preexisting_symbols)
+        fresh_errors,fresh_details=validate_order_with_details(plan,fresh,cfg,daily,fresh_exposure,preexisting_symbols)
+        fresh_errors=fresh_scope_errors+fresh_errors
         if fresh_errors:
+            fresh_errors=sorted(set(fresh_errors))
+            record_blocker_diagnostics("broker_review",plan.get("symbol"),plan.get("action"),fresh_errors,fresh_details)
             append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":fresh_errors})
             print("BLOCKER broker_review:"+",".join(fresh_errors)); return 2
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})

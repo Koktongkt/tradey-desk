@@ -24,8 +24,11 @@ def audit_result(mode:str,stage:str,returncode:int,stdout:str,path:Path=AUDIT_PA
         if len(parts)>=2 and parts[1] in {"candidate_qualified"}:
             row["decision"]=parts[1]
             if len(parts)>=3 and re.fullmatch(r"[A-Z]{1,6}",parts[2]):row["symbol"]=parts[2]
-        elif len(parts)>=3 and parts[1]=="skipped" and parts[2] in {"outside_window","already_completed"}:
+        elif len(parts)>=2 and parts[1]=="skipped" and len(parts)>=3 and parts[2] in {"outside_window","already_completed","already_reviewed"}:
             row["decision"]="skipped";row["reason"]=parts[2]
+        elif len(parts)>=2 and parts[1]=="reused_fresh_candidate":
+            row["decision"]="reused_fresh_candidate"
+            if len(parts)>=3 and re.fullmatch(r"[A-Z]{1,6}",parts[2]):row["symbol"]=parts[2]
     if prefix in {"BLOCKER","AUTH_FAILURE","SYSTEM_FAILURE"}:
         detail=first[len(prefix):].strip()
         tokens=re.findall(r"[A-Za-z][A-Za-z0-9_:-]{0,63}",detail)
@@ -69,7 +72,7 @@ def main()->int:
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
     daily=a.mode in {"premarket","postclose","dashboard"}
     if daily and completed_today(a.mode):audit_result(a.mode,"schedule",0,"DECISION skipped already_completed");return 0
-    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="research")
+    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=150,attempts=1,audit_mode=a.mode,audit_stage="research")
     elif a.mode=="autotrader":rc=execute([sys.executable,str(ROOT/"autotrader.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="execution")
     elif a.mode=="postclose":
         rc=execute([sys.executable,str(ROOT/"candidate_outcomes.py")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="outcome_measurement")

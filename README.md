@@ -58,6 +58,8 @@ python3 public_dashboard.py
 
 `autotrader.py --dry-run-fixture` must end with a blocker because autonomy is disabled and dry-run execution is forbidden.
 
+Every deterministic rejection also appends a private, structured diagnostics row (`private/blocker_diagnostics.jsonl`; dry runs route to `test_artifacts/`) recording the measured values and configured threshold behind each reason — for example `spread_too_wide` stores bid, ask, midpoint, computed spread bps, quote feed, and `max_spread_bps`, so "how wide was the spread?" is answerable without exposing private detail publicly. The public dashboard publishes an allowlist-sanitized projection of these rows (measured + threshold only; identifiers, hashes, and any extra field are dropped) in its "Blocker details" activity column.
+
 ## Enabling
 
 Do not set `enabled=true` until paper credentials, both model credentials, source verification, Alpaca readback, and the dashboard have all passed. Live brokerage is additionally hard-blocked by `broker_mode != "paper"`; changing that requires a code/config review and explicit user approval.
