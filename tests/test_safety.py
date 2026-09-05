@@ -579,6 +579,18 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(run.call_count, 1)
 
+    def test_reviewer_prompt_defines_limit_deviation_against_fresh_executable_quote(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout='{"proposal_hash":"abc","decision":"HOLD","component_scores":{},"fatal_flags":[],"reason_codes":[]}',
+            stderr="",
+        )
+        with patch("autotrader.subprocess.run", return_value=completed) as run:
+            autotrader._review_via_hermes({"proposal":{"proposal_hash":"abc"}},"nous","z-ai/glm-5.3-flash")
+        prompt=run.call_args.kwargs["input"]
+        self.assertIn("BUY against the fresh ask and SELL against the fresh bid",prompt)
+        self.assertIn("Never compare the limit with a model-authored research price",prompt)
+
     def test_shadow_recording_runs_only_for_real_cycles_and_uses_isolated_path(self):
         candidate = {"candidate_id": "cand", "spy_price": 500.0}
         proposal = {"proposal_hash": "hash"}
@@ -626,7 +638,15 @@ class TradeySafetyTests(unittest.TestCase):
         for call in review.call_args_list:
             self.assertEqual(
                 call.args[0]["execution_policy"],
-                {"max_position_usd": 500, "allow_fractional_shares": False, "min_reward_risk": 1.6, "max_limit_deviation_bps": 35},
+                {
+                    "max_position_usd": 500,
+                    "allow_fractional_shares": False,
+                    "min_reward_risk": 1.6,
+                    "max_limit_deviation_bps": 35,
+                    "limit_deviation_reference": "fresh_executable_side_quote",
+                    "limit_deviation_formula": "abs(approved_limit-reference)/reference*10000",
+                    "candidate_prices_authoritative": False,
+                },
             )
         calls = {(call.args[1], call.args[2]) for call in review.call_args_list}
         self.assertEqual(calls, {

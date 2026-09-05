@@ -1,5 +1,7 @@
 """Tests for the alpha_radar two-stage research pipeline and fallback."""
 import argparse
+import contextlib
+import io
 import json
 import subprocess
 import tempfile
@@ -61,6 +63,58 @@ class AlphaRadarTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as ctx:
                     alpha_radar.live_research({"max_position_usd": 500})
         self.assertEqual(str(ctx.exception), "research_scout_timeout")
+
+    def test_main_reports_scout_timeout_without_generic_fallback(self):
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"fresh_verified_candidate",return_value=None
+        ), patch.object(
+            alpha_radar,"live_research",side_effect=alpha_radar.ResearchFailure("research_scout_timeout")
+        ), contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual(rc,3)
+        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_scout_timeout")
+
+    def test_live_research_types_source_fetch_and_parse_failures(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        synth=subprocess.CompletedProcess([],0,"not-json","")
+        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+            alpha_radar,"gather_evidence",return_value=[
+                {"url":"https://a.example/1","title":"A","text":"a"},
+                {"url":"https://b.example/2","title":"B","text":"b"},
+            ]
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_parse_failure")
+        with patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+            alpha_radar,"gather_evidence",return_value=[{"url":"https://a.example/1","text":"a"}]
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_source_fetch_failed")
+
+    def test_main_types_source_verification_and_persistence_failures(self):
+        candidate={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
+            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-05T14:00:00Z",
+            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
+        }
+        for verification,append_error,expected in (
+            (False,None,"SYSTEM_FAILURE research_source_verification_failed"),
+            (True,OSError("disk"),"SYSTEM_FAILURE research_persistence_failure"),
+        ):
+            out=io.StringIO()
+            with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+                alpha_radar,"fresh_verified_candidate",return_value=None
+            ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+                alpha_radar,"verify_sources",return_value=verification
+            ), patch.object(alpha_radar,"append",side_effect=append_error), contextlib.redirect_stdout(out):
+                rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+            self.assertEqual(rc,3)
+            self.assertEqual(out.getvalue().strip(),expected)
 
     def test_main_reports_typed_research_timeout(self):
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", alpha_radar.ROOT), \

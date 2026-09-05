@@ -117,6 +117,22 @@ class ReviewBundleStripTests(unittest.TestCase):
         self.assertIn("candidate", bundle["evidence"])
         self.assertIn("rubric_weights", bundle)
 
+    def test_review_bundle_excludes_untrusted_model_authored_prices(self):
+        candidate = _candidate()
+        candidate.update({
+            "limit_price": 1.0,
+            "entry_price": 2.0,
+            "current_price": 3.0,
+            "price_usd": 4.0,
+        })
+        candidate["sources"][0]["reference_price"] = 5.0
+        bundle = autotrader.build_review_bundle(candidate, _snapshot_with_bars(), _proposal())
+        reviewer_candidate = bundle["evidence"]["candidate"]
+        for field in ("price", "spy_price", "limit_price", "entry_price", "current_price", "price_usd"):
+            self.assertNotIn(field, reviewer_candidate)
+        self.assertEqual(set(reviewer_candidate["sources"][0]), {"url", "title"})
+        self.assertEqual(bundle["proposal"]["limit_price"], _snapshot_with_bars()["quote"]["ask"])
+
     def test_build_canonical_proposal_still_needs_full_snapshot(self):
         # The full snapshot (with bars) must still produce a proposal: strip
         # applies only to the reviewer bundle, not the deterministic path.

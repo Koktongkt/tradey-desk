@@ -1,4 +1,5 @@
 import json
+import datetime as dt
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,77 @@ import public_dashboard
 
 
 class PipelineTests(unittest.TestCase):
+    def test_radar_rejects_unknown_or_malformed_earnings_before_qualification(self):
+        base={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://one.example/a"},{"url":"https://two.example/b"}],
+            "researched_at":"2026-09-05T14:00:00Z","setup_type":"post_news_momentum",
+            "planned_exit_at":"2026-09-18T20:00:00Z","horizon_rationale":"repricing window",
+        }
+        cfg={"min_price_usd":10,"max_position_usd":500,"earnings_blackout_sessions":2}
+        now=dt.datetime(2026,9,5,14,0,tzinfo=dt.timezone.utc)
+        for event in (None,"unknown","2026-11-01T21:00:00"):
+            self.assertFalse(alpha_radar.qualified({**base,"earnings_event_at":event},cfg,now=now))
+
+    def test_radar_rejects_obvious_earnings_blackout_before_qualification(self):
+        candidate={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://one.example/a"},{"url":"https://two.example/b"}],
+            "earnings_event_at":"2026-09-08T20:00:00Z","researched_at":"2026-09-04T14:00:00Z",
+            "setup_type":"event_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"event repricing window",
+        }
+        cfg={"min_price_usd":10,"max_position_usd":500,"earnings_blackout_sessions":2}
+        friday=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
+        self.assertFalse(alpha_radar.qualified(candidate,cfg,now=friday))
+
+    def test_candidate_preflight_types_earnings_dead_ends(self):
+        base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
+        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
+        friday=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
+        self.assertEqual(alpha_radar.candidate_preflight(base,cfg,friday),["earnings_unknown"])
+        self.assertEqual(alpha_radar.candidate_preflight(
+            {**base,"earnings_event_at":"2026-09-08T20:00:00Z"},cfg,friday
+        ),["near_term_earnings"])
+
+    def test_research_prompt_requires_resolved_non_blackout_earnings(self):
+        prompt=alpha_radar.research_prompt({"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2})
+        self.assertNotIn("pre- or post-earnings",prompt.lower())
+        self.assertIn("return {\"status\":\"none\"}",prompt)
+        self.assertIn("cannot verify the earnings timestamp",prompt.lower())
+        self.assertIn("within 2 exchange sessions",prompt.lower())
+
+    def test_candidate_preflight_rejects_price_horizon_and_setup_dead_ends(self):
+        base={
+            "price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z",
+            "earnings_event_at":"2026-11-01T21:00:00Z",
+        }
+        cfg={"max_position_usd":500,"allow_fractional_shares":False}
+        now=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
+        self.assertEqual(alpha_radar.candidate_preflight({**base,"price":500.01},cfg,now),["whole_share_unaffordable"])
+        self.assertEqual(alpha_radar.candidate_preflight({**base,"planned_exit_at":"2026-10-30T20:00:00Z"},cfg,now),["invalid_horizon"])
+        self.assertEqual(alpha_radar.candidate_preflight({**base,"setup_type":"strategic_rerating","planned_exit_at":"2026-09-08T20:00:00Z"},cfg,now),["unsupported_technical_setup"])
+        self.assertEqual(alpha_radar.candidate_preflight(base,cfg,now),[])
+
+    def test_candidate_preflight_classifies_exit_date_in_exchange_timezone(self):
+        candidate={
+            "price":100,"setup_type":"strategic_rerating",
+            "planned_exit_at":"2026-09-14T00:30:00Z",
+            "earnings_event_at":"2026-11-01T21:00:00Z",
+        }
+        cfg={"max_position_usd":500,"allow_fractional_shares":False}
+        now=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
+        self.assertEqual(alpha_radar.candidate_preflight(candidate,cfg,now),["unsupported_technical_setup"])
+
+    def test_research_prompt_exposes_whole_share_risk_and_setup_horizon_policy(self):
+        prompt=alpha_radar.research_prompt({
+            "max_position_usd":500,"allow_fractional_shares":False,
+            "max_planned_risk_per_trade_usd":25,"earnings_blackout_sessions":2,
+        }).lower()
+        self.assertIn("$25",prompt)
+        self.assertIn("estimate_revision",prompt)
+        self.assertIn("6–30",prompt)
+
     def test_radar_rejects_single_source_candidate(self):
         bad={"symbol":"AAPL","price":100,"average_volume":2_000_000,"instrument_type":"cash_equity","sources":[{"url":"https://one.example"}],"researched_at":"2026-08-29T14:00:00Z"}
         self.assertFalse(alpha_radar.qualified(bad,{"min_price_usd":10,"min_average_volume":1_000_000}))

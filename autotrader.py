@@ -373,6 +373,13 @@ def aggregate_proposal_reviews(proposal:dict[str,Any],reviews:list[Any],cfg:dict
 
 
 REVIEW_BUNDLE_EXCLUDED_SNAPSHOT_FIELDS = ("technical_bars", "trading_sessions", "positions", "open_orders")
+REVIEW_CANDIDATE_FIELDS = {
+    "symbol", "instrument_type", "catalyst", "thesis", "setup_type",
+    "planned_exit_at", "horizon_rationale", "earnings_event_at",
+    "researched_at", "sources", "sources_verified_at", "candidate_id",
+    "dossier_hash",
+}
+REVIEW_SOURCE_FIELDS = {"url", "title", "published_at"}
 
 
 def build_review_bundle(candidate: dict[str, Any], snapshot: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
@@ -384,10 +391,18 @@ def build_review_bundle(candidate: dict[str, Any], snapshot: dict[str, Any], pro
     Pure function of its inputs.
     """
     immutable = authoritative_bundle(candidate, snapshot, snapshot.get("captured_at") or utcnow())
+    reviewer_candidate = {
+        key: immutable["candidate"][key]
+        for key in REVIEW_CANDIDATE_FIELDS if key in immutable["candidate"]
+    }
+    reviewer_candidate["sources"] = [
+        {key: source[key] for key in REVIEW_SOURCE_FIELDS if key in source}
+        for source in reviewer_candidate.get("sources", []) if isinstance(source, dict)
+    ]
     slim_snapshot = {k: v for k, v in immutable["broker_snapshot"].items() if k not in REVIEW_BUNDLE_EXCLUDED_SNAPSHOT_FIELDS}
     rubric = str(proposal.get("assigned_rubric") or "")
     return {
-        "evidence": {"candidate": immutable["candidate"], "broker_snapshot": slim_snapshot, "snapshot_at": immutable["snapshot_at"]},
+        "evidence": {"candidate": reviewer_candidate, "broker_snapshot": slim_snapshot, "snapshot_at": immutable["snapshot_at"]},
         "proposal": proposal,
         "rubric_weights": RUBRIC_WEIGHTS.get(rubric),
     }
@@ -621,6 +636,8 @@ def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeou
         "technical_structure, market_regime, fundamental_trajectory, valuation_expectations, each an integer from 0 through 5; "
         "fatal_flags as a JSON list of short reason codes; and reason_codes as a JSON list of short reason codes. "
         "Score the proposal under its assigned rubric and horizon. APPROVE only when the exact immutable proposal is supported. "
+        "For the execution-deviation policy, compare BUY against the fresh ask and SELL against the fresh bid. "
+        "Never compare the limit with a model-authored research price; those untrusted prices are excluded from this bundle. "
         "Use HOLD for any needed price, quantity, stop, target, horizon, or thesis change; never suggest an executable replacement. "
         "Evidence:\n" + json.dumps(bundle, sort_keys=True, separators=(",", ":"))
     )
@@ -662,6 +679,9 @@ def independent_reviews(bundle: dict[str, Any], cfg: dict[str, Any]) -> list[dic
         "allow_fractional_shares": cfg.get("allow_fractional_shares", False),
         "min_reward_risk": cfg["min_reward_risk"],
         "max_limit_deviation_bps": cfg["max_limit_deviation_bps"],
+        "limit_deviation_reference": "fresh_executable_side_quote",
+        "limit_deviation_formula": "abs(approved_limit-reference)/reference*10000",
+        "candidate_prices_authoritative": False,
     }
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
@@ -772,6 +792,17 @@ def _dossier_intact(candidate:dict[str,Any])->bool:
     return isinstance(expected,str) and expected==actual
 
 
+def research_age_minutes(candidate:dict[str,Any],now:dt.datetime|None=None)->float|None:
+    """Age research from the deterministic post-verification stamp only."""
+    raw=candidate.get("sources_verified_at")
+    if not isinstance(raw,str):return None
+    try:verified=dt.datetime.fromisoformat(raw.replace("Z","+00:00"))
+    except ValueError:return None
+    if verified.tzinfo is None:return None
+    age=((now or dt.datetime.now(dt.timezone.utc))-verified.astimezone(dt.timezone.utc)).total_seconds()/60
+    return age if age>=0 else None
+
+
 def research_acceptable(candidate:dict[str,Any],cfg:dict[str,Any],age_minutes:float,allow_stale:bool=False)->bool:
     fresh=age_minutes <= cfg["max_research_age_minutes"]
     return ((fresh or allow_stale) and len(candidate.get("sources",[])) >= 2
@@ -860,8 +891,8 @@ def run(args: argparse.Namespace) -> int:
         if not candidates:
             print("BLOCKER no_candidate"); return 2
         candidate=candidates[-1]
-        age=(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(candidate["researched_at"].replace("Z","+00:00"))).total_seconds()/60
-        if not research_acceptable(candidate,cfg,age,allow_stale=args.live_dry_run):
+        age=research_age_minutes(candidate)
+        if age is None or not research_acceptable(candidate,cfg,age,allow_stale=args.live_dry_run):
             print("BLOCKER stale_or_unverified_research"); return 2
         if not args.live_dry_run and dossier_already_reviewed(candidate,reviews_path):
             print("DECISION skipped already_reviewed"); return 0
