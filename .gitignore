@@ -9,3 +9,4 @@ test_artifacts/shadow/
 test_artifacts/dry_run_*
 test_artifacts/archived_*
 test_artifacts/dry_run_result.json
+candidates.jsonl

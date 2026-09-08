@@ -196,9 +196,9 @@ class AlphaRadarTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(candidates.read_text(), before)
 
-    def test_run_cycle_radar_retries_once_with_short_timeout(self):
+    def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=150", source)
+        self.assertIn("timeout_seconds=200", source)
         self.assertIn("attempts=1", source)
 
 
