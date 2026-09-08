@@ -672,6 +672,8 @@ def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeou
         "Score the proposal under its assigned rubric and horizon. APPROVE only when the exact immutable proposal is supported. "
         "For the execution-deviation policy, compare BUY against the fresh ask and SELL against the fresh bid. "
         "Never compare the limit with a model-authored research price; those untrusted prices are excluded from this bundle. "
+        "Raw bar arrays are intentionally excluded because deterministic code already validated them and derived the proposal's levels and price-volume inputs; you must not treat their absence as a fatal evidence gap. "
+        "Judge the normalized derived fields supplied in the canonical proposal, while still scoring weak derived evidence conservatively. "
         "Use HOLD for any needed price, quantity, stop, target, horizon, or thesis change; never suggest an executable replacement. "
         "Evidence:\n" + json.dumps(bundle, sort_keys=True, separators=(",", ":"))
     )

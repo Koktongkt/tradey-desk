@@ -579,6 +579,8 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIn("component_scores", prompt)
         self.assertIn("integer from 0 through 5", prompt)
         self.assertIn("proposal_hash", prompt)
+        self.assertIn("Raw bar arrays are intentionally excluded", prompt)
+        self.assertIn("must not treat their absence as a fatal evidence gap", prompt)
         self.assertNotIn("choose a whole-share quantity", prompt)
 
     def test_reviewer_retries_once_only_to_reformat_unparseable_output(self):
