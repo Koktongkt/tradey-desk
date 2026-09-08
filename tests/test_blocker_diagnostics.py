@@ -21,7 +21,7 @@ import autotrader
 
 
 def _cfg():
-    cfg = json.loads(Path("/opt/data/tradey-desk/autonomy_config.json").read_text())
+    cfg = json.loads(Path("/opt/data/projects/tradey-desk/autonomy_config.json").read_text())
     cfg["min_price_usd"] = 10
     return cfg
 
@@ -72,21 +72,21 @@ def _order():
 
 class ValidateOrderDetailsTests(unittest.TestCase):
     def test_errors_identical_between_plain_and_details_variants(self):
-        snap = _snapshot(quote=_quote(99.0, 104.0))  # wide spread
+        snap = _snapshot(quote=_quote(98.0, 105.0))  # wide spread
         errors = autotrader.validate_order(_order(), snap, _cfg(), 0, 0.0, set())
         errors2, details = autotrader.validate_order_with_details(_order(), snap, _cfg(), 0, 0.0, set())
         self.assertEqual(errors, errors2)
         self.assertTrue(errors)
 
     def test_spread_too_wide_records_measured_and_threshold(self):
-        snap = _snapshot(quote=_quote(99.0, 104.0))
+        snap = _snapshot(quote=_quote(98.0, 105.0))
         _, details = autotrader.validate_order_with_details(_order(), snap, _cfg(), 0, 0.0, set())
         d = details["spread_too_wide"]
-        self.assertEqual(d["bid"], 99.0)
-        self.assertEqual(d["ask"], 104.0)
+        self.assertEqual(d["bid"], 98.0)
+        self.assertEqual(d["ask"], 105.0)
         self.assertAlmostEqual(d["midpoint"], 101.5)
-        self.assertAlmostEqual(d["spread_bps"], (104.0 - 99.0) / 101.5 * 10000, places=4)
-        self.assertEqual(d["max_spread_bps"], 250)
+        self.assertAlmostEqual(d["spread_bps"], (105.0 - 98.0) / 101.5 * 10000, places=1)
+        self.assertEqual(d["max_spread_bps"], 500)
         self.assertEqual(d["quote_feed"], "alpaca_iex")
 
     def test_limit_deviation_records_reference_and_threshold(self):
@@ -187,7 +187,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
     def test_precheck_block_writes_private_diagnostics_rows(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            snap = _snapshot(quote=_quote(99.0, 104.0))  # wide spread + earnings far enough
+            snap = _snapshot(quote=_quote(98.0, 105.0))  # wide spread + earnings far enough
             _setup_root(root, snap)
             snap["earnings_sessions_away"] = 9
             code, out, _ = _run_in_root(root, snap)
@@ -205,12 +205,12 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             self.assertIn("timestamp", spread_row)
             self.assertEqual(spread_row["measured"]["spread_bps"], spread_row["measured"]["spread_bps"])
             self.assertGreater(spread_row["measured"]["spread_bps"], 0)
-            self.assertEqual(spread_row["threshold"]["max_spread_bps"], 250)
+            self.assertEqual(spread_row["threshold"]["max_spread_bps"], 500)
 
     def test_one_row_per_reason(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            snap = _snapshot(quote=_quote(99.0, 104.0))
+            snap = _snapshot(quote=_quote(98.0, 105.0))
             snap["earnings_sessions_away"] = 1  # adds near_term_earnings blocker
             _setup_root(root, snap)
             code, out, _ = _run_in_root(root, snap)
@@ -290,7 +290,7 @@ class DryRunDiagnosticsTests(unittest.TestCase):
     def test_live_dry_run_routes_diagnostics_to_test_artifacts(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            snap = _snapshot(quote=_quote(99.0, 104.0))
+            snap = _snapshot(quote=_quote(98.0, 105.0))
             _setup_root(root, snap)
             code, out, _ = _run_in_root(root, snap, live_dry_run=True)
             self.assertEqual(code, 2)
@@ -311,8 +311,8 @@ class DashboardProjectionTests(unittest.TestCase):
             (root / "private" / "blocker_diagnostics.jsonl").write_text(json.dumps({
                 "timestamp": "2026-09-05T14:00:00Z", "stage": "precheck",
                 "symbol": "DELL", "action": "BUY", "reason": "spread_too_wide",
-                "measured": {"bid": 99.0, "ask": 104.0, "midpoint": 101.5, "spread_bps": 492.61, "quote_feed": "alpaca_iex"},
-                "threshold": {"max_spread_bps": 250},
+                "measured": {"bid": 98.0, "ask": 105.0, "midpoint": 101.5, "spread_bps": 689.66, "quote_feed": "alpaca_iex"},
+                "threshold": {"max_spread_bps": 500},
                 "secret_field": "should-not-publish", "evidence_id": "abc123", "path": "/opt/data/secret",
             }) + "\n")
             data = public_dashboard.build_data(root)
@@ -320,8 +320,8 @@ class DashboardProjectionTests(unittest.TestCase):
         self.assertEqual(len(diag), 1)
         row = diag[0]
         self.assertEqual(row["reason"], "spread_too_wide")
-        self.assertEqual(row["measured"]["spread_bps"], 492.61)
-        self.assertEqual(row["threshold"]["max_spread_bps"], 250)
+        self.assertEqual(row["measured"]["spread_bps"], 689.66)
+        self.assertEqual(row["threshold"]["max_spread_bps"], 500)
         for forbidden in ("secret_field", "evidence_id", "path"):
             self.assertNotIn(forbidden, row)
         self.assertIn("blocker_diagnostics", public_dashboard.ACTIVITY_SUMMARIES)

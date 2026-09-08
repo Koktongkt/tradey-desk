@@ -7,7 +7,7 @@
   "allow_fractional_shares": false,
   "min_price_usd": 10,
   "min_average_volume": 1000000,
-  "max_spread_bps": 250,
+  "max_spread_bps": 500,
   "allowed_quote_feeds": [
     "alpaca_iex"
   ],

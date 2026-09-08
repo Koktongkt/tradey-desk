@@ -84,7 +84,7 @@ def _candidate():
 
 
 def _cfg():
-    cfg = json.loads(Path("/opt/data/tradey-desk/autonomy_config.json").read_text())
+    cfg = json.loads(Path("/opt/data/projects/tradey-desk/autonomy_config.json").read_text())
     cfg["min_price_usd"] = 10
     return cfg
 
