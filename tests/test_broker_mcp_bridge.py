@@ -44,7 +44,30 @@ class BrokerMcpConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(name, "place_stock_order")
         self.assertEqual(payload["qty"], 0.5)
         self.assertEqual(payload["order_class"], "bracket")
-        self.assertEqual(payload["time_in_force"], "day")
+        self.assertEqual(payload["time_in_force"], "gtc")
+
+    async def test_existing_position_protection_uses_gtc_oco(self):
+        class FakeAlpaca:
+            def __init__(self):
+                self.calls = []
+
+            async def call(self, name, arguments=None):
+                self.calls.append((name, arguments))
+                return {"status": "accepted"}
+
+        alpaca = FakeAlpaca()
+        await broker_mcp_bridge.operation(alpaca, "protect", {
+            "symbol": "ZS", "quantity": 3, "target": 184.37,
+            "stop": 151.24, "client_order_id": "tradey-protect-test",
+        })
+        name, payload = alpaca.calls[0]
+        self.assertEqual(name, "place_stock_order")
+        self.assertEqual(payload, {
+            "symbol": "ZS", "side": "sell", "type": "limit", "qty": 3,
+            "time_in_force": "gtc", "take_profit_limit_price": 184.37,
+            "client_order_id": "tradey-protect-test", "order_class": "oco",
+            "stop_loss_stop_price": 151.24,
+        })
 
     async def test_feed_provenance_fails_when_tool_cannot_accept_feed(self):
         class FakeSession:

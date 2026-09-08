@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
 
 ROOT=Path(__file__).resolve().parent
+EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 
 BROKER_OWNED_MARKET_FIELDS={"average_volume","volume_feed","quote","quote_feed","technical_bars","technical_bars_feed","stop","target"}
 
@@ -251,6 +252,11 @@ def reusable_fresh_candidate(
     fresh research runs instead.
     """
     cfg = json.loads((candidates_path.parent / "autonomy_config.json").read_text())
+    reuse_age_minutes = max(
+        0,
+        min(max_age_minutes, int(cfg.get("max_research_age_minutes", max_age_minutes)))
+        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
+    )
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
         rows = [json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -280,7 +286,7 @@ def reusable_fresh_candidate(
             verified_at = dt.datetime.fromisoformat(verified.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if (now - verified_at).total_seconds() > max_age_minutes * 60:
+        if (now - verified_at).total_seconds() > reuse_age_minutes * 60:
             continue
         if latest_review is not None and latest_review >= verified:
             continue
@@ -294,6 +300,11 @@ def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_
     """Newest candidate whose sources were verified within max_age_minutes."""
     cfg=json.loads((ROOT/"autonomy_config.json").read_text())
     now=now or dt.datetime.now(dt.timezone.utc)
+    reuse_age_minutes=max(
+        0,
+        min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
+        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
+    )
     try:
         rows=[json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     except (OSError,json.JSONDecodeError):
@@ -305,7 +316,7 @@ def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_
         try:
             verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
         except ValueError:continue
-        if (now-verified_at).total_seconds()>max_age_minutes*60:continue
+        if (now-verified_at).total_seconds()>reuse_age_minutes*60:continue
         if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):continue
         return row
     return None

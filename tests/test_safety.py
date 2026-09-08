@@ -153,6 +153,32 @@ class TradeySafetyTests(unittest.TestCase):
         snap=dict(self.snapshot,open_orders=[{"symbol":"MSFT","status":"accepted"}])
         self.assertIn("active_broker_order",autotrader.validate_order(self.decision,snap,self.cfg,daily_orders=0))
 
+    def test_valid_protective_exit_does_not_block_another_symbol(self):
+        snap = dict(
+            self.snapshot,
+            positions=[{"symbol": "ZS", "qty": "3", "market_value": "480"}],
+            open_orders=[{
+                "symbol": "ZS", "status": "accepted", "side": "sell",
+                "position_intent": "sell_to_close", "order_class": "oco", "qty": "3",
+            }],
+        )
+        self.assertNotIn(
+            "active_broker_order",
+            autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0),
+        )
+
+    def test_oversized_or_untyped_exit_order_still_blocks(self):
+        position = [{"symbol": "ZS", "qty": "3", "market_value": "480"}]
+        for order in (
+            {"symbol": "ZS", "status": "accepted", "side": "sell", "position_intent": "sell_to_close", "order_class": "oco", "qty": "4"},
+            {"symbol": "ZS", "status": "accepted", "side": "sell", "qty": "3"},
+        ):
+            snap = dict(self.snapshot, positions=position, open_orders=[order])
+            self.assertIn(
+                "active_broker_order",
+                autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0),
+            )
+
     def test_preexisting_position_symbol_is_not_tradeable(self):
         errors = autotrader.validate_order(
             self.decision, self.snapshot, self.cfg, daily_orders=0,

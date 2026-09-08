@@ -414,6 +414,40 @@ DIAGNOSTIC_THRESHOLD_KEYS = {
 }
 
 
+ACTIVE_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held"}
+
+
+def _bounded_protective_exit(order: dict[str, Any], positions: list[dict[str, Any]]) -> bool:
+    """Recognize only a broker-typed, quantity-bounded closing protection leg."""
+    if (
+        str(order.get("side") or "").lower() != "sell"
+        or str(order.get("position_intent") or "").lower() != "sell_to_close"
+        or str(order.get("order_class") or "").lower() not in {"bracket", "oco"}
+    ):
+        return False
+    symbol = str(order.get("symbol") or "").upper()
+    try:
+        qty = Decimal(str(order.get("qty")))
+        held = sum(
+            (Decimal(str(position.get("qty") or 0)) for position in positions
+             if str(position.get("symbol") or "").upper() == symbol),
+            Decimal("0"),
+        )
+    except Exception:
+        return False
+    return bool(symbol) and qty.is_finite() and held.is_finite() and qty > 0 and qty <= held
+
+
+def has_blocking_active_order(open_orders: list[dict[str, Any]], positions: list[dict[str, Any]]) -> bool:
+    """Block entries and unknown orders, but not bounded protection for holdings."""
+    for order in open_orders:
+        if not isinstance(order, dict) or order.get("status") not in ACTIVE_ORDER_STATUSES:
+            continue
+        if not _bounded_protective_exit(order, positions):
+            return True
+    return False
+
+
 def validate_order_with_details(
     order: dict[str, Any], snap: dict[str, Any], cfg: dict[str, Any], daily_orders: int,
     managed_exposure_usd: float = 0.0, preexisting_symbols: set[str] | None = None,
@@ -522,7 +556,7 @@ def validate_order_with_details(
             e.append("near_term_earnings")
             d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
     else:e.append("earnings_unknown")
-    if any(o.get("status") in {"new", "accepted", "pending_new", "partially_filled", "held"} for o in (snap.get("open_orders") or [])):
+    if has_blocking_active_order(snap.get("open_orders") or [], snap.get("positions") or []):
         e.append("active_broker_order")
     positions = snap.get("positions")
     if positions is None: e.append("positions_unknown")
@@ -722,6 +756,16 @@ def _record_bridge_diagnostics(operation: str, attempts_made: int, duration_ms: 
         pass
 
 
+def _contains_provider_error(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("error") not in (None, "", False, {}):
+            return True
+        return any(_contains_provider_error(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_provider_error(item) for item in value)
+    return False
+
+
 def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     cmd = bridge_command(operation)
     data = json.dumps(payload or {})
@@ -738,11 +782,18 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
             result = subprocess.CompletedProcess(cmd, 127, "", "launch_failure")
         if result.returncode == 0:
             try:
-                return json.loads(result.stdout)
+                decoded = json.loads(result.stdout)
             except json.JSONDecodeError:
                 duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
                 _record_bridge_diagnostics(operation, attempt, duration_ms, result, "unparseable_output")
                 raise RuntimeError("broker_mcp_failure")
+            if _contains_provider_error(decoded):
+                if attempt < attempts:
+                    continue
+                duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
+                _record_bridge_diagnostics(operation, attempt, duration_ms, result, "provider_error")
+                raise RuntimeError("broker_mcp_failure")
+            return decoded
         if attempt < attempts:
             continue
     duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)

@@ -84,6 +84,16 @@ class BridgeFailureDiagnosticsTests(unittest.TestCase):
             rows = [json.loads(line) for line in (fake_private / "bridge_diagnostics.jsonl").read_text().splitlines() if line.strip()]
             self.assertEqual(rows[0]["failure_class"], "unparseable_output")
 
+    def test_zero_exit_provider_rejection_is_typed_failure(self):
+        rejected = json.dumps({"data": {"error": {"message": "API rejected the order"}}})
+        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch(
+            "autotrader.subprocess.run", return_value=_ok_process(rejected)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "broker_mcp_failure"):
+                autotrader._broker_bridge("place", {"order": {}})
+            rows = [json.loads(line) for line in (Path(td) / "bridge_diagnostics.jsonl").read_text().splitlines()]
+        self.assertEqual(rows[0]["failure_class"], "provider_error")
+
 
 class BridgeRetryTests(unittest.TestCase):
     def test_read_operation_retries_once_on_transient_failure(self):
@@ -100,6 +110,14 @@ class BridgeRetryTests(unittest.TestCase):
         ) as run:
             with self.assertRaises(RuntimeError):
                 autotrader._broker_bridge("place", {"order": {}})
+        self.assertEqual(run.call_count, 1)
+
+    def test_protect_operation_is_never_retried(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch(
+            "autotrader.subprocess.run", side_effect=[_fail_process("transient"), _ok_process("{}")]
+        ) as run:
+            with self.assertRaises(RuntimeError):
+                autotrader._broker_bridge("protect", {"symbol": "ZS"})
         self.assertEqual(run.call_count, 1)
 
 
@@ -182,6 +200,29 @@ class RadarReuseFirstTests(unittest.TestCase):
                         root / "candidates.jsonl", root / "private" / "reviews.jsonl", now=now
                     )
                 )
+
+    def test_candidate_that_will_expire_before_consumer_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            candidates = root / "candidates.jsonl"
+            candidate = {
+                "symbol": "DELL", "researched_at": "2026-09-05T13:35:00Z",
+                "sources_verified_at": "2026-09-05T13:35:00Z",
+                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
+                "price": 100.0, "spy_price": 500.0, "instrument_type": "cash_equity",
+                "setup_type": "breakout", "earnings_event_at": "2026-09-10T20:00:00Z",
+                "planned_exit_at": "2026-09-18T20:00:00Z", "horizon_rationale": "swing",
+            }
+            candidates.write_text(json.dumps(candidate) + "\n")
+            (root / "autonomy_config.json").write_text(json.dumps({
+                "min_price_usd": 10, "max_position_usd": 500,
+                "max_research_age_minutes": 60,
+            }))
+            now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
+            with patch.object(alpha_radar, "ROOT", root):
+                self.assertIsNone(alpha_radar.reusable_fresh_candidate(
+                    candidates, root / "private" / "reviews.jsonl", now=now,
+                ))
 
     def test_main_reuses_before_running_research(self):
         with tempfile.TemporaryDirectory() as td:

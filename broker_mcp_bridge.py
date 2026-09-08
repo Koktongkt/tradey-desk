@@ -142,7 +142,14 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         }
     if op=="place":
         o=p["order"]
-        return await a.call("place_stock_order",{"symbol":o["symbol"],"side":"buy" if o["action"]=="BUY" else "sell","type":"limit","qty":o["quantity"],"time_in_force":"day","limit_price":o["limit_price"],"client_order_id":p["client_order_id"],"order_class":"bracket","take_profit_limit_price":o["target"],"stop_loss_stop_price":o["stop"]})
+        return await a.call("place_stock_order",{"symbol":o["symbol"],"side":"buy" if o["action"]=="BUY" else "sell","type":"limit","qty":o["quantity"],"time_in_force":"gtc","limit_price":o["limit_price"],"client_order_id":p["client_order_id"],"order_class":"bracket","take_profit_limit_price":o["target"],"stop_loss_stop_price":o["stop"]})
+    if op=="protect":
+        return await a.call("place_stock_order",{
+            "symbol":p["symbol"],"side":"sell","type":"limit","qty":p["quantity"],
+            "time_in_force":"gtc","take_profit_limit_price":p["target"],
+            "client_order_id":p["client_order_id"],"order_class":"oco",
+            "stop_loss_stop_price":p["stop"],
+        })
     if op=="reconcile":
         raw=await a.call("get_order_by_client_id",{"client_order_id":p["client_order_id"]})
         return find_mapping_with_keys(raw,{"status"}) or first_dict(raw)
