@@ -77,9 +77,9 @@ class PipelineTests(unittest.TestCase):
     def test_research_prompt_exposes_whole_share_risk_and_setup_horizon_policy(self):
         prompt=alpha_radar.research_prompt({
             "max_position_usd":500,"allow_fractional_shares":False,
-            "max_planned_risk_per_trade_usd":25,"earnings_blackout_sessions":2,
+            "max_planned_risk_per_trade_usd":40,"earnings_blackout_sessions":2,
         }).lower()
-        self.assertIn("$25",prompt)
+        self.assertIn("$40",prompt)
         self.assertIn("estimate_revision",prompt)
         self.assertIn("6–30",prompt)
 

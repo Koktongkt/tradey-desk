@@ -8,20 +8,44 @@
   "min_price_usd": 10,
   "min_average_volume": 1000000,
   "max_spread_bps": 250,
-  "allowed_quote_feeds": ["alpaca_iex"],
+  "allowed_quote_feeds": [
+    "alpaca_iex"
+  ],
   "max_limit_deviation_bps": 150,
-  "max_planned_risk_per_trade_usd": 25,
+  "max_planned_risk_per_trade_usd": 40,
   "min_reward_risk": 1.6,
   "min_approval_confidence": 0.55,
   "max_research_age_minutes": 60,
   "max_quote_age_seconds": 120,
   "earnings_blackout_sessions": 2,
-  "allowed_instruments": ["cash_equity"],
-  "banned_instruments": ["options", "margin", "crypto", "otc", "penny_stock", "illiquid_stock", "leveraged_etf", "inverse_etf"],
+  "allowed_instruments": [
+    "cash_equity"
+  ],
+  "banned_instruments": [
+    "options",
+    "margin",
+    "crypto",
+    "otc",
+    "penny_stock",
+    "illiquid_stock",
+    "leveraged_etf",
+    "inverse_etf"
+  ],
   "kill_switch_path": "KILL_SWITCH",
-  "research_model": {"provider": "nous", "model": "deepseek/deepseek-v4-flash-0731", "checkpoint": "DeepSeek-V4-Flash-0731"},
-  "review_model": {"provider": "nous", "model": "z-ai/glm-5.3-flash", "checkpoint": "GLM-5.3-Flash"},
-  "orchestrator_model": {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+  "research_model": {
+    "provider": "nous",
+    "model": "deepseek/deepseek-v4-flash-0731",
+    "checkpoint": "DeepSeek-V4-Flash-0731"
+  },
+  "review_model": {
+    "provider": "nous",
+    "model": "z-ai/glm-5.3-flash",
+    "checkpoint": "GLM-5.3-Flash"
+  },
+  "orchestrator_model": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol"
+  },
   "level_tolerance_pct": 1.0,
   "dashboard_dir": "public",
   "timezone": "America/New_York"
