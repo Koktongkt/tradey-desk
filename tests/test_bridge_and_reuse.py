@@ -8,6 +8,7 @@ operations. Execution operations must never be retried.
 W1: the radar must reuse a fresh verified, not-yet-reviewed candidate instead
 of paying for a full scout+synthesis research cycle.
 """
+import datetime as dt
 import json
 import subprocess
 import tempfile
@@ -107,17 +108,18 @@ class RadarReuseFirstTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             candidates = root / "candidates.jsonl"
+            now = dt.datetime.now(dt.timezone.utc)
             candidate = {
                 "symbol": "DELL",
-                "researched_at": "2026-09-05T13:00:00Z",
-                "sources_verified_at": "2026-09-05T13:01:00Z",
+                "researched_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+                "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
                 "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
                 "price": 100.0,
                 "spy_price": 500.0,
                 "instrument_type": "cash_equity",
                 "setup_type": "breakout",
-                "earnings_event_at": "2026-09-10T20:00:00Z",
-                "planned_exit_at": "2026-09-18T20:00:00Z",
+                "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+                "planned_exit_at": (now + dt.timedelta(days=7)).isoformat().replace("+00:00", "Z"),
                 "horizon_rationale": "swing",
             }
             candidates.write_text(json.dumps(candidate) + "\n")
@@ -184,17 +186,18 @@ class RadarReuseFirstTests(unittest.TestCase):
     def test_main_reuses_before_running_research(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            now = dt.datetime.now(dt.timezone.utc)
             candidate = {
                 "symbol": "DELL",
-                "researched_at": "2026-09-05T13:00:00Z",
-                "sources_verified_at": "2026-09-05T13:01:00Z",
+                "researched_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+                "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
                 "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
                 "price": 100.0,
                 "spy_price": 500.0,
                 "instrument_type": "cash_equity",
                 "setup_type": "breakout",
-                "earnings_event_at": "2026-09-10T20:00:00Z",
-                "planned_exit_at": "2026-09-18T20:00:00Z",
+                "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+                "planned_exit_at": (now + dt.timedelta(days=7)).isoformat().replace("+00:00", "Z"),
                 "horizon_rationale": "swing",
             }
             (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")

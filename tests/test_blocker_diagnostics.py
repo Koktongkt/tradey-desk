@@ -35,12 +35,14 @@ def _bars():
 
 
 def _quote(bid=99.98, ask=100.02):
-    return {"bid": bid, "ask": ask, "timestamp": "2026-09-05T14:00:00Z"}
+    now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return {"bid": bid, "ask": ask, "timestamp": now}
 
 
 def _snapshot(quote=None, cash=10000.0):
+    now = dt.datetime.now(dt.timezone.utc)
     return {
-        "captured_at": "2026-09-05T14:00:00Z",
+        "captured_at": now.isoformat().replace("+00:00", "Z"),
         "buying_power": 10000.0,
         "cash": cash,
         "positions": [],
@@ -56,7 +58,7 @@ def _snapshot(quote=None, cash=10000.0):
         "technical_bars_feed": "massive_consolidated_completed_daily",
         "earnings_status": "upcoming",
         "earnings_sessions_away": 9,
-        "trading_sessions": ["2026-09-05", "2026-09-08", "2026-09-09"],
+        "trading_sessions": [(now.date() + dt.timedelta(days=i)).isoformat() for i in range(31)],
     }
 
 
@@ -144,8 +146,10 @@ def _candidate(root):
         "sources_verified_at": (now - dt.timedelta(minutes=4)).isoformat().replace("+00:00", "Z"),
         "sources": [{"url": "https://a.example/1", "title": "A"}, {"url": "https://b.example/2", "title": "B"}],
         "price": 100.0, "spy_price": 500.0, "instrument_type": "cash_equity",
-        "setup_type": "breakout", "earnings_event_at": "2026-10-10T20:00:00Z",
-        "planned_exit_at": "2026-09-08T20:00:00Z", "horizon_rationale": "short",
+        "setup_type": "breakout",
+        "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+        "planned_exit_at": (now + dt.timedelta(days=3)).isoformat().replace("+00:00", "Z"),
+        "horizon_rationale": "short",
         "catalyst": "guidance raise", "thesis": "post-news drift",
     }
     body = {k: v for k, v in cand.items() if k != "dossier_hash"}

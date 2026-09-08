@@ -35,6 +35,63 @@ def configured_massive_key() -> str:
     return str(key)
 
 
+def synchronized_completed_close_prices(symbol: str, now_ms: int | None = None) -> dict[str, float | str]:
+    """Return stock and SPY closes from one consolidated completed-session response."""
+    normalized = symbol.upper()
+    if not re.fullmatch(r"[A-Z]{1,6}", normalized) or normalized == "SPY":
+        raise ValueError("invalid_symbol")
+    now = (
+        dt.datetime.fromtimestamp(now_ms / 1000, dt.timezone.utc)
+        if now_ms is not None
+        else dt.datetime.now(dt.timezone.utc)
+    )
+    market_now = now.astimezone(ZoneInfo("America/New_York"))
+    session_date = market_now.date()
+    if (market_now.hour, market_now.minute) < (16, 15):
+        session_date -= dt.timedelta(days=1)
+
+    for _ in range(10):
+        if session_date.weekday() >= 5:
+            session_date -= dt.timedelta(days=1)
+            continue
+        query = urllib.parse.urlencode({"adjusted": "true"})
+        url = f"https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{session_date.isoformat()}?{query}"
+        request = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read())
+        rows = {
+            row.get("T"): row
+            for row in payload.get("results", [])
+            if isinstance(row, dict) and row.get("T") in {normalized, "SPY"}
+        }
+        if set(rows) == {normalized, "SPY"} and payload.get("status") in {"OK", "DELAYED"}:
+            stock_close, spy_close = rows[normalized].get("c"), rows["SPY"].get("c")
+            stock_time, spy_time = rows[normalized].get("t"), rows["SPY"].get("t")
+            if (
+                isinstance(stock_close, (int, float)) and not isinstance(stock_close, bool)
+                and math.isfinite(stock_close) and stock_close > 0
+                and isinstance(spy_close, (int, float)) and not isinstance(spy_close, bool)
+                and math.isfinite(spy_close) and spy_close > 0
+                and isinstance(stock_time, (int, float)) and not isinstance(stock_time, bool)
+                and math.isfinite(stock_time) and stock_time >= 0 and stock_time == spy_time
+            ):
+                captured_at = dt.datetime.fromtimestamp(stock_time / 1000, dt.timezone.utc)
+                if captured_at.astimezone(ZoneInfo("America/New_York")).date() != session_date:
+                    session_date -= dt.timedelta(days=1)
+                    continue
+                return {
+                    "price": float(stock_close),
+                    "spy_price": float(spy_close),
+                    "market_prices_at": captured_at.isoformat().replace("+00:00", "Z"),
+                    "market_price_feed": "massive_consolidated_completed_daily",
+                }
+        session_date -= dt.timedelta(days=1)
+    raise RuntimeError("massive_synchronized_prices_unavailable")
+
+
 def consolidated_daily_bars(symbol: str, now_ms: int | None = None) -> list[dict[str, float | int]]:
     normalized = symbol.upper()
     if not re.fullmatch(r"[A-Z]{1,6}", normalized):

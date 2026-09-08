@@ -50,6 +50,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("cite the evidence index like [1]", p)
         self.assertIn("[1] A — https://a.example/1", p)
         self.assertIn("[2] B — https://b.example/2", p)
+        self.assertIn("Do not return price or spy_price", p)
 
     def test_live_research_raises_typed_timeout(self):
         calls = {"n": 0}
@@ -93,6 +94,50 @@ class AlphaRadarTests(unittest.TestCase):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_source_fetch_failed")
+
+    def test_live_research_replaces_model_prices_with_synchronized_market_data(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        model_candidate={
+            "symbol":"SNOW","price":1.0,"spy_price":2.0,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
+        }
+        synth=subprocess.CompletedProcess([],0,json.dumps(model_candidate),"")
+        market_prices={
+            "price":337.18,"spy_price":770.19,
+            "market_prices_at":"2026-09-04T20:00:00Z",
+            "market_price_feed":"massive_consolidated_completed_daily",
+        }
+        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+            alpha_radar,"gather_evidence",return_value=[
+                {"url":"https://a.example/1","title":"A","text":"a"},
+                {"url":"https://b.example/2","title":"B","text":"b"},
+            ]
+        ), patch.object(
+            alpha_radar,"synchronized_completed_close_prices",return_value=market_prices
+        ) as prices:
+            candidate=alpha_radar.live_research({"max_position_usd":500})
+
+        prices.assert_called_once_with("SNOW")
+        self.assertEqual(candidate["price"],337.18)
+        self.assertEqual(candidate["spy_price"],770.19)
+        self.assertEqual(candidate["market_prices_at"],"2026-09-04T20:00:00Z")
+        self.assertEqual(candidate["market_price_feed"],"massive_consolidated_completed_daily")
+
+    def test_live_research_types_synchronized_market_data_failure(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        synth=subprocess.CompletedProcess([],0,json.dumps({"symbol":"SNOW","status":"ok"}),"")
+        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+            alpha_radar,"gather_evidence",return_value=[
+                {"url":"https://a.example/1","title":"A","text":"a"},
+                {"url":"https://b.example/2","title":"B","text":"b"},
+            ]
+        ), patch.object(
+            alpha_radar,"synchronized_completed_close_prices",
+            side_effect=RuntimeError("massive_synchronized_prices_unavailable"),
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_market_data_unavailable")
 
     def test_main_types_source_verification_and_persistence_failures(self):
         candidate={
