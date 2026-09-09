@@ -10,7 +10,7 @@ from market_data import synchronized_completed_close_prices
 ROOT=Path(__file__).resolve().parent
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}
-SOURCE_DIAGNOSTIC_REASONS={"fetched","source_fetch_timeout","source_fetch_failed","stale_source","article_body_missing"}
+SOURCE_DIAGNOSTIC_REASONS={"fetched","source_fetch_timeout","source_fetch_failed","stale_source","article_body_missing","source_freshness_unknown"}
 
 BROKER_OWNED_MARKET_FIELDS={"average_volume","volume_feed","quote","quote_feed","technical_bars","technical_bars_feed","stop","target"}
 
@@ -211,17 +211,31 @@ def gather_evidence(
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     results:list[dict[str,Any]]=[{} for _ in urls]
     failures:list[dict[str,str]|None]=[None for _ in urls]
+    lock=threading.Lock()
+    collected=[False]
     def worker(i:int,u:str)->None:
-        try:results[i]=fetch_source(u,per_source_timeout)
+        try:
+            page=fetch_source(u,per_source_timeout)
+            with lock:
+                if not collected[0]:results[i]=page
         except Exception as error:
             timed_out=isinstance(error,TimeoutError) or isinstance(getattr(error,"reason",None),TimeoutError)
-            failures[i]={
+            failure={
                 "domain":urllib.parse.urlparse(u).netloc.lower(),
                 "reason":"source_fetch_timeout" if timed_out else "source_fetch_failed",
             }
-    threads=[threading.Thread(target=worker,args=(i,u)) for i,u in enumerate(urls)]
+            with lock:
+                if not collected[0]:failures[i]=failure
+    threads=[threading.Thread(target=worker,args=(i,u),daemon=True) for i,u in enumerate(urls)]
     for t in threads:t.start()
     for t in threads:t.join(per_source_timeout+5)
+    with lock:collected[0]=True
+    for i,t in enumerate(threads):
+        if t.is_alive() and failures[i] is None:
+            failures[i]={
+                "domain":urllib.parse.urlparse(urls[i]).netloc.lower(),
+                "reason":"source_fetch_timeout",
+            }
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
     return [r for r in results if r]
 
@@ -253,7 +267,10 @@ def filter_evidence(
                 if parsed.tzinfo is None:parsed=None
             except ValueError:
                 parsed=None
-        if parsed is not None and current-parsed.astimezone(dt.timezone.utc)>dt.timedelta(days=max_age_days):
+        if parsed is None:
+            diagnostics.append({"domain":domain,"reason":"source_freshness_unknown"})
+            continue
+        if current-parsed.astimezone(dt.timezone.utc)>dt.timedelta(days=max_age_days):
             diagnostics.append({"domain":domain,"reason":"stale_source"})
             continue
         accepted.append(page)

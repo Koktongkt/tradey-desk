@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -165,6 +166,26 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(row["reason"],"source_freshness_unknown")
         self.assertEqual(row["stage"],"source_quality")
 
+    def test_gather_evidence_types_still_alive_workers_and_is_deterministic(self):
+        diagnostics = []
+
+        def fetch(url, _timeout):
+            if "hung.example" in url:
+                time.sleep(7)
+                return {"url": url, "title": "Late", "text": "late body", "published_at": None}
+            return {"url": url, "title": "Current", "text": "usable evidence", "published_at": None}
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+            pages = alpha_radar.gather_evidence(
+                ["https://hung.example/a", "https://ok.example/b"],
+                per_source_timeout=1,
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
+        self.assertEqual(pages[0]["text"], "usable evidence")
+        self.assertEqual(diagnostics, [{"domain": "hung.example", "reason": "source_fetch_timeout"}])
+
     def test_record_research_diagnostics_uses_strict_private_projection(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "private" / "research_diagnostics.jsonl"
@@ -272,8 +293,8 @@ class AlphaRadarTests(unittest.TestCase):
         synth=subprocess.CompletedProcess([],0,"not-json","")
         with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":"a"},
-                {"url":"https://b.example/2","title":"B","text":"b"},
+                {"url":"https://a.example/1","title":"A","text":"a","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
         ):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -353,8 +374,8 @@ class AlphaRadarTests(unittest.TestCase):
         }
         with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":"a"},
-                {"url":"https://b.example/2","title":"B","text":"b"},
+                {"url":"https://a.example/1","title":"A","text":"a","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",return_value=market_prices
@@ -372,8 +393,8 @@ class AlphaRadarTests(unittest.TestCase):
         synth=subprocess.CompletedProcess([],0,json.dumps({"symbol":"SNOW","status":"ok"}),"")
         with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":"a"},
-                {"url":"https://b.example/2","title":"B","text":"b"},
+                {"url":"https://a.example/1","title":"A","text":"a","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",
