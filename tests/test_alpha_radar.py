@@ -27,7 +27,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
 
     def test_scout_prompt_bounded_and_url_only(self):
-        self.assertIn("3-6 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("4-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
         self.assertIn("No commentary", alpha_radar.SCOUT_PROMPT)
         self.assertIn("verify candidate pages with web extraction before returning them", alpha_radar.SCOUT_PROMPT)
         self.assertIn("Do not return landing/index pages", alpha_radar.SCOUT_PROMPT)
@@ -171,7 +171,7 @@ class AlphaRadarTests(unittest.TestCase):
 
         def fetch(url, _timeout):
             if "hung.example" in url:
-                time.sleep(7)
+                time.sleep(20)
                 return {"url": url, "title": "Late", "text": "late body", "published_at": None}
             return {"url": url, "title": "Current", "text": "usable evidence", "published_at": None}
 

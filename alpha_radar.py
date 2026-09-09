@@ -156,7 +156,7 @@ def research_prompt(cfg:dict[str,Any]|None=None)->str:
 
 
 RESEARCHED_AT_TOLERANCE_MINUTES = 15
-SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and at least two independent news domains. Before finalizing, verify candidate pages with web extraction before returning them. Use at most two web_search calls total and two web_extract calls total. After at most two tool-using turns, immediately return the URL-only result. Do not return landing/index pages, pages whose useful body is unavailable, or event evidence older than 180 days. Return ONLY 3-6 plain http(s) URLs (one per line, best first) that are the primary evidence: issuer IR/SEC releases, earnings coverage, or price/valuation context. Include at most one quote/price page. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
+SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and at least two independent news domains. Before finalizing, verify candidate pages with web extraction before returning them. Return only URLs you actually retrieved or confirmed to exist during your web calls; never construct or guess an issuer IR URL from the company name. Use at most two web_search calls total and two web_extract calls total. After at most two tool-using turns, immediately return the URL-only result. Do not return landing/index pages, pages whose useful body is unavailable, or event evidence older than 180 days. Return ONLY 4-7 plain http(s) URLs (one per line, best first) that are the primary evidence: issuer IR/SEC releases, earnings coverage, or price/valuation context. Include at most one quote/price page. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
 
 
 def extract_candidate_urls(text:str,limit:int=6)->list[str]:
@@ -214,21 +214,26 @@ def gather_evidence(
     lock=threading.Lock()
     collected=[False]
     def worker(i:int,u:str)->None:
-        try:
-            page=fetch_source(u,per_source_timeout)
-            with lock:
-                if not collected[0]:results[i]=page
-        except Exception as error:
-            timed_out=isinstance(error,TimeoutError) or isinstance(getattr(error,"reason",None),TimeoutError)
-            failure={
-                "domain":urllib.parse.urlparse(u).netloc.lower(),
-                "reason":"source_fetch_timeout" if timed_out else "source_fetch_failed",
-            }
-            with lock:
-                if not collected[0]:failures[i]=failure
+        for attempt in range(2):
+            try:
+                page=fetch_source(u,per_source_timeout)
+                with lock:
+                    if not collected[0]:results[i]=page
+                return
+            except Exception as error:
+                timed_out=isinstance(error,TimeoutError) or isinstance(getattr(error,"reason",None),TimeoutError)
+                if timed_out and attempt==0:
+                    continue
+                failure={
+                    "domain":urllib.parse.urlparse(u).netloc.lower(),
+                    "reason":"source_fetch_timeout" if timed_out else "source_fetch_failed",
+                }
+                with lock:
+                    if not collected[0]:failures[i]=failure
+                return
     threads=[threading.Thread(target=worker,args=(i,u),daemon=True) for i,u in enumerate(urls)]
     for t in threads:t.start()
-    for t in threads:t.join(per_source_timeout+5)
+    for t in threads:t.join((per_source_timeout+5)*2+5)
     with lock:collected[0]=True
     for i,t in enumerate(threads):
         if t.is_alive() and failures[i] is None:
@@ -341,7 +346,7 @@ def live_research(cfg:dict[str,Any])->dict[str,Any]:
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_scout_timeout")
     if scout.returncode: raise ResearchFailure("research_scout_unavailable")
-    urls=extract_candidate_urls(scout.stdout,limit=5)
+    urls=extract_candidate_urls(scout.stdout,limit=7)
     if len(urls)<2: raise ResearchFailure("research_evidence_insufficient")
     source_diagnostics:list[dict[str,str]]=[]
     evidence=gather_evidence(urls,diagnostics=source_diagnostics)
