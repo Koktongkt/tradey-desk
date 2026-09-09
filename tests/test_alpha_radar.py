@@ -465,7 +465,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=360", source)
+        self.assertIn("timeout_seconds=480", source)
         self.assertIn("attempts=1", source)
 
 

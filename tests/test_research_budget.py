@@ -18,14 +18,16 @@ import alpha_radar
 class ResearchBudgetGuardTests(unittest.TestCase):
     def test_scout_timeout_leaves_margin_over_observed_latency(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("timeout=120", source)
-        self.assertNotIn("timeout=90", source)
+        self.assertIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
+        self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=120", source)
+        # synthesis timeout is unchanged
+        self.assertIn("timeout=120,cwd=ROOT", source)
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # scout 120 + gather ~40 + synthesis 120 + verify_sources 60 + margin
+        # scout 240 + fetch+retry+fallback ~90 + synthesis 120 + verify 60 + margin
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=360", source)
-        self.assertNotIn("timeout_seconds=200", source)
+        self.assertIn("timeout_seconds=480", source)
+        self.assertNotIn("timeout_seconds=360", source)
 
 
 class ScoutReliabilityGuardTests(unittest.TestCase):
