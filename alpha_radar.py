@@ -337,7 +337,7 @@ EVIDENCE:
 
 def live_research(cfg:dict[str,Any])->dict[str,Any]:
     try:
-        scout=subprocess.run(discovery_command(),input=SCOUT_PROMPT,capture_output=True,text=True,timeout=90,cwd=ROOT)
+        scout=subprocess.run(discovery_command(),input=SCOUT_PROMPT,capture_output=True,text=True,timeout=120,cwd=ROOT)
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_scout_timeout")
     if scout.returncode: raise ResearchFailure("research_scout_unavailable")
