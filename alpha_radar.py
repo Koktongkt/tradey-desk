@@ -156,7 +156,7 @@ def research_prompt(cfg:dict[str,Any]|None=None)->str:
 
 
 RESEARCHED_AT_TOLERANCE_MINUTES = 15
-SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and at least two independent news domains. Before finalizing, verify candidate pages with web extraction before returning them. Use at most two web_search calls total and two web_extract calls total. After at most two tool-using turns, immediately return the URL-only result. Do not return landing/index pages, pages whose useful body is unavailable, or event evidence older than 45 days. Return ONLY 3-6 plain http(s) URLs (one per line, best first) that are the primary evidence: issuer IR/SEC releases, earnings coverage, or price/valuation context. Include at most one quote/price page. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
+SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and at least two independent news domains. Before finalizing, verify candidate pages with web extraction before returning them. Use at most two web_search calls total and two web_extract calls total. After at most two tool-using turns, immediately return the URL-only result. Do not return landing/index pages, pages whose useful body is unavailable, or event evidence older than 180 days. Return ONLY 3-6 plain http(s) URLs (one per line, best first) that are the primary evidence: issuer IR/SEC releases, earnings coverage, or price/valuation context. Include at most one quote/price page. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
 
 
 def extract_candidate_urls(text:str,limit:int=6)->list[str]:
@@ -243,7 +243,7 @@ def gather_evidence(
 def filter_evidence(
     pages:list[dict[str,Any]],
     now:dt.datetime|None=None,
-    max_age_days:int=45,
+    max_age_days:int=180,
 )->tuple[list[dict[str,Any]],list[dict[str,str]]]:
     """Reject explicitly stale sources and obvious navigation-only shells."""
     current=now or dt.datetime.now(dt.timezone.utc)

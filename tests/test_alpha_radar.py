@@ -31,7 +31,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("No commentary", alpha_radar.SCOUT_PROMPT)
         self.assertIn("verify candidate pages with web extraction before returning them", alpha_radar.SCOUT_PROMPT)
         self.assertIn("Do not return landing/index pages", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("older than 45 days", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("older than 180 days", alpha_radar.SCOUT_PROMPT)
         self.assertIn("at most two web_search calls total and two web_extract calls total", alpha_radar.SCOUT_PROMPT)
         self.assertIn("After at most two tool-using turns", alpha_radar.SCOUT_PROMPT)
 
@@ -93,10 +93,10 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_filter_evidence_applies_staleness_at_exact_timedelta_boundary(self):
         now=alpha_radar.dt.datetime(2026,9,9,12,0,tzinfo=alpha_radar.dt.timezone.utc)
-        published=(now-alpha_radar.dt.timedelta(days=45,seconds=1)).isoformat()
+        published=(now-alpha_radar.dt.timedelta(days=180,seconds=1)).isoformat()
         accepted,diagnostics=alpha_radar.filter_evidence([
             {"url":"https://old.example/story","title":"Old","text":"event","published_at":published}
-        ],now=now,max_age_days=45)
+        ],now=now,max_age_days=180)
         self.assertEqual(accepted,[])
         self.assertEqual(diagnostics,[{"domain":"old.example","reason":"stale_source"}])
 
