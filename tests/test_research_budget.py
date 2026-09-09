@@ -1,11 +1,14 @@
-"""Guard tests pinning research subprocess timeouts and the outer cycle budget.
+"""Guard tests pinning research subprocess timeouts, the outer cycle budget,
+and scout-reliability hardening.
 
 Timeouts must be calibrated against OBSERVED provider latency (a measured scout
 run took 88.0s against a 90s cap), and the outer cycle budget must cover the
 serialized worst case of every research stage:
 
-    scout 120 + fetch ~20 + synthesis 120 + source verification 60 + margin
+    scout 120 + fetch ~40 (incl. retry) + synthesis 120 + verify 60 + margin
 """
+import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +22,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertNotIn("timeout=90", source)
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # scout 120 + gather ~20 + synthesis 120 + verify_sources 60 + margin 40
+        # scout 120 + gather ~40 + synthesis 120 + verify_sources 60 + margin
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
         self.assertIn("timeout_seconds=360", source)
         self.assertNotIn("timeout_seconds=200", source)
@@ -65,7 +68,9 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         def fetch(url, _timeout):
             raise TimeoutError("read timed out")
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+            alpha_radar, "fetch_source_via_gateway", return_value=None
+        ):
             pages = alpha_radar.gather_evidence(
                 ["https://down.example/a"], diagnostics=diagnostics
             )
@@ -83,11 +88,104 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
             attempts["n"] += 1
             raise ConnectionResetError("reset")
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+            alpha_radar, "fetch_source_via_gateway", return_value=None
+        ):
             pages = alpha_radar.gather_evidence(["https://bad.example/a"])
 
         self.assertEqual(attempts["n"], 1)
         self.assertEqual(pages, [])
+
+
+class GatewayFallbackGuardTests(unittest.TestCase):
+    """Bot-walled and timing-out primary sources (businesswire.com timeouts,
+    investors.* 403s) get one bounded gateway-backed extraction fallback per
+    URL. The fallback shells out to the hermes web toolset, which routes
+    through the provider gateway and extracted pages direct fetching could
+    not (verified 2026-09-09: businesswire.com article recovered)."""
+
+    def test_gather_evidence_falls_back_on_timeout_after_retry(self):
+        calls = []
+
+        def direct(url, _timeout):
+            calls.append("direct")
+            raise TimeoutError("read timed out")
+
+        def fallback(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+            calls.append("fallback")
+            self.assertIn("web", cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, "Published 2026-09-08. Revenue rose 37 percent year over year.", ""
+            )
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess, "run", side_effect=fallback
+        ):
+            pages = alpha_radar.gather_evidence(["https://walled.example/a"])
+
+        self.assertEqual(calls, ["direct", "direct", "fallback"])
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0]["url"], "https://walled.example/a")
+        self.assertIn("37 percent", pages[0]["text"])
+
+    def test_gateway_fallback_failure_keeps_typed_timeout(self):
+        diagnostics = []
+
+        def direct(url, _timeout):
+            raise TimeoutError("read timed out")
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)
+        ):
+            pages = alpha_radar.gather_evidence(
+                ["https://walled.example/a"], diagnostics=diagnostics
+            )
+
+        self.assertEqual(pages, [])
+        self.assertEqual(diagnostics, [{"domain": "walled.example", "reason": "source_fetch_timeout"}])
+
+    def test_gateway_fallback_only_invoked_for_failures_not_successes(self):
+        def direct(url, _timeout):
+            return {"url": url, "title": "Direct", "text": "fine", "published_at": "2026-09-08T15:00:00Z"}
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess, "run"
+        ) as boot:
+            pages = alpha_radar.gather_evidence(["https://ok.example/a"])
+
+        boot.assert_not_called()
+        self.assertEqual([page["title"] for page in pages], ["Direct"])
+
+    def test_gateway_fallback_output_is_empty_is_not_evidence(self):
+        def direct(url, _timeout):
+            raise TimeoutError("read timed out")
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "   ", ""),
+        ):
+            pages = alpha_radar.gather_evidence(["https://walled.example/a"])
+
+        self.assertEqual(pages, [])
+
+    def test_gateway_fallback_has_bounded_timeout(self):
+        captured = {}
+
+        def direct(url, _timeout):
+            raise TimeoutError("read timed out")
+
+        def fallback(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+            captured["timeout"] = timeout
+            return subprocess.CompletedProcess(cmd, 0, "body", "")
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess, "run", side_effect=fallback
+        ):
+            alpha_radar.gather_evidence(["https://walled.example/a"])
+
+        self.assertIsNotNone(captured.get("timeout"))
+        self.assertLessEqual(captured["timeout"], 60)
 
 
 if __name__ == "__main__":

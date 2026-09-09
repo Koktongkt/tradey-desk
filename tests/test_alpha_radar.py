@@ -171,11 +171,13 @@ class AlphaRadarTests(unittest.TestCase):
 
         def fetch(url, _timeout):
             if "hung.example" in url:
-                time.sleep(20)
+                time.sleep(95)
                 return {"url": url, "title": "Late", "text": "late body", "published_at": None}
             return {"url": url, "title": "Current", "text": "usable evidence", "published_at": None}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+            alpha_radar, "fetch_source_via_gateway", return_value=None
+        ):
             pages = alpha_radar.gather_evidence(
                 ["https://hung.example/a", "https://ok.example/b"],
                 per_source_timeout=1,

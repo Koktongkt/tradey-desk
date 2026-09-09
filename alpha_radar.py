@@ -203,6 +203,49 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     return {"url":url,"title":title,"text":text[:6000],"published_at":extract_published_at(body)}
 
 
+GATEWAY_FALLBACK_TIMEOUT_SECONDS=60
+GATEWAY_FALLBACK_PROMPT=(
+    "Call web_extract exactly once on the URL below. Reply with only the extracted "
+    "page text starting with its publication date if present; no commentary.\nURL: {url}"
+)
+
+def fetch_source_via_gateway(url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOUT_SECONDS)->dict[str,Any]|None:
+    """Bounded gateway-backed extraction fallback for bot-walled or timing-out pages.
+
+    Routes through the hermes web toolset (gateway-fronted extraction), which
+    reaches pages direct fetching cannot. Returns None on any failure.
+    """
+    cmd=["/opt/hermes/bin/hermes","chat","-Q","--source","tool","--provider","nous",
+         "-m","deepseek/deepseek-v4-flash-0731","-t","web","--ignore-rules",
+         "--max-turns","2","--run-budget","45","--query-file","-"]
+    try:
+        result=subprocess.run(
+            cmd,input=GATEWAY_FALLBACK_PROMPT.format(url=url),
+            capture_output=True,text=True,timeout=timeout_seconds,cwd=ROOT,
+        )
+    except (subprocess.TimeoutExpired,OSError):
+        return None
+    if result.returncode or not result.stdout.strip():
+        return None
+    lines=[line for line in result.stdout.strip().splitlines() if not line.startswith("session_id:")]
+    text=extract_page_text(html.escape("\n".join(lines),quote=False)) if "<" in "\n".join(lines) else " ".join(lines)
+    text=re.sub(r"\s+"," ",text).strip()[:6000]
+    if not text:return None
+    published=None
+    match=re.search(r"(\d{4}-\d{2}-\d{2})",text) or re.search(r"(?i)\b([A-Z][a-z]{2,8} \d{1,2}, \d{4})",text)
+    if match:
+        raw=match.group(1)
+        for fmt in ("%Y-%m-%d","%B %d, %Y","%b %d, %Y"):
+            try:
+                published=dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
+                break
+            except ValueError:continue
+    title=""
+    m=re.search(r"#\s+(.+)",result.stdout)
+    if m:title=m.group(1).strip().strip("*#")[:200]
+    return {"url":url,"title":title,"text":text,"published_at":published}
+
+
 def gather_evidence(
     urls:list[str],
     per_source_timeout:int=15,
@@ -224,6 +267,11 @@ def gather_evidence(
                 timed_out=isinstance(error,TimeoutError) or isinstance(getattr(error,"reason",None),TimeoutError)
                 if timed_out and attempt==0:
                     continue
+                page=fetch_source_via_gateway(u) if not collected[0] else None
+                if page is not None:
+                    with lock:
+                        if not collected[0]:results[i]=page
+                    return
                 failure={
                     "domain":urllib.parse.urlparse(u).netloc.lower(),
                     "reason":"source_fetch_timeout" if timed_out else "source_fetch_failed",
@@ -233,7 +281,7 @@ def gather_evidence(
                 return
     threads=[threading.Thread(target=worker,args=(i,u),daemon=True) for i,u in enumerate(urls)]
     for t in threads:t.start()
-    for t in threads:t.join((per_source_timeout+5)*2+5)
+    for t in threads:t.join((per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10)
     with lock:collected[0]=True
     for i,t in enumerate(threads):
         if t.is_alive() and failures[i] is None:
