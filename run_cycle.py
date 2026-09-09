@@ -24,7 +24,7 @@ def audit_result(mode:str,stage:str,returncode:int,stdout:str,path:Path=AUDIT_PA
         if len(parts)>=2 and parts[1] in {"candidate_qualified"}:
             row["decision"]=parts[1]
             if len(parts)>=3 and re.fullmatch(r"[A-Z]{1,6}",parts[2]):row["symbol"]=parts[2]
-        elif len(parts)>=2 and parts[1]=="skipped" and len(parts)>=3 and parts[2] in {"outside_window","already_completed","already_reviewed"}:
+        elif len(parts)>=2 and parts[1]=="skipped" and len(parts)>=3 and parts[2] in {"outside_window","already_completed","already_reviewed","no_fresh_setup"}:
             row["decision"]="skipped";row["reason"]=parts[2]
         elif len(parts)>=2 and parts[1]=="reused_fresh_candidate":
             row["decision"]="reused_fresh_candidate"

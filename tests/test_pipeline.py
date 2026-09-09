@@ -48,7 +48,7 @@ class PipelineTests(unittest.TestCase):
     def test_research_prompt_requires_resolved_non_blackout_earnings(self):
         prompt=alpha_radar.research_prompt({"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2})
         self.assertNotIn("pre- or post-earnings",prompt.lower())
-        self.assertIn("return {\"status\":\"none\"}",prompt)
+        self.assertIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt.lower())
         self.assertIn("cannot verify the earnings timestamp",prompt.lower())
         self.assertIn("within 2 exchange sessions",prompt.lower())
 

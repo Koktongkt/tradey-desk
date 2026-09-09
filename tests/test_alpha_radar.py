@@ -28,6 +28,11 @@ class AlphaRadarTests(unittest.TestCase):
     def test_scout_prompt_bounded_and_url_only(self):
         self.assertIn("3-6 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
         self.assertIn("No commentary", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("verify candidate pages with web extraction before returning them", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Do not return landing/index pages", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("older than 45 days", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("at most two web_search calls total and two web_extract calls total", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("After at most two tool-using turns", alpha_radar.SCOUT_PROMPT)
 
     def test_extract_candidate_urls_dedupes_per_domain_and_caps_six(self):
         text = "https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y"
@@ -35,6 +40,162 @@ class AlphaRadarTests(unittest.TestCase):
             alpha_radar.extract_candidate_urls(text, limit=6),
             ["https://a.com/1", "https://b.com/x", "https://c.com/y"],
         )
+
+    def test_fetch_source_prefers_article_over_navigation_prefix(self):
+        html = (
+            "<html><head><title>Current release</title></head><body>"
+            + "<nav>" + ("navigation " * 900) + "</nav>"
+            + "<article><time datetime='2026-09-02T20:05:00Z'>September 2, 2026</time>"
+            + "<h1>Fiscal Q2 2027 results</h1>"
+            + "<p>Revenue was $1.55 billion and full-year guidance was raised.</p></article>"
+            + "</body></html>"
+        ).encode()
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, _limit): return html
+
+        with patch.object(alpha_radar.urllib.request, "urlopen", return_value=Response()):
+            page = alpha_radar.fetch_source("https://issuer.example/release")
+
+        self.assertIn("September 2, 2026", page["text"])
+        self.assertIn("$1.55 billion", page["text"])
+        self.assertNotIn("navigation navigation", page["text"])
+
+    def test_fetch_source_extracts_structured_publication_time(self):
+        html = b"""<html><head><meta property='article:published_time' content='2026-09-02T20:05:00Z'></head><body><article>Current earnings release with enough evidence.</article></body></html>"""
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, _limit): return html
+
+        with patch.object(alpha_radar.urllib.request, "urlopen", return_value=Response()):
+            page = alpha_radar.fetch_source("https://issuer.example/release")
+
+        self.assertEqual(page["published_at"], "2026-09-02T20:05:00Z")
+
+    def test_filter_evidence_drops_explicitly_stale_articles(self):
+        pages = [
+            {"url": "https://old.example/story", "title": "Old", "text": "old event", "published_at": "2025-08-28T14:57:00Z"},
+            {"url": "https://new.example/release", "title": "New", "text": "current event", "published_at": "2026-09-02T20:05:00Z"},
+        ]
+        accepted, diagnostics = alpha_radar.filter_evidence(
+            pages,
+            now=alpha_radar.dt.datetime(2026, 9, 9, tzinfo=alpha_radar.dt.timezone.utc),
+        )
+
+        self.assertEqual([page["url"] for page in accepted], ["https://new.example/release"])
+        self.assertEqual(diagnostics, [{"domain": "old.example", "reason": "stale_source"}])
+
+    def test_filter_evidence_applies_staleness_at_exact_timedelta_boundary(self):
+        now=alpha_radar.dt.datetime(2026,9,9,12,0,tzinfo=alpha_radar.dt.timezone.utc)
+        published=(now-alpha_radar.dt.timedelta(days=45,seconds=1)).isoformat()
+        accepted,diagnostics=alpha_radar.filter_evidence([
+            {"url":"https://old.example/story","title":"Old","text":"event","published_at":published}
+        ],now=now,max_age_days=45)
+        self.assertEqual(accepted,[])
+        self.assertEqual(diagnostics,[{"domain":"old.example","reason":"stale_source"}])
+
+    def test_filter_evidence_drops_navigation_only_body(self):
+        pages = [{
+            "url": "https://ir.example/quarterly-results",
+            "title": "Quarterly Results",
+            "text": "Investor Menu Site Search Investor Email Alerts Subscribe Unsubscribe Privacy Notice",
+            "published_at": None,
+        }]
+        accepted, diagnostics = alpha_radar.filter_evidence(
+            pages,
+            now=alpha_radar.dt.datetime(2026, 9, 9, tzinfo=alpha_radar.dt.timezone.utc),
+        )
+        self.assertEqual(accepted, [])
+        self.assertEqual(diagnostics, [{"domain": "ir.example", "reason": "article_body_missing"}])
+
+    def test_filter_evidence_types_empty_body(self):
+        accepted,diagnostics=alpha_radar.filter_evidence([
+            {"url":"https://empty.example/story","title":"","text":"","published_at":None}
+        ])
+        self.assertEqual(accepted,[])
+        self.assertEqual(diagnostics,[{"domain":"empty.example","reason":"article_body_missing"}])
+
+    def test_filter_evidence_rejects_title_only_page_as_missing_body(self):
+        accepted,diagnostics=alpha_radar.filter_evidence([
+            {"url":"https://title.example/story","title":"Quarterly results","text":"   ","published_at":"2026-09-08T15:00:00Z"}
+        ],now=alpha_radar.dt.datetime(2026,9,9,tzinfo=alpha_radar.dt.timezone.utc))
+        self.assertEqual(accepted,[])
+        self.assertEqual(diagnostics,[{"domain":"title.example","reason":"article_body_missing"}])
+
+    def test_gather_evidence_records_typed_fetch_failures(self):
+        diagnostics = []
+
+        def fetch(url, _timeout):
+            if "slow.example" in url:
+                raise TimeoutError("read timed out")
+            return {"url": url, "title": "Current", "text": "usable evidence", "published_at": None}
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+            pages = alpha_radar.gather_evidence(
+                ["https://slow.example/a", "https://ok.example/b"],
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
+        self.assertEqual(diagnostics, [{"domain": "slow.example", "reason": "source_fetch_timeout"}])
+
+    def test_filter_evidence_fails_closed_when_freshness_unknown(self):
+        now=alpha_radar.dt.datetime(2026,9,9,12,0,tzinfo=alpha_radar.dt.timezone.utc)
+        for published in (None,"not-a-date","2026-13-99T99:00:00Z","2026-09-08T15:00:00"):
+            accepted,diagnostics=alpha_radar.filter_evidence([
+                {"url":"https://u.example/story","title":"U","text":"event body","published_at":published}
+            ],now=now)
+            self.assertEqual(accepted,[],published)
+            self.assertEqual(diagnostics,[{"domain":"u.example","reason":"source_freshness_unknown"}],published)
+
+    def test_record_research_diagnostics_persists_freshness_unknown_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"private"/"research_diagnostics.jsonl"
+            alpha_radar.record_research_diagnostics(
+                [{"domain":"u.example","reason":"source_freshness_unknown"}],
+                path=path,
+                now="2026-09-09T12:31:52Z",
+            )
+            row=json.loads(path.read_text())
+        self.assertEqual(row["reason"],"source_freshness_unknown")
+        self.assertEqual(row["stage"],"source_quality")
+
+    def test_record_research_diagnostics_uses_strict_private_projection(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "private" / "research_diagnostics.jsonl"
+            alpha_radar.record_research_diagnostics(
+                [{"domain": "slow.example", "reason": "source_fetch_timeout", "raw_error": "secret traceback"}],
+                path=path,
+                now="2026-09-09T12:31:52Z",
+            )
+            row = json.loads(path.read_text())
+
+        self.assertEqual(row, {
+            "domain": "slow.example",
+            "reason": "source_fetch_timeout",
+            "stage": "source_fetch",
+            "timestamp": "2026-09-09T12:31:52Z",
+        })
+
+    def test_record_synthesis_none_preserves_typed_reason_and_evidence_hash(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "private" / "research_diagnostics.jsonl"
+            alpha_radar.record_synthesis_none(
+                {"status": "none", "none_reason": "earnings_timestamp_unverified"},
+                "bounded synthesis prompt",
+                path=path,
+                now="2026-09-09T12:31:00Z",
+            )
+            row = json.loads(path.read_text())
+        self.assertEqual(row["stage"], "synthesis")
+        self.assertEqual(row["reason"], "earnings_timestamp_unverified")
+        self.assertEqual(len(row["evidence_sha256"]), 64)
+        self.assertNotIn("bounded synthesis prompt", json.dumps(row))
 
     def test_synthesis_prompt_requires_citations_and_bans_tools(self):
         p = alpha_radar.synthesis_prompt(
@@ -51,6 +212,9 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("[1] A — https://a.example/1", p)
         self.assertIn("[2] B — https://b.example/2", p)
         self.assertIn("Do not return price or spy_price", p)
+        self.assertIn("must not reject a setup because price, SPY price, stop, target, or technical levels are absent", p)
+        self.assertIn("Use no_fresh_setup only when the evidence bundle is current and adequate", p)
+        self.assertIn('"none_reason"', p)
 
     def test_live_research_raises_typed_timeout(self):
         calls = {"n": 0}
@@ -76,6 +240,33 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(rc,3)
         self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_scout_timeout")
 
+    def test_main_reports_normalized_synthesis_none_reason(self):
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"live_research",return_value={"status":"none","none_reason":"earnings_timestamp_unverified"}
+        ), contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual(rc,2)
+        self.assertEqual(out.getvalue().strip(),"BLOCKER research_earnings_timestamp_unverified")
+
+    def test_main_treats_supported_no_setup_as_healthy_noop(self):
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"live_research",return_value={"status":"none","none_reason":"no_fresh_setup"}
+        ), contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual(rc,0)
+        self.assertEqual(out.getvalue().strip(),"DECISION skipped no_fresh_setup")
+
+    def test_main_rejects_unrecognized_synthesis_none_reason(self):
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"live_research",return_value={"status":"none","none_reason":"arbitrary model prose"}
+        ), contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual(rc,2)
+        self.assertEqual(out.getvalue().strip(),"BLOCKER research_evidence_insufficient")
+
     def test_live_research_types_source_fetch_and_parse_failures(self):
         scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
         synth=subprocess.CompletedProcess([],0,"not-json","")
@@ -94,6 +285,59 @@ class AlphaRadarTests(unittest.TestCase):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_source_fetch_failed")
+
+    def test_live_research_filters_stale_evidence_and_records_diagnostic(self):
+        scout=subprocess.CompletedProcess([],0,"https://old.example/1\nhttps://a.example/2\nhttps://b.example/3\n","")
+        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        pages=[
+            {"url":"https://old.example/1","title":"Old","text":"stale event","published_at":"2025-08-28T14:57:00Z"},
+            {"url":"https://a.example/2","title":"A","text":"current event","published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/3","title":"B","text":"current confirmation","published_at":"2026-09-08T15:00:00Z"},
+        ]
+        calls=[]
+        def run(_cmd, **kwargs):
+            calls.append(kwargs.get("input", ""))
+            return scout if len(calls)==1 else synth
+
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",side_effect=run
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages):
+            candidate=alpha_radar.live_research({"max_position_usd":500})
+            diagnostics=[json.loads(line) for line in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
+
+        self.assertEqual(candidate["none_reason"],"no_fresh_setup")
+        self.assertNotIn("old.example",calls[1])
+        self.assertEqual([row["reason"] for row in diagnostics[:3]],["stale_source","fetched","fetched"])
+        self.assertEqual(diagnostics[3]["stage"],"synthesis")
+        self.assertEqual(diagnostics[3]["reason"],"no_fresh_setup")
+        self.assertEqual(len(diagnostics[3]["evidence_sha256"]),64)
+
+    def test_live_research_types_diagnostic_persistence_failure(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        pages=[
+            {"url":"https://a.example/1","title":"A","text":"current event","published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/2","title":"B","text":"current confirmation","published_at":"2026-09-08T15:00:00Z"},
+        ]
+        with patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+            alpha_radar,"gather_evidence",return_value=pages
+        ), patch.object(alpha_radar,"record_research_diagnostics",side_effect=OSError("disk")):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_persistence_failure")
+
+    def test_live_research_types_synthesis_diagnostic_persistence_failure(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        pages=[
+            {"url":"https://a.example/1","title":"A","text":"current event","published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/2","title":"B","text":"current confirmation","published_at":"2026-09-08T15:00:00Z"},
+        ]
+        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+            alpha_radar,"gather_evidence",return_value=pages
+        ), patch.object(alpha_radar,"record_synthesis_none",side_effect=OSError("disk")):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_persistence_failure")
 
     def test_live_research_replaces_model_prices_with_synchronized_market_data(self):
         scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")

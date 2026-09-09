@@ -40,6 +40,14 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(row["reason"],"consensus_hold")
         self.assertNotIn("private detail",json.dumps(row))
 
+    def test_audit_result_records_no_fresh_setup_as_healthy_skip(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"decision_audit.jsonl"
+            run_cycle.audit_result("premarket","research",0,"DECISION skipped no_fresh_setup",path)
+            row=json.loads(path.read_text())
+        self.assertEqual(row["decision"],"skipped")
+        self.assertEqual(row["reason"],"no_fresh_setup")
+
     def test_execute_audits_the_final_result_after_retries(self):
         failed=subprocess.CompletedProcess([],3,"BLOCKER temporary_failure","")
         passed=subprocess.CompletedProcess([],0,"","")
