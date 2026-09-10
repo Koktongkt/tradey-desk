@@ -232,7 +232,7 @@ def discovery_command()->list[str]:
         "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
         "--provider", "nous", "-m", "deepseek/deepseek-v4-flash-0731",
         "-t", "web", "--ignore-rules", "--max-turns", "3",
-        "--run-budget", "60", "--query-file", "-",
+        "--run-budget", "180", "--query-file", "-",
     ]
 
 
@@ -259,7 +259,13 @@ def research_prompt(cfg:dict[str,Any]|None=None)->str:
 
 
 RESEARCHED_AT_TOLERANCE_MINUTES = 15
-SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and at least two independent news domains. Before finalizing, verify candidate pages with web extraction before returning them. Return only URLs you actually retrieved or confirmed to exist during your web calls; never construct or guess an issuer IR URL from the company name. Use at most two web_search calls total and two web_extract calls total. After at most two tool-using turns, immediately return the URL-only result. Do not return landing/index pages, pages whose useful body is unavailable, or event evidence older than 180 days. Return ONLY 4-7 plain http(s) URLs (one per line, best first) that are the primary evidence: issuer IR/SEC releases, earnings coverage, or price/valuation context. Include at most one quote/price page. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
+SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using your web tools ONLY (no other tools), find at most ONE liquid US cash equity setup worth researching today: a beat-and-raise or other post-earnings event, breakout, or notable momentum/reversion story on a US-listed common stock. Do not select an imminent pre-earnings setup. Prefer fresh issuer-IR/SEC announcements and independent news domains.
+
+Use exactly two tool-using turns. On the first tool-using turn, call web_search exactly twice in parallel with limit 10: one broad query for fresh US-equity catalysts and one query emphasizing current issuer/SEC evidence and independent earnings coverage. Do not finalize the company yet.
+
+On the second tool-using turn, call web_extract exactly twice in parallel. Immediately select exactly seven eligible article URLs copied from the combined search results, across up to three candidate companies and seven different registered domains. Use five URLs in the first web_extract call and two in the second. Never submit the same URL or domain twice. Do not submit search-result pages, landing/index pages, symbol pages, homepages, or guessed URLs. Use the seven best eligible search-result URLs even when they cover more than one candidate; extraction is what determines which single setup has adequate support. Never add an ineligible filler URL merely to reach seven.
+
+After extraction, select at most one company supported by at least two successfully extracted eligible pages from different domains. Return only those successful supporting URLs. Return only URLs you actually retrieved or confirmed to exist during your web calls; never construct or guess an issuer IR URL from the company name. Do not return pages whose useful body is unavailable or event evidence older than 180 days. Return ONLY 2-7 plain http(s) URLs, each from a different registered domain, one per line and best first. Include at most one quote/price page. If no company has two eligible independent pages, return only any eligible extracted URLs; never hide a shortfall with duplicates, landing pages, or filler. No commentary, no markdown, just URLs. Do not propose trades, stops, targets, quantities, or account data."""
 
 
 def extract_candidate_urls(text:str,limit:int=6)->list[str]:
@@ -493,7 +499,7 @@ EVIDENCE:
 
 def live_research(cfg:dict[str,Any])->dict[str,Any]:
     try:
-        scout=subprocess.run(discovery_command(),input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240,cwd=ROOT)
+        scout=subprocess.run(discovery_command(),input=SCOUT_PROMPT,capture_output=True,text=True,timeout=360,cwd=ROOT)
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_scout_timeout")
     if scout.returncode: raise ResearchFailure("research_scout_unavailable")

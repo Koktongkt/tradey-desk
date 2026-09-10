@@ -1,11 +1,10 @@
 """Guard tests pinning research subprocess timeouts, the outer cycle budget,
 and scout-reliability hardening.
 
-Timeouts must be calibrated against OBSERVED provider latency (a measured scout
-run took 88.0s against a 90s cap), and the outer cycle budget must cover the
-serialized worst case of every research stage:
+Timeouts must be calibrated against OBSERVED provider latency, and the outer cycle
+budget must cover the serialized worst case of every research stage:
 
-    scout 120 + fetch ~40 (incl. retry) + synthesis 120 + verify 60 + margin
+    model scout 360 + deterministic fetch/fallback ~100 + synthesis 120 + margin
 """
 import json
 import subprocess
@@ -16,18 +15,29 @@ import alpha_radar
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
-    def test_scout_timeout_leaves_margin_over_observed_latency(self):
+    def test_scout_timeout_covers_two_search_and_two_extract_calls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
-        self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=120", source)
+        self.assertIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=360", source)
+        self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
         # synthesis timeout is unchanged
         self.assertIn("timeout=120,cwd=ROOT", source)
 
+    def test_scout_run_budget_allows_both_tool_turns(self):
+        command = alpha_radar.discovery_command()
+        budget_index = command.index("--run-budget") + 1
+        self.assertEqual(command[budget_index], "180")
+
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # scout 240 + fetch+retry+fallback ~90 + synthesis 120 + verify 60 + margin
+        # scout 360 + fetch+retry+fallback 110 + synthesis 120 + 70s margin
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=480", source)
-        self.assertNotIn("timeout_seconds=360", source)
+        self.assertIn(
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=660',
+            source,
+        )
+        self.assertNotIn(
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=600',
+            source,
+        )
 
 
 class ScoutReliabilityGuardTests(unittest.TestCase):
@@ -42,8 +52,32 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertIn("Return only URLs you actually retrieved", alpha_radar.SCOUT_PROMPT)
         self.assertIn("never construct or guess", alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_returns_up_to_seven_candidate_urls(self):
-        self.assertIn("Return ONLY 4-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
+    def test_scout_returns_verified_urls_for_one_selected_setup(self):
+        self.assertIn("Return ONLY 2-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
+
+    def test_scout_uses_both_search_calls_in_first_tool_turn(self):
+        self.assertIn(
+            "first tool-using turn, call web_search exactly twice in parallel",
+            alpha_radar.SCOUT_PROMPT,
+        )
+
+    def test_scout_uses_both_extract_calls_in_second_tool_turn(self):
+        self.assertIn(
+            "second tool-using turn, call web_extract exactly twice in parallel",
+            alpha_radar.SCOUT_PROMPT,
+        )
+        self.assertIn(
+            "five URLs in the first web_extract call and two in the second",
+            alpha_radar.SCOUT_PROMPT,
+        )
+        self.assertIn(
+            "seven different registered domains",
+            alpha_radar.SCOUT_PROMPT,
+        )
+        self.assertIn(
+            "across up to three candidate companies",
+            alpha_radar.SCOUT_PROMPT,
+        )
 
     def test_live_research_requests_seven_candidate_urls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()

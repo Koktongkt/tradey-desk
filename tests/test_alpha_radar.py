@@ -20,20 +20,20 @@ class AlphaRadarTests(unittest.TestCase):
 
         self.assertEqual(scout[scout.index("-t") + 1], "web")
         self.assertEqual(scout[scout.index("--max-turns") + 1], "3")
-        self.assertEqual(scout[scout.index("--run-budget") + 1], "60")
+        self.assertEqual(scout[scout.index("--run-budget") + 1], "180")
         self.assertIn("--safe-mode", synthesis)
         self.assertEqual(synthesis[synthesis.index("-t") + 1], "")
         self.assertEqual(synthesis[synthesis.index("--max-turns") + 1], "1")
         self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
 
     def test_scout_prompt_bounded_and_url_only(self):
-        self.assertIn("4-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("2-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
         self.assertIn("No commentary", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("verify candidate pages with web extraction before returning them", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Do not return landing/index pages", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("web_extract exactly twice in parallel", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Do not submit search-result pages", alpha_radar.SCOUT_PROMPT)
         self.assertIn("older than 180 days", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("at most two web_search calls total and two web_extract calls total", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("After at most two tool-using turns", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("web_search exactly twice in parallel", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Use exactly two tool-using turns", alpha_radar.SCOUT_PROMPT)
 
     def test_extract_candidate_urls_dedupes_per_domain_and_caps_six(self):
         text = "https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y"
@@ -637,7 +637,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=480", source)
+        self.assertIn("timeout_seconds=660", source)
         self.assertIn("attempts=1", source)
 
 
