@@ -13,6 +13,9 @@ class ExecutionPolicyTests(unittest.TestCase):
     def test_production_limit_price_deviation_is_150_bps(self):
         self.assertEqual(CFG["max_limit_deviation_bps"], 150)
 
+    def test_production_minimum_average_volume_is_600000_shares(self):
+        self.assertEqual(CFG["min_average_volume"], 600000)
+
     def test_paper_mode_and_gate_settings_are_unchanged(self):
         self.assertEqual(CFG["broker_mode"], "paper")
         self.assertTrue(CFG["enabled"])
