@@ -7,8 +7,8 @@ CFG = json.loads((Path(__file__).resolve().parents[1] / "autonomy_config.json").
 
 
 class ExecutionPolicyTests(unittest.TestCase):
-    def test_production_spread_limit_is_500_bps_with_strict_upper_boundary(self):
-        self.assertEqual(CFG["max_spread_bps"], 500)
+    def test_production_spread_limit_is_600_bps_with_strict_upper_boundary(self):
+        self.assertEqual(CFG["max_spread_bps"], 600)
 
     def test_production_limit_price_deviation_is_150_bps(self):
         self.assertEqual(CFG["max_limit_deviation_bps"], 150)

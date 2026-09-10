@@ -86,7 +86,7 @@ class ValidateOrderDetailsTests(unittest.TestCase):
         self.assertEqual(d["ask"], 105.0)
         self.assertAlmostEqual(d["midpoint"], 101.5)
         self.assertAlmostEqual(d["spread_bps"], (105.0 - 98.0) / 101.5 * 10000, places=1)
-        self.assertEqual(d["max_spread_bps"], 500)
+        self.assertEqual(d["max_spread_bps"], 600)
         self.assertEqual(d["quote_feed"], "alpaca_iex")
 
     def test_limit_deviation_records_reference_and_threshold(self):
@@ -205,7 +205,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             self.assertIn("timestamp", spread_row)
             self.assertEqual(spread_row["measured"]["spread_bps"], spread_row["measured"]["spread_bps"])
             self.assertGreater(spread_row["measured"]["spread_bps"], 0)
-            self.assertEqual(spread_row["threshold"]["max_spread_bps"], 500)
+            self.assertEqual(spread_row["threshold"]["max_spread_bps"], 600)
 
     def test_one_row_per_reason(self):
         with tempfile.TemporaryDirectory() as td:
