@@ -109,24 +109,93 @@ def build_source_receipts(evidence:list[dict[str,Any]])->list[dict[str,str]]:
     return receipts
 
 
-def verify_sources(c:dict[str,Any])->bool:
-    """Validate model citations against immutable deterministic fetch receipts."""
+SOURCE_VERIFICATION_REASONS={
+    "receipt_missing","receipt_metadata_mismatch","receipt_hash_malformed",
+    "citation_url_invalid","citation_domain_missing","duplicate_domain",
+    "independent_sources_insufficient","source_verification_failed",
+}
+
+
+def source_verification_result(c:dict[str,Any])->dict[str,Any]:
+    """Return a bounded typed result for deterministic receipt validation."""
     sources=c.get("sources")
     receipts=c.get("_source_receipts")
-    if not isinstance(sources,list) or not isinstance(receipts,list):return False
+    cited_sources=len(sources) if isinstance(sources,list) else 0
+    required=2
+
+    def result(passed:bool,reason:str="",domain:str="unknown",matched:int=0,domains:int=0)->dict[str,Any]:
+        return {
+            "passed":passed,
+            "reason":reason,
+            "domain":domain,
+            "cited_sources":cited_sources,
+            "matched_receipts":matched,
+            "independent_domains":domains,
+            "required_independent_domains":required,
+        }
+
+    if not isinstance(sources,list):return result(False,"citation_url_invalid")
+    if not isinstance(receipts,list):return result(False,"receipt_missing")
     receipt_by_url={r.get("url"):r for r in receipts if isinstance(r,dict)}
+    matched=0
     domains:set[str]=set()
     for source in sources:
-        if not isinstance(source,dict):return False
+        if not isinstance(source,dict):return result(False,"citation_url_invalid",matched=matched,domains=len(domains))
         url=source.get("url")
-        receipt=receipt_by_url.get(url)
-        if not isinstance(url,str) or not isinstance(receipt,dict):return False
-        if source.get("title")!=receipt.get("title") or source.get("published_at")!=receipt.get("published_at"):return False
-        if not re.fullmatch(r"[0-9a-f]{64}",str(receipt.get("content_sha256") or "")):return False
+        if not isinstance(url,str):
+            return result(False,"citation_url_invalid",matched=matched,domains=len(domains))
         domain=urllib.parse.urlparse(url).netloc.lower()
-        if not domain:return False
+        if not domain:return result(False,"citation_domain_missing",matched=matched,domains=len(domains))
+        receipt=receipt_by_url.get(url)
+        if not isinstance(receipt,dict):return result(False,"receipt_missing",domain,matched,len(domains))
+        matched+=1
+        if source.get("title")!=receipt.get("title") or source.get("published_at")!=receipt.get("published_at"):
+            return result(False,"receipt_metadata_mismatch",domain,matched,len(domains))
+        if not re.fullmatch(r"[0-9a-f]{64}",str(receipt.get("content_sha256") or "")):
+            return result(False,"receipt_hash_malformed",domain,matched,len(domains))
         domains.add(domain)
-    return len(domains)>=2
+    if len(domains)<required:
+        reason="duplicate_domain" if cited_sources>=required and len(domains)==1 else "independent_sources_insufficient"
+        domain=next(iter(domains),"unknown")
+        return result(False,reason,domain,matched,len(domains))
+    return result(True,matched=matched,domains=len(domains))
+
+
+def verify_sources(c:dict[str,Any])->bool:
+    """Backward-compatible boolean receipt-validation API."""
+    return bool(source_verification_result(c)["passed"])
+
+
+def record_source_verification_diagnostic(
+    validation:dict[str,Any],
+    path:Path|None=None,
+    now:str|None=None,
+)->None:
+    """Persist a strict failure projection without URLs, hashes, or raw errors."""
+    if validation.get("passed") is True:return
+    target=path or ROOT/"private"/"research_diagnostics.jsonl"
+    target.parent.mkdir(parents=True,exist_ok=True)
+    reason=validation.get("reason")
+    if reason not in SOURCE_VERIFICATION_REASONS:reason="source_verification_failed"
+    domain=str(validation.get("domain") or "unknown").lower()
+    if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
+
+    def bounded_count(name:str)->int:
+        value=validation.get(name)
+        return value if isinstance(value,int) and not isinstance(value,bool) and 0<=value<=100 else 0
+
+    row={
+        "timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
+        "stage":"source_verification",
+        "reason":reason,
+        "domain":domain,
+        "cited_sources":bounded_count("cited_sources"),
+        "matched_receipts":bounded_count("matched_receipts"),
+        "independent_domains":bounded_count("independent_domains"),
+        "required_independent_domains":bounded_count("required_independent_domains"),
+    }
+    with target.open("a",encoding="utf-8") as f:
+        f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
 
 def extract_json(text:str)->dict[str,Any]:
     d=json.JSONDecoder()
@@ -600,8 +669,12 @@ def main_with_args(a:argparse.Namespace)->int:
         preflight=candidate_preflight(c,cfg)
         if preflight:print("BLOCKER "+",".join(preflight));return 2
         if not qualified(c,cfg): print("BLOCKER candidate_failed_qualification"); return 2
-        if not a.dry_run_fixture and not verify_sources(c):
-            raise ResearchFailure("research_source_verification_failed")
+        if not a.dry_run_fixture:
+            verification=source_verification_result(c)
+            if not verification["passed"]:
+                try:record_source_verification_diagnostic(verification)
+                except OSError:pass
+                raise ResearchFailure("research_source_verification_failed")
         c.pop("_source_receipts",None)
         c["sources_verified_at"]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
         c["candidate_id"]=hashlib.sha256(f"{c['symbol']}|{c['researched_at']}".encode()).hexdigest()[:20]

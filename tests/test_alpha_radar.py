@@ -399,6 +399,63 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertTrue(all(len(receipt["content_sha256"])==64 for receipt in candidate["_source_receipts"]))
         self.assertTrue(alpha_radar.verify_sources(candidate))
 
+    def test_source_verification_result_types_missing_receipt_with_counts(self):
+        candidate={
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+            ],
+        }
+
+        self.assertEqual(alpha_radar.source_verification_result(candidate),{
+            "passed":False,
+            "reason":"receipt_missing",
+            "domain":"b.example",
+            "cited_sources":2,
+            "matched_receipts":1,
+            "independent_domains":1,
+            "required_independent_domains":2,
+        })
+
+    def test_source_verification_preserves_legacy_acceptance_of_matching_non_http_url(self):
+        candidate={
+            "sources":[
+                {"url":"ftp://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"ftp://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
+            ],
+        }
+
+        self.assertTrue(alpha_radar.source_verification_result(candidate)["passed"])
+        self.assertTrue(alpha_radar.verify_sources(candidate))
+
+    def test_record_source_verification_diagnostic_persists_strict_private_projection(self):
+        result={
+            "passed":False,"reason":"receipt_metadata_mismatch","domain":"news.example",
+            "cited_sources":3,"matched_receipts":2,"independent_domains":1,
+            "required_independent_domains":2,"url":"https://news.example/private",
+            "content_sha256":"secret","raw_error":"secret traceback",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"private"/"research_diagnostics.jsonl"
+            alpha_radar.record_source_verification_diagnostic(
+                result,path=path,now="2026-09-10T13:30:00Z"
+            )
+            row=json.loads(path.read_text())
+
+        self.assertEqual(row,{
+            "timestamp":"2026-09-10T13:30:00Z","stage":"source_verification",
+            "reason":"receipt_metadata_mismatch","domain":"news.example",
+            "cited_sources":3,"matched_receipts":2,"independent_domains":1,
+            "required_independent_domains":2,
+        })
+
     def test_verify_sources_uses_immutable_receipts_without_network_refetch(self):
         candidate={
             "sources":[
@@ -460,27 +517,88 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertNotIn("_source_receipts",persisted)
         self.assertIn("sources_verified_at",persisted)
 
-    def test_main_types_source_verification_and_persistence_failures(self):
+    def test_main_records_typed_verification_detail_without_changing_public_failure(self):
         candidate={
             "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-            "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+            ],
+            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
+            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
+        }
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"fresh_verified_candidate",return_value=None
+        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+            alpha_radar,"candidate_preflight",return_value=[]
+        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
+            alpha_radar,"record_source_verification_diagnostic"
+        ) as record, patch.object(alpha_radar,"append") as append, contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+
+        self.assertEqual(rc,3)
+        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_source_verification_failed")
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[0]["reason"],"receipt_missing")
+        append.assert_not_called()
+
+    def test_main_preserves_source_verification_failure_when_diagnostic_write_fails(self):
+        candidate={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+            ],
+            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
+            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
+        }
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"fresh_verified_candidate",return_value=None
+        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+            alpha_radar,"candidate_preflight",return_value=[]
+        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
+            alpha_radar,"record_source_verification_diagnostic",side_effect=OSError("disk")
+        ), patch.object(alpha_radar,"append") as append, contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+
+        self.assertEqual(rc,3)
+        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_source_verification_failed")
+        append.assert_not_called()
+
+    def test_main_types_candidate_persistence_failure(self):
+        candidate={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
+            ],
             "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-05T14:00:00Z",
             "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
             "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
         }
-        for verification,append_error,expected in (
-            (False,None,"SYSTEM_FAILURE research_source_verification_failed"),
-            (True,OSError("disk"),"SYSTEM_FAILURE research_persistence_failure"),
-        ):
-            out=io.StringIO()
-            with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-                alpha_radar,"fresh_verified_candidate",return_value=None
-            ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
-                alpha_radar,"verify_sources",return_value=verification
-            ), patch.object(alpha_radar,"append",side_effect=append_error), contextlib.redirect_stdout(out):
-                rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-            self.assertEqual(rc,3)
-            self.assertEqual(out.getvalue().strip(),expected)
+        out=io.StringIO()
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"fresh_verified_candidate",return_value=None
+        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+            alpha_radar,"append",side_effect=OSError("disk")
+        ), contextlib.redirect_stdout(out):
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual(rc,3)
+        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_persistence_failure")
 
     def test_main_reports_typed_research_timeout(self):
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", alpha_radar.ROOT), \
