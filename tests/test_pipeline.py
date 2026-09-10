@@ -36,6 +36,26 @@ class PipelineTests(unittest.TestCase):
         friday=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
         self.assertFalse(alpha_radar.qualified(candidate,cfg,now=friday))
 
+    def test_radar_accepts_verified_past_earnings_calendar_date(self):
+        candidate={
+            "symbol":"GME","price":25,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[{"url":"https://www.sec.gov/a"},{"url":"https://news.example/b"}],
+            "earnings_event_at":"2026-09-08","researched_at":"2026-09-10T12:32:00Z",
+            "setup_type":"post_earnings_drift","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"post-report repricing window",
+        }
+        cfg={"min_price_usd":10,"max_position_usd":500,"earnings_blackout_sessions":2}
+        now=dt.datetime(2026,9,10,12,32,tzinfo=dt.timezone.utc)
+        self.assertTrue(alpha_radar.qualified(candidate,cfg,now=now))
+
+    def test_date_only_earnings_today_remains_in_blackout(self):
+        base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
+        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
+        now=dt.datetime(2026,9,10,12,32,tzinfo=dt.timezone.utc)
+        self.assertEqual(alpha_radar.candidate_preflight(
+            {**base,"earnings_event_at":"2026-09-10"},cfg,now
+        ),["near_term_earnings"])
+
     def test_candidate_preflight_types_earnings_dead_ends(self):
         base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
         cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
@@ -46,11 +66,14 @@ class PipelineTests(unittest.TestCase):
         ),["near_term_earnings"])
 
     def test_research_prompt_requires_resolved_non_blackout_earnings(self):
-        prompt=alpha_radar.research_prompt({"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2})
-        self.assertNotIn("pre- or post-earnings",prompt.lower())
-        self.assertIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt.lower())
-        self.assertIn("cannot verify the earnings timestamp",prompt.lower())
-        self.assertIn("within 2 exchange sessions",prompt.lower())
+        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
+        for prompt in (alpha_radar.research_prompt(cfg),alpha_radar.synthesis_prompt("",[],cfg)):
+            prompt=prompt.lower()
+            self.assertNotIn("pre- or post-earnings",prompt)
+            self.assertIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt)
+            self.assertIn("verified yyyy-mm-dd calendar date",prompt)
+            self.assertIn("do not require a clock time or timezone",prompt)
+            self.assertIn("within 2 exchange sessions",prompt)
 
     def test_candidate_preflight_rejects_price_horizon_and_setup_dead_ends(self):
         base={
@@ -115,7 +138,7 @@ class PipelineTests(unittest.TestCase):
         prompt = alpha_radar.research_prompt({"max_position_usd": 500, "allow_fractional_shares": False})
         self.assertIn("one whole share must cost no more than $500", prompt.lower())
 
-    def test_research_prompt_requests_timestamp_not_model_counted_sessions(self):
+    def test_research_prompt_requests_date_not_model_counted_sessions(self):
         prompt = alpha_radar.research_prompt()
         self.assertIn("earnings_event_at", prompt)
         self.assertNotIn("earnings_sessions_away", prompt)

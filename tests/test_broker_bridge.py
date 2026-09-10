@@ -59,11 +59,28 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(result["trading_sessions"], ["2026-09-01", "2026-09-02", "2026-09-03"])
 
+    async def test_snapshot_accepts_date_only_earnings_and_counts_exchange_sessions(self):
+        with patch("broker_mcp_bridge.datetime", _FixedDateTime), patch(
+            "broker_mcp_bridge.consolidated_daily_bars", return_value=[{"volume": 12_000_000}]
+        ):
+            result = await broker_mcp_bridge.operation(
+                _FakeAlpaca(), "snapshot", {
+                    "symbol": "AAPL", "earnings_event_at": "2026-09-03",
+                },
+            )
+        self.assertEqual(result["earnings_status"], "upcoming")
+        self.assertEqual(result["earnings_sessions_away"], 2)
+
     def test_reported_earnings_event_is_not_treated_as_upcoming(self):
         status, sessions = broker_mcp_bridge.earnings_state(
             "2026-09-01T20:05:00Z", [], datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
         )
         self.assertEqual((status, sessions), ("reported", None))
+
+    def test_date_only_past_event_is_reported_but_same_day_stays_upcoming(self):
+        now=datetime(2026,9,2,14,0,tzinfo=timezone.utc)
+        self.assertEqual(broker_mcp_bridge.earnings_state("2026-09-01",[],now),("reported",None))
+        self.assertEqual(broker_mcp_bridge.earnings_state("2026-09-02",[],now),("upcoming",0))
 
     def test_upcoming_earnings_sessions_are_counted_from_broker_calendar(self):
         calendar = [{"date": "2026-09-02"}, {"date": "2026-09-03"}, {"date": "2026-09-04"}]

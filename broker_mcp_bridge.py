@@ -5,7 +5,7 @@ Only this process receives Alpaca credentials. It emits broker data/order
 responses as JSON. It never calls a decision model.
 """
 from __future__ import annotations
-import asyncio,json,sys
+import asyncio,json,re,sys
 from datetime import datetime,timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -67,15 +67,20 @@ def symbol_bars(x:Any,symbol:str)->list[dict[str,Any]]:
     return []
 
 def earnings_state(event_at:Any,calendar:Any,now:datetime|None=None)->tuple[str,int|None]:
-    """Classify a sourced earnings timestamp and count broker-calendar sessions."""
+    """Classify a sourced earnings date/time and count broker-calendar sessions."""
     try:
-        event=datetime.fromisoformat(str(event_at).replace("Z","+00:00"))
-        if event.tzinfo is None:raise ValueError
+        raw=str(event_at)
         current=now or datetime.now(timezone.utc)
-        if event<=current:return "reported",None
         ny=ZoneInfo("America/New_York")
         current_date=current.astimezone(ny).date()
-        event_date=event.astimezone(ny).date()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}",raw):
+            event_date=datetime.fromisoformat(raw).date()
+            if event_date<current_date:return "reported",None
+        else:
+            event=datetime.fromisoformat(raw.replace("Z","+00:00"))
+            if event.tzinfo is None:raise ValueError
+            if event<=current:return "reported",None
+            event_date=event.astimezone(ny).date()
         if event_date==current_date:return "upcoming",0
         rows=listish(calendar)
         session_dates=set()
@@ -108,9 +113,11 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         calendar_end=None
         for raw in (event_at,planned_exit_at):
             try:
-                parsed=datetime.fromisoformat(str(raw).replace("Z","+00:00"))
-                if parsed.tzinfo is not None and parsed.date()>=now.date():
-                    calendar_end=max(calendar_end,parsed.date()) if calendar_end else parsed.date()
+                value=str(raw)
+                parsed=datetime.fromisoformat(value.replace("Z","+00:00"))
+                parsed_date=parsed.date()
+                if (parsed.tzinfo is not None or re.fullmatch(r"\d{4}-\d{2}-\d{2}",value)) and parsed_date>=now.date():
+                    calendar_end=max(calendar_end,parsed_date) if calendar_end else parsed_date
             except Exception:
                 pass
         if calendar_end is not None:
