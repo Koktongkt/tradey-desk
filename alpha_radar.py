@@ -92,15 +92,41 @@ def qualified(c:dict[str,Any],cfg:dict[str,Any],now:dt.datetime|None=None)->bool
     )
     return (c.get("instrument_type")=="cash_equity" and isinstance(c.get("price"),(int,float)) and c["price"]>=cfg["min_price_usd"] and whole_share_affordable and isinstance(c.get("spy_price"),(int,float)) and c["spy_price"]>0 and len(urls)>=2 and len(domains)>=2 and earnings_intake_eligible(c,cfg,now) and c.get("setup_type") in setup_types and valid_exit and bool(str(c.get("horizon_rationale") or "").strip()))
 
+def build_source_receipts(evidence:list[dict[str,Any]])->list[dict[str,str]]:
+    """Create immutable receipts from pages that passed deterministic quality gates."""
+    receipts=[]
+    for page in evidence:
+        url=str(page.get("url") or "")
+        title=str(page.get("title") or "")
+        published_at=str(page.get("published_at") or "")
+        text=str(page.get("text") or "")
+        receipts.append({
+            "url":url,
+            "title":title,
+            "published_at":published_at,
+            "content_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        })
+    return receipts
+
+
 def verify_sources(c:dict[str,Any])->bool:
-    ok=0
-    for s in c.get("sources",[]):
-        try:
-            req=urllib.request.Request(s["url"],headers={"User-Agent":"TradeyDesk/1.0"})
-            with urllib.request.urlopen(req,timeout=10) as r:
-                if 200<=r.status<400:ok+=1
-        except Exception:pass
-    return ok>=2
+    """Validate model citations against immutable deterministic fetch receipts."""
+    sources=c.get("sources")
+    receipts=c.get("_source_receipts")
+    if not isinstance(sources,list) or not isinstance(receipts,list):return False
+    receipt_by_url={r.get("url"):r for r in receipts if isinstance(r,dict)}
+    domains:set[str]=set()
+    for source in sources:
+        if not isinstance(source,dict):return False
+        url=source.get("url")
+        receipt=receipt_by_url.get(url)
+        if not isinstance(url,str) or not isinstance(receipt,dict):return False
+        if source.get("title")!=receipt.get("title") or source.get("published_at")!=receipt.get("published_at"):return False
+        if not re.fullmatch(r"[0-9a-f]{64}",str(receipt.get("content_sha256") or "")):return False
+        domain=urllib.parse.urlparse(url).netloc.lower()
+        if not domain:return False
+        domains.add(domain)
+    return len(domains)>=2
 
 def extract_json(text:str)->dict[str,Any]:
     d=json.JSONDecoder()
@@ -420,6 +446,22 @@ def live_research(cfg:dict[str,Any])->dict[str,Any]:
         try:record_synthesis_none(candidate,synthesis_prompt_text)
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         return candidate
+    candidate.pop("_source_receipts",None)
+    receipts=build_source_receipts(evidence)
+    receipt_by_url={receipt["url"]:receipt for receipt in receipts}
+    normalized_sources=[]
+    for source in candidate.get("sources",[]):
+        if not isinstance(source,dict):
+            normalized_sources.append(source)
+            continue
+        source_url=source.get("url")
+        receipt=receipt_by_url.get(source_url) if isinstance(source_url,str) else None
+        normalized_sources.append(
+            {key:receipt[key] for key in ("url","title","published_at")}
+            if receipt is not None else source
+        )
+    candidate["sources"]=normalized_sources
+    candidate["_source_receipts"]=receipts
     symbol=str(candidate.get("symbol") or "").upper()
     candidate.pop("price",None)
     candidate.pop("spy_price",None)
@@ -560,6 +602,7 @@ def main_with_args(a:argparse.Namespace)->int:
         if not qualified(c,cfg): print("BLOCKER candidate_failed_qualification"); return 2
         if not a.dry_run_fixture and not verify_sources(c):
             raise ResearchFailure("research_source_verification_failed")
+        c.pop("_source_receipts",None)
         c["sources_verified_at"]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
         c["candidate_id"]=hashlib.sha256(f"{c['symbol']}|{c['researched_at']}".encode()).hexdigest()[:20]
         c["dossier_hash"]=hashlib.sha256(json.dumps(c,sort_keys=True,separators=(",",":")).encode()).hexdigest()

@@ -136,7 +136,9 @@ class AlphaRadarTests(unittest.TestCase):
                 raise TimeoutError("read timed out")
             return {"url": url, "title": "Current", "text": "usable evidence", "published_at": None}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+            alpha_radar, "fetch_source_via_gateway", return_value=None
+        ):
             pages = alpha_radar.gather_evidence(
                 ["https://slow.example/a", "https://ok.example/b"],
                 diagnostics=diagnostics,
@@ -389,6 +391,29 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(candidate["spy_price"],770.19)
         self.assertEqual(candidate["market_prices_at"],"2026-09-04T20:00:00Z")
         self.assertEqual(candidate["market_price_feed"],"massive_consolidated_completed_daily")
+        self.assertEqual(candidate["sources"],[
+            {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+        ])
+        self.assertEqual(len(candidate["_source_receipts"]),2)
+        self.assertTrue(all(len(receipt["content_sha256"])==64 for receipt in candidate["_source_receipts"]))
+        self.assertTrue(alpha_radar.verify_sources(candidate))
+
+    def test_verify_sources_uses_immutable_receipts_without_network_refetch(self):
+        candidate={
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
+            ],
+        }
+
+        with patch.object(alpha_radar.urllib.request,"urlopen",side_effect=TimeoutError("transient")) as refetch:
+            self.assertTrue(alpha_radar.verify_sources(candidate))
+        refetch.assert_not_called()
 
     def test_live_research_types_synchronized_market_data_failure(self):
         scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
@@ -405,6 +430,35 @@ class AlphaRadarTests(unittest.TestCase):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_market_data_unavailable")
+
+    def test_main_strips_private_source_receipts_before_persisting(self):
+        candidate={
+            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+            "sources":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+            ],
+            "_source_receipts":[
+                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
+            ],
+            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
+            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
+        }
+        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+            alpha_radar,"fresh_verified_candidate",return_value=None
+        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+            alpha_radar,"candidate_preflight",return_value=[]
+        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
+            alpha_radar,"append"
+        ) as append:
+            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+
+        self.assertEqual(rc,0)
+        persisted=append.call_args.args[0]
+        self.assertNotIn("_source_receipts",persisted)
+        self.assertIn("sources_verified_at",persisted)
 
     def test_main_types_source_verification_and_persistence_failures(self):
         candidate={
