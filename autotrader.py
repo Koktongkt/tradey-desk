@@ -552,7 +552,9 @@ def validate_order_with_details(
     if earnings_status=="reported":
         pass
     elif earnings_status=="upcoming" and isinstance(earnings,int) and not isinstance(earnings,bool) and earnings>=0:
-        if earnings <= cfg["earnings_blackout_sessions"]:
+        holding=order.get("holding_sessions")
+        holding_sessions=holding if isinstance(holding,int) and not isinstance(holding,bool) and holding>=0 else 0
+        if earnings <= holding_sessions + cfg["earnings_blackout_sessions"]:
             e.append("near_term_earnings")
             d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
     else:e.append("earnings_unknown")

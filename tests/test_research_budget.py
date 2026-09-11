@@ -4,7 +4,8 @@ and scout-reliability hardening.
 Timeouts must be calibrated against OBSERVED provider latency, and the outer cycle
 budget must cover the serialized worst case of every research stage:
 
-    model scout 360 + deterministic fetch/fallback ~100 + synthesis 120 + margin
+    model scout 360 + deterministic fetch/fallback 110 + synthesis 120
+    + deterministic SEC lookup 45 + 85-second outer margin
 """
 import json
 import subprocess
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import alpha_radar
+import earnings_calendar
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
@@ -28,14 +30,15 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertEqual(command[budget_index], "180")
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # scout 360 + fetch+retry+fallback 110 + synthesis 120 + 70s margin
+        # 360 + 110 + 120 + SEC 45 = 635; outer 720 leaves 85 seconds.
+        self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
         self.assertIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=660',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=720',
             source,
         )
         self.assertNotIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=600',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=660',
             source,
         )
 

@@ -72,7 +72,7 @@ def main()->int:
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
     daily=a.mode in {"premarket","postclose","dashboard"}
     if daily and completed_today(a.mode):audit_result(a.mode,"schedule",0,"DECISION skipped already_completed");return 0
-    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=660,attempts=1,audit_mode=a.mode,audit_stage="research")
+    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=720,attempts=1,audit_mode=a.mode,audit_stage="research")
     elif a.mode=="autotrader":rc=execute([sys.executable,str(ROOT/"autotrader.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="execution")
     elif a.mode=="postclose":
         rc=execute([sys.executable,str(ROOT/"candidate_outcomes.py")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="outcome_measurement")

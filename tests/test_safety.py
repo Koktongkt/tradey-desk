@@ -476,6 +476,11 @@ class TradeySafetyTests(unittest.TestCase):
         snap = dict(self.snapshot, earnings_status="upcoming", earnings_sessions_away=2)
         self.assertIn("near_term_earnings", autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0))
 
+    def test_upcoming_earnings_during_holding_period_plus_buffer_are_rejected(self):
+        snap = dict(self.snapshot, earnings_status="upcoming", earnings_sessions_away=6)
+        order = dict(self.decision, holding_sessions=5)
+        self.assertIn("near_term_earnings", autotrader.validate_order(order, snap, self.cfg, daily_orders=0))
+
     def test_unknown_earnings_status_fails_closed(self):
         snap = dict(self.snapshot, earnings_status="unknown", earnings_sessions_away=None)
         self.assertIn("earnings_unknown", autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0))

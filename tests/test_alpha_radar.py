@@ -364,6 +364,34 @@ class AlphaRadarTests(unittest.TestCase):
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_persistence_failure")
 
+    def test_live_research_applies_deterministic_earnings_resolution_before_market_data(self):
+        scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
+        model_candidate={
+            "symbol":"XYZ","instrument_type":"cash_equity",
+            "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
+            "planned_exit_at":"2026-09-25T20:00:00Z",
+        }
+        synth=subprocess.CompletedProcess([],0,json.dumps(model_candidate),"")
+        pages=[
+            {"url":"https://a.example/1","title":"A","text":"alpha","published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/2","title":"B","text":"beta","published_at":"2026-09-08T15:00:00Z"},
+        ]
+        resolved={**model_candidate,"earnings_event_at":"2026-11-30","earnings_date_status":"estimated"}
+        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+            alpha_radar,"gather_evidence",return_value=pages
+        ), patch.object(
+            alpha_radar,"resolve_candidate_earnings",return_value=resolved
+        ) as resolver, patch.object(
+            alpha_radar,"synchronized_completed_close_prices",return_value={"price":100.0,"spy_price":500.0}
+        ):
+            candidate=alpha_radar.live_research({"max_position_usd":500})
+
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.args[0]["symbol"],"XYZ")
+        self.assertEqual(resolver.call_args.args[1],pages)
+        self.assertEqual(candidate["earnings_event_at"],"2026-11-30")
+        self.assertEqual(candidate["earnings_date_status"],"estimated")
+
     def test_live_research_replaces_model_prices_with_synchronized_market_data(self):
         scout=subprocess.CompletedProcess([],0,"https://a.example/1\nhttps://b.example/2\n","")
         model_candidate={
@@ -381,6 +409,8 @@ class AlphaRadarTests(unittest.TestCase):
                 {"url":"https://a.example/1","title":"A","text":"a","published_at":"2026-09-08T14:57:00Z"},
                 {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
+        ), patch.object(
+            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,_evidence:candidate
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",return_value=market_prices
         ) as prices:
@@ -480,6 +510,8 @@ class AlphaRadarTests(unittest.TestCase):
                 {"url":"https://a.example/1","title":"A","text":"a","published_at":"2026-09-08T14:57:00Z"},
                 {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
+        ), patch.object(
+            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,_evidence:candidate
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",
             side_effect=RuntimeError("massive_synchronized_prices_unavailable"),
@@ -637,7 +669,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=660", source)
+        self.assertIn("timeout_seconds=720", source)
         self.assertIn("attempts=1", source)
 
 

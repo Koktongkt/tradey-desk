@@ -112,10 +112,10 @@ class CycleTests(unittest.TestCase):
             run_cycle.mark_completed("radar",state=state)
             self.assertTrue(run_cycle.completed_today("radar",state=state))
 
-    def test_radar_research_runs_under_a_660_second_budget(self):
+    def test_radar_research_runs_under_a_720_second_budget(self):
         with patch.object(sys,"argv",["run_cycle.py","radar"]), \
              patch("run_cycle.in_window",return_value=True), \
              patch.object(run_cycle,"execute",return_value=0) as call:
             run_cycle.main()
-        self.assertEqual(call.call_args.kwargs["timeout_seconds"],660)
+        self.assertEqual(call.call_args.kwargs["timeout_seconds"],720)
 if __name__=="__main__":unittest.main()

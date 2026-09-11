@@ -56,6 +56,18 @@ class PipelineTests(unittest.TestCase):
             {**base,"earnings_event_at":"2026-09-10"},cfg,now
         ),["near_term_earnings"])
 
+    def test_radar_blocks_earnings_inside_holding_period_plus_blackout_buffer(self):
+        candidate={
+            "price":100,"setup_type":"breakout",
+            "planned_exit_at":"2026-09-25T20:00:00Z",
+            "earnings_event_at":"2026-09-29",
+            "earnings_date_status":"estimated",
+        }
+        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
+        now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc)
+
+        self.assertEqual(alpha_radar.candidate_preflight(candidate,cfg,now),["near_term_earnings"])
+
     def test_candidate_preflight_types_earnings_dead_ends(self):
         base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
         cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
@@ -65,15 +77,14 @@ class PipelineTests(unittest.TestCase):
             {**base,"earnings_event_at":"2026-09-08T20:00:00Z"},cfg,friday
         ),["near_term_earnings"])
 
-    def test_research_prompt_requires_resolved_non_blackout_earnings(self):
+    def test_research_prompt_defers_earnings_resolution_to_deterministic_code(self):
         cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
         for prompt in (alpha_radar.research_prompt(cfg),alpha_radar.synthesis_prompt("",[],cfg)):
             prompt=prompt.lower()
             self.assertNotIn("pre- or post-earnings",prompt)
-            self.assertIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt)
-            self.assertIn("verified yyyy-mm-dd calendar date",prompt)
-            self.assertIn("do not require a clock time or timezone",prompt)
-            self.assertIn("within 2 exchange sessions",prompt)
+            self.assertNotIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt)
+            self.assertIn("deterministic sec resolver",prompt)
+            self.assertIn("do not decline solely because an earnings date is unavailable",prompt)
 
     def test_candidate_preflight_rejects_price_horizon_and_setup_dead_ends(self):
         base={
@@ -83,7 +94,7 @@ class PipelineTests(unittest.TestCase):
         cfg={"max_position_usd":500,"allow_fractional_shares":False}
         now=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
         self.assertEqual(alpha_radar.candidate_preflight({**base,"price":500.01},cfg,now),["whole_share_unaffordable"])
-        self.assertEqual(alpha_radar.candidate_preflight({**base,"planned_exit_at":"2026-10-30T20:00:00Z"},cfg,now),["invalid_horizon"])
+        self.assertEqual(alpha_radar.candidate_preflight({**base,"planned_exit_at":"2026-10-30T20:00:00Z"},cfg,now),["invalid_horizon","near_term_earnings"])
         self.assertEqual(alpha_radar.candidate_preflight({**base,"setup_type":"strategic_rerating","planned_exit_at":"2026-09-08T20:00:00Z"},cfg,now),["unsupported_technical_setup"])
         self.assertEqual(alpha_radar.candidate_preflight(base,cfg,now),[])
 
