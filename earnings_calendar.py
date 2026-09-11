@@ -212,21 +212,35 @@ def _future_confirmation_url(
         if not isinstance(page, dict):
             continue
         url, text = page.get("url"), _plain_text(str(page.get("text") or ""))
+        if not isinstance(url, str):
+            continue
+        domain = ""
+        try:
+            parsed_url = urllib.parse.urlparse(url)
+            domain = str(parsed_url.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+            labels = domain.split(".")
+            valid_domain = (
+                parsed_url.scheme.lower() in {"http", "https"}
+                and len(domain) <= 253 and len(labels) >= 2
+                and all(re.fullmatch(r"(?!-)[a-z0-9-]{1,63}(?<!-)", label) for label in labels)
+            )
+        except (UnicodeError, ValueError):
+            valid_domain = False
+        if not valid_domain:
+            continue
         for sentence in re.split(r"[.\n]", text):
             lowered = sentence.lower()
             if (
                 (month_text in lowered or iso_text in lowered)
                 and re.search(r"\b(?:earnings|financial\s+results|quarterly\s+results|results\s+of\s+operations)\b", lowered)
                 and re.search(r"\b(?:will|scheduled|expects?|plans?|to\s+report|to\s+announce)\b", lowered)
-                and isinstance(url, str) and url.startswith(("http://", "https://"))
             ):
-                domain = urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
                 confirmations.append(url)
                 domains.add(domain)
                 if domain == "sec.gov" or domain.endswith(".sec.gov"):
                     return event_date.isoformat(), url
                 break
-    if len(domains) >= 2:
+    if domains:
         return event_date.isoformat(), confirmations[0]
     return None
 

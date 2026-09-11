@@ -181,7 +181,7 @@ class EarningsCalendarTests(unittest.TestCase):
         self.assertEqual(resolved["earnings_date_status"], "confirmed")
         self.assertEqual(resolved["earnings_confirmation_url"], "https://issuer.example/release")
 
-    def test_single_non_sec_page_cannot_confirm_future_date(self):
+    def test_single_non_sec_page_confirms_future_date(self):
         resolved=earnings_calendar.resolve_candidate_earnings(
             {"symbol":"XYZ","earnings_event_at":"2026-12-10"},
             evidence=[{
@@ -192,8 +192,27 @@ class EarningsCalendarTests(unittest.TestCase):
             now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc),
         )
 
-        self.assertNotIn("earnings_event_at",resolved)
-        self.assertEqual(resolved["earnings_date_status"],"unknown")
+        self.assertEqual(resolved["earnings_event_at"],"2026-12-10")
+        self.assertEqual(resolved["earnings_date_status"],"confirmed")
+        self.assertEqual(resolved["earnings_confirmation_url"],"https://calendar.example/xyz")
+
+    def test_single_page_confirmation_keeps_url_and_language_guards(self):
+        cases = [
+            ("https://", "The Company will report quarterly results on December 10, 2026."),
+            ("https://not a host/x", "The Company will report quarterly results on December 10, 2026."),
+            ("file:///tmp/x", "The Company will report quarterly results on December 10, 2026."),
+            ("https://calendar.example/xyz", "The Company reported quarterly results on December 10, 2026."),
+            ("https://calendar.example/xyz", "The Company will hold an investor event on December 10, 2026."),
+        ]
+        for url, text in cases:
+            with self.subTest(url=url, text=text):
+                resolved=earnings_calendar.resolve_candidate_earnings(
+                    {"symbol":"XYZ","earnings_event_at":"2026-12-10"},
+                    evidence=[{"url":url,"text":text}], history_loader=lambda _symbol:[],
+                    now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc),
+                )
+                self.assertNotIn("earnings_event_at",resolved)
+                self.assertEqual(resolved["earnings_date_status"],"unknown")
 
     def test_cached_history_avoids_repeat_sec_fetch_within_ttl(self):
         calls=[]
