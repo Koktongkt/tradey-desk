@@ -25,15 +25,20 @@ MONTH_PATTERN = r"(?:January|February|March|April|May|June|July|August|September
 
 def extract_release_date(text: str) -> str | None:
     """Extract a date explicitly tied to issuing earnings/results."""
-    pattern = re.compile(
-        rf"(?is)\bon\s+(?P<date>{MONTH_PATTERN})\b"
-        rf"(?=.{{0,500}}\b(?:issued|released|announced|reported)\b)"
-        rf"(?=.{{0,500}}\b(?:earnings|financial\s+results|results\s+of\s+operations)\b)"
-    )
-    match = pattern.search(text or "")
-    if not match:
+    document = text or ""
+    verb = re.search(r"(?is)\b(?:issued|released|announced|reported)\b", document)
+    if not verb:
         return None
-    if re.search(r"(?i)\bpreliminary\b", (text or "")[match.start():match.start()+500]):
+    if not re.search(r"(?is)\b(?:earnings|results)\b", document[verb.start():verb.end() + 300]):
+        return None
+    window_start = max(0, verb.start() - 300)
+    candidates = list(re.finditer(
+        rf"(?is)\b(?:on\s+)?(?P<date>{MONTH_PATTERN})\b", document[window_start:verb.end()],
+    ))
+    if not candidates:
+        return None
+    match = candidates[-1]
+    if re.search(r"(?i)\bpreliminary\b", document[match.start():match.start() + 500]):
         return None
     return dt.datetime.strptime(match.group("date"), "%B %d, %Y").date().isoformat()
 
