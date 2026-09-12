@@ -18,9 +18,13 @@ MAX_QUARTERLY_INTERVAL_DAYS = 150
 MAX_RELEVANT_FILINGS_SCANNED = 12
 SEC_LOOKUP_BUDGET_SECONDS = 45
 SEC_REQUEST_TIMEOUT_SECONDS = 8
+TRUSTED_SOURCE_TIMEOUT_SECONDS = 8
+NASDAQ_CALENDAR_REQUEST_DELAY_SECONDS = 1.0
 SEC_USER_AGENT = "TradeyDesk/1.0 automated-research"
+TRUSTED_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) automated-research"
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parent / "private" / "earnings_cache.json"
 MONTH_PATTERN = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"
+SHORT_MONTH_PATTERN = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.?\s+\d{1,2},\s+\d{4}"
 
 
 def extract_release_date(text: str) -> str | None:
@@ -29,11 +33,21 @@ def extract_release_date(text: str) -> str | None:
     verb = re.search(r"(?is)\b(?:issued|released|announced|reported)\b", document)
     if not verb:
         return None
-    if not re.search(r"(?is)\b(?:earnings|results)\b", document[verb.start():verb.end() + 300]):
-        return None
+    has_results = re.search(r"(?is)\b(?:earnings|results)\b", document[verb.start():verb.end() + 300])
     window_start = max(0, verb.start() - 300)
+    window_end = verb.end()
+    # 8-K cover pages: "Date of earliest event reported): <date>" — the date
+    # follows the verb and the Item 2.02 results reference appears later.
+    header = re.search(
+        rf"(?is)\bdate\s+of\s+(?:report\s+)?\(?(?:date\s+of\s+)?earliest\s+event\s+reported\)?\s*:?\s*(?P<date>{MONTH_PATTERN})",
+        document,
+    )
+    if header:
+        return dt.datetime.strptime(header.group("date"), "%B %d, %Y").date().isoformat()
+    if not has_results:
+        return None
     candidates = list(re.finditer(
-        rf"(?is)\b(?:on\s+)?(?P<date>{MONTH_PATTERN})\b", document[window_start:verb.end()],
+        rf"(?is)\b(?:on\s+)?(?P<date>{MONTH_PATTERN})\b", document[window_start:window_end],
     ))
     if not candidates:
         return None
@@ -176,84 +190,120 @@ def cached_sec_release_history(
 
 
 def estimate_next_window(release_dates: Iterable[str]) -> dict[str, object] | None:
-    """Estimate a conservative next-release window from at least two dates."""
+    """Estimate the next window from the latest two quarterly release dates.
+
+    Only the two most recent releases matter: if they are subsequent quarterly
+    reports (45-150 days apart), the next event is estimated from that interval
+    alone. Older dates are ignored.
+    """
     dates = sorted({dt.date.fromisoformat(value) for value in release_dates}, reverse=True)
     if len(dates) < 2:
         return None
-    intervals = [(dates[index] - dates[index + 1]).days for index in range(len(dates) - 1)]
-    if not intervals or not all(MIN_QUARTERLY_INTERVAL_DAYS <= value <= MAX_QUARTERLY_INTERVAL_DAYS for value in intervals):
+    interval = (dates[0] - dates[1]).days
+    if not MIN_QUARTERLY_INTERVAL_DAYS <= interval <= MAX_QUARTERLY_INTERVAL_DAYS:
         return None
-    latest = dates[0]
-    earliest = latest + dt.timedelta(days=max(1, min(intervals) - ESTIMATE_BUFFER_DAYS))
-    latest_bound = latest + dt.timedelta(days=max(intervals) + ESTIMATE_BUFFER_DAYS)
+    earliest = dates[0] + dt.timedelta(days=max(1, interval - ESTIMATE_BUFFER_DAYS))
+    latest_bound = dates[0] + dt.timedelta(days=interval + ESTIMATE_BUFFER_DAYS)
     return {
         "earliest": earliest.isoformat(),
         "latest": latest_bound.isoformat(),
-        "history_count": len(dates),
+        "history_count": 2,
     }
 
 
-def _future_confirmation_url(
-    raw_event: object, evidence: list[dict[str, Any]], current: dt.date,
+def stockanalysis_earnings_date(
+    symbol: str,
+    *,
+    get_text: Callable[[str], str] = _get_text,
 ) -> tuple[str, str] | None:
-    if not isinstance(raw_event, str):
+    """Read the machine-published earningsDate field from StockAnalysis.com."""
+    normalized = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,6}", normalized):
         return None
+    url = f"https://stockanalysis.com/stocks/{normalized.lower()}/"
     try:
-        event_date = dt.date.fromisoformat(raw_event) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_event) else dt.datetime.fromisoformat(raw_event.replace("Z", "+00:00")).date()
+        text = get_text(url)
+    except OSError:
+        return None
+    match = re.search(rf'earningsDate"?\s*:\s*"({SHORT_MONTH_PATTERN})"', text)
+    if not match:
+        return None
+    raw = re.sub(r"\s+", " ", match.group(1))
+    try:
+        event_date = dt.datetime.strptime(raw, "%b %d, %Y").date()
     except ValueError:
-        return None
-    if event_date <= current:
-        return None
-    month_text = f"{event_date.strftime('%B')} {event_date.day}, {event_date.year}".lower()
-    iso_text = event_date.isoformat()
-    confirmations: list[str] = []
-    domains: set[str] = set()
-    for page in evidence:
-        if not isinstance(page, dict):
-            continue
-        url, text = page.get("url"), _plain_text(str(page.get("text") or ""))
-        if not isinstance(url, str):
-            continue
-        domain = ""
         try:
-            parsed_url = urllib.parse.urlparse(url)
-            domain = str(parsed_url.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
-            labels = domain.split(".")
-            valid_domain = (
-                parsed_url.scheme.lower() in {"http", "https"}
-                and len(domain) <= 253 and len(labels) >= 2
-                and all(re.fullmatch(r"(?!-)[a-z0-9-]{1,63}(?<!-)", label) for label in labels)
-            )
-        except (UnicodeError, ValueError):
-            valid_domain = False
-        if not valid_domain:
-            continue
-        for sentence in re.split(r"[.\n]", text):
-            lowered = sentence.lower()
-            if (
-                (month_text in lowered or iso_text in lowered)
-                and re.search(r"\b(?:earnings|financial\s+results|quarterly\s+results|results\s+of\s+operations)\b", lowered)
-                and re.search(r"\b(?:will|scheduled|expects?|plans?|to\s+report|to\s+announce)\b", lowered)
-            ):
-                confirmations.append(url)
-                domains.add(domain)
-                if domain == "sec.gov" or domain.endswith(".sec.gov"):
-                    return event_date.isoformat(), url
-                break
-    if domains:
-        return event_date.isoformat(), confirmations[0]
+            event_date = dt.datetime.strptime(raw, "%B %d, %Y").date()
+        except ValueError:
+            return None
+    return event_date.isoformat(), url
+
+
+def nasdaq_earnings_date(
+    symbol: str,
+    horizon_start: dt.date,
+    horizon_end: dt.date,
+    *,
+    get_json: Callable[[str], Any] = _get_json,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[str, str] | None:
+    """Scan the official Nasdaq earnings calendar across the holding horizon."""
+    normalized = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,6}", normalized):
+        return None
+    if horizon_end < horizon_start:
+        return None
+    day = horizon_start
+    while day <= horizon_end:
+        if day.weekday() < 5:
+            url = f"https://api.nasdaq.com/api/calendar/earnings?date={day.isoformat()}"
+            try:
+                payload = get_json(url)
+            except (OSError, ValueError):
+                day += dt.timedelta(days=1)
+                continue
+            rows = payload.get("data", {}).get("rows") or [] if isinstance(payload, dict) else []
+            for row in rows:
+                if isinstance(row, dict) and str(row.get("symbol", "")).upper() == normalized:
+                    return day.isoformat(), url
+            sleep(NASDAQ_CALENDAR_REQUEST_DELAY_SECONDS)
+        day += dt.timedelta(days=1)
     return None
+
+
+def default_trusted_date_loader(
+    symbol: str,
+    horizon_start: dt.date,
+    horizon_end: dt.date,
+    *,
+    cache_path: Path = DEFAULT_CACHE_PATH,
+) -> tuple[str, str] | None:
+    """Either trusted source confirming the next earnings date is sufficient."""
+    from_sa = stockanalysis_earnings_date(symbol)
+    if from_sa is not None:
+        return from_sa
+    try:
+        return nasdaq_earnings_date(
+            symbol, horizon_start, horizon_end,
+            get_json=lambda url: json.loads(_get_text(url)),
+        )
+    except Exception:
+        return None
 
 
 def resolve_candidate_earnings(
     candidate: dict[str, Any],
-    evidence: list[dict[str, Any]],
     *,
+    trusted_date_loader: Callable[[str], tuple[str, str] | None] | None = None,
     history_loader: Callable[[str], list[dict[str, str]]] | None = None,
     cache_path: Path = DEFAULT_CACHE_PATH,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
-    """Replace model-authored event state with deterministic SEC-backed state."""
+    """Replace model-authored event state with deterministic trusted-source state.
+
+    Confirmation comes only from trusted date sources (StockAnalysis /
+    Nasdaq). Arbitrary web-evidence prose never confirms a date.
+    """
     resolved = dict(candidate)
     for key in (
         "previous_earnings_date", "previous_earnings_dates", "earnings_date_status",
@@ -264,7 +314,10 @@ def resolve_candidate_earnings(
     if current_at.tzinfo is None:
         raise ValueError("now_must_be_timezone_aware")
     current = current_at.astimezone(ZoneInfo("America/New_York")).date()
-    confirmed = _future_confirmation_url(candidate.get("earnings_event_at"), evidence, current)
+    confirmed = None
+    if trusted_date_loader is not None:
+        confirmed = trusted_date_loader(str(candidate.get("symbol") or ""))
+    history: list[dict[str, str]] = []
     try:
         if history_loader is None:
             history = cached_sec_release_history(
@@ -286,16 +339,25 @@ def resolve_candidate_earnings(
             continue
         if parsed_date < current:
             past_dates_set.add(value)
+    if confirmed is not None:
+        confirmed_date, confirmation_url = confirmed
+        if dt.date.fromisoformat(confirmed_date) >= current:
+            resolved["earnings_event_at"] = confirmed_date
+            resolved["earnings_confirmation_url"] = confirmation_url
+            resolved["earnings_date_status"] = "confirmed"
+            resolved.pop("estimated_next_earnings_window", None)
+            resolved["earnings_history_count"] = len(past_dates_set)
+            if past_dates_set:
+                past_dates_all = sorted(past_dates_set, reverse=True)
+                resolved["previous_earnings_date"] = past_dates_all[0]
+                resolved["previous_earnings_dates"] = past_dates_all[:4]
+            return resolved
+        past_dates_set.add(confirmed_date)
     past_dates = sorted(past_dates_set, reverse=True)
     if past_dates:
         resolved["previous_earnings_date"] = past_dates[0]
         resolved["previous_earnings_dates"] = past_dates[:4]
     resolved["earnings_history_count"] = len(past_dates)
-    if confirmed is not None:
-        resolved["earnings_event_at"], resolved["earnings_confirmation_url"] = confirmed
-        resolved["earnings_date_status"] = "confirmed"
-        resolved.pop("estimated_next_earnings_window", None)
-        return resolved
     window = estimate_next_window(past_dates[:4])
     if window is None or dt.date.fromisoformat(str(window["earliest"])) <= current:
         resolved.pop("earnings_event_at", None)

@@ -388,7 +388,7 @@ class AlphaRadarTests(unittest.TestCase):
 
         resolver.assert_called_once()
         self.assertEqual(resolver.call_args.args[0]["symbol"],"XYZ")
-        self.assertEqual(resolver.call_args.args[1],pages)
+        self.assertIn("trusted_date_loader",resolver.call_args.kwargs)
         self.assertEqual(candidate["earnings_event_at"],"2026-11-30")
         self.assertEqual(candidate["earnings_date_status"],"estimated")
 
@@ -410,7 +410,7 @@ class AlphaRadarTests(unittest.TestCase):
                 {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
         ), patch.object(
-            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,_evidence:candidate
+            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,**_kw:candidate
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",return_value=market_prices
         ) as prices:
@@ -511,7 +511,7 @@ class AlphaRadarTests(unittest.TestCase):
                 {"url":"https://b.example/2","title":"B","text":"b","published_at":"2026-09-08T15:00:00Z"},
             ]
         ), patch.object(
-            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,_evidence:candidate
+            alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,**_kw:candidate
         ), patch.object(
             alpha_radar,"synchronized_completed_close_prices",
             side_effect=RuntimeError("massive_synchronized_prices_unavailable"),

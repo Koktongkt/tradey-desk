@@ -77,13 +77,15 @@ class PipelineTests(unittest.TestCase):
             {**base,"earnings_event_at":"2026-09-08T20:00:00Z"},cfg,friday
         ),["near_term_earnings"])
 
-    def test_research_prompt_defers_earnings_resolution_to_deterministic_code(self):
+    def test_research_prompt_prioritizes_evidence_backed_past_or_future_earnings_date(self):
         cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
         for prompt in (alpha_radar.research_prompt(cfg),alpha_radar.synthesis_prompt("",[],cfg)):
             prompt=prompt.lower()
             self.assertNotIn("pre- or post-earnings",prompt)
             self.assertNotIn('return {"status":"none","none_reason":"earnings_timestamp_unverified"}',prompt)
-            self.assertIn("deterministic sec resolver",prompt)
+            self.assertIn("deterministic trusted sources recheck and override it",prompt)
+            self.assertIn("deterministic code then resolves or estimates the date itself",prompt)
+            self.assertNotIn("use that evidence-backed date directly",prompt)
             self.assertIn("do not decline solely because an earnings date is unavailable",prompt)
 
     def test_candidate_preflight_rejects_price_horizon_and_setup_dead_ends(self):
