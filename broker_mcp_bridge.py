@@ -5,7 +5,7 @@ Only this process receives Alpaca credentials. It emits broker data/order
 responses as JSON. It never calls a decision model.
 """
 from __future__ import annotations
-import asyncio,json,re,sys
+import asyncio,json,math,re,sys
 from datetime import datetime,timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -66,6 +66,55 @@ def symbol_bars(x:Any,symbol:str)->list[dict[str,Any]]:
             if found:return found
     return []
 
+def finite_number(value:Any,*,positive:bool=False)->float|None:
+    try:number=float(value)
+    except (TypeError,ValueError,OverflowError):return None
+    if not math.isfinite(number) or (positive and number<=0):return None
+    return number
+
+def named_mapping(value:Any,names:tuple[str,...])->dict[str,Any]:
+    if isinstance(value,dict):
+        for name in names:
+            if isinstance(value.get(name),dict):return value[name]
+        for nested in value.values():
+            found=named_mapping(nested,names)
+            if found:return found
+    elif isinstance(value,list):
+        for nested in value:
+            found=named_mapping(nested,names)
+            if found:return found
+    return {}
+
+def snapshot_symbol(value:Any,symbol:str)->dict[str,Any]:
+    if isinstance(value,dict):
+        for key,nested in value.items():
+            if str(key).upper()==symbol.upper() and isinstance(nested,dict):return nested
+        for nested in value.values():
+            found=snapshot_symbol(nested,symbol)
+            if found:return found
+    elif isinstance(value,list):
+        for nested in value:
+            found=snapshot_symbol(nested,symbol)
+            if found:return found
+    return {}
+
+def safe_holding(row:Any)->dict[str,float|str|None]|None:
+    if not isinstance(row,dict):return None
+    symbol=str(row.get("symbol") or "").upper()
+    if not re.fullmatch(r"[A-Z]{1,6}",symbol) or str(row.get("side") or "long").lower()!="long":return None
+    source={
+        "quantity":row.get("qty"),"average_entry_price":row.get("avg_entry_price"),
+        "current_price":row.get("current_price"),"market_value":row.get("market_value"),
+        "cost_basis":row.get("cost_basis"),"unrealized_pl_usd":row.get("unrealized_pl"),
+        "unrealized_return_pct":row.get("unrealized_plpc"),
+        "day_pl_usd":row.get("unrealized_intraday_pl"),"day_return_pct":row.get("change_today"),
+    }
+    values={key:finite_number(value,positive=key in {"quantity","average_entry_price","current_price","market_value","cost_basis"}) for key,value in source.items()}
+    if any(values[key] is None for key in ("quantity","average_entry_price","current_price","market_value","cost_basis")):return None
+    for key in ("unrealized_return_pct","day_return_pct"):
+        if values[key] is not None:values[key]=round(values[key]*100,4)
+    return {"symbol":symbol,**values}
+
 def earnings_state(event_at:Any,calendar:Any,now:datetime|None=None)->tuple[str,int|None]:
     """Classify a sourced earnings date/time and count broker-calendar sessions."""
     try:
@@ -95,6 +144,33 @@ def earnings_state(event_at:Any,calendar:Any,now:datetime|None=None)->tuple[str,
         return "unknown",None
 
 async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
+    if op=="portfolio":
+        now=datetime.now(timezone.utc)
+        account,positions,spy_snapshot=await asyncio.gather(
+            a.call("get_account_info"),
+            a.call("get_all_positions"),
+            a.call("get_stock_snapshot",{"symbol":"SPY","feed":"iex"}),
+        )
+        ac=find_mapping_with_keys(account,{"equity","last_equity"})
+        equity=finite_number(ac.get("equity"),positive=True)
+        last_equity=finite_number(ac.get("last_equity"),positive=True)
+        day_return=round((equity/last_equity-1)*100,4) if equity is not None and last_equity is not None else None
+        day_pl=round(equity-last_equity,4) if equity is not None and last_equity is not None else None
+        spy=snapshot_symbol(spy_snapshot,"SPY")
+        daily=named_mapping(spy,("dailyBar","daily_bar"))
+        previous=named_mapping(spy,("prevDailyBar","prev_daily_bar","previousDailyBar","previous_daily_bar"))
+        spy_current=finite_number(daily.get("c") if daily.get("c") is not None else daily.get("close"),positive=True)
+        spy_previous=finite_number(previous.get("c") if previous.get("c") is not None else previous.get("close"),positive=True)
+        spy_return=round((spy_current/spy_previous-1)*100,4) if spy_current is not None and spy_previous is not None else None
+        holdings=[holding for row in listish(positions) if (holding:=safe_holding(row)) is not None]
+        return {
+            "captured_at":now.isoformat().replace("+00:00","Z"),"feed":"alpaca_paper_iex",
+            "summary":{
+                "day_pl_usd":day_pl,"day_return_pct":day_return,"spy_day_return_pct":spy_return,
+                "day_excess_pct":round(day_return-spy_return,4) if day_return is not None and spy_return is not None else None,
+            },
+            "holdings":sorted(holdings,key=lambda row:str(row["symbol"])),
+        }
     if op in {"snapshot","review"}:
         symbol=str((p.get("order") or {}).get("symbol") or p.get("symbol") or "").upper()
         if not symbol:raise RuntimeError("symbol required")

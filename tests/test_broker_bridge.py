@@ -29,6 +29,56 @@ class _FakeAlpaca:
 
 
 class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_portfolio_returns_sanitized_holdings_and_spy_relative_day_return(self):
+        class PortfolioAlpaca:
+            async def call(self, name, values=None):
+                responses = {
+                    "get_account_info": {
+                        "id": "private-account-id", "account_number": "private-number",
+                        "equity": "10100", "last_equity": "10000",
+                    },
+                    "get_all_positions": [{
+                        "asset_id": "private-asset-id", "symbol": "AAPL", "side": "long",
+                        "qty": "2", "avg_entry_price": "100", "current_price": "110",
+                        "market_value": "220", "cost_basis": "200", "unrealized_pl": "20",
+                        "unrealized_plpc": "0.10", "unrealized_intraday_pl": "4",
+                        "change_today": "0.02",
+                    }],
+                    "get_stock_snapshot": {"AAPL": {}, "SPY": {
+                        "dailyBar": {"c": 505}, "prevDailyBar": {"c": 500},
+                    }},
+                }
+                return responses[name]
+
+        with patch("broker_mcp_bridge.datetime", _FixedDateTime):
+            result = await broker_mcp_bridge.operation(PortfolioAlpaca(), "portfolio", {})
+
+        self.assertEqual(result["summary"]["day_return_pct"], 1.0)
+        self.assertEqual(result["summary"]["spy_day_return_pct"], 1.0)
+        self.assertEqual(result["summary"]["day_excess_pct"], 0.0)
+        self.assertEqual(result["summary"]["day_pl_usd"], 100.0)
+        self.assertEqual(result["holdings"], [{
+            "symbol": "AAPL", "quantity": 2.0, "average_entry_price": 100.0,
+            "current_price": 110.0, "market_value": 220.0, "cost_basis": 200.0,
+            "unrealized_pl_usd": 20.0, "unrealized_return_pct": 10.0,
+            "day_pl_usd": 4.0, "day_return_pct": 2.0,
+        }])
+        self.assertNotIn("private", str(result).lower())
+
+    async def test_portfolio_ignores_invalid_positions_and_keeps_empty_holdings(self):
+        class InvalidPortfolioAlpaca:
+            async def call(self, name, values=None):
+                return {
+                    "get_account_info": {"equity": "10000", "last_equity": "10000"},
+                    "get_all_positions": [{"symbol": "../AAPL", "qty": "nan"}],
+                    "get_stock_snapshot": {"SPY": {"dailyBar": {"c": 0}, "prevDailyBar": {"c": 500}}},
+                }[name]
+
+        result = await broker_mcp_bridge.operation(InvalidPortfolioAlpaca(), "portfolio", {})
+        self.assertEqual(result["holdings"], [])
+        self.assertIsNone(result["summary"]["spy_day_return_pct"])
+        self.assertIsNone(result["summary"]["day_excess_pct"])
+
     async def test_snapshot_uses_massive_volume_and_explicit_provenance(self):
         bars = [{"volume": 12_000_000}]
         with patch("broker_mcp_bridge.consolidated_daily_bars", return_value=bars):

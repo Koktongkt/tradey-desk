@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import alpha_radar
 import candidate_outcomes
@@ -213,6 +214,52 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("broker_order_id",blob)
             self.assertEqual(data["reviews"]["disagreements"],1)
             self.assertEqual(data["performance"]["avg_excess_5s_pct"],1.2)
+
+    def test_dashboard_projects_live_portfolio_without_account_identifiers(self):
+        snapshot = {
+            "captured_at": "2026-09-14T14:00:00Z",
+            "feed": "alpaca_paper_iex",
+            "summary": {
+                "day_pl_usd": 20.2, "day_return_pct": 0.2021,
+                "spy_day_return_pct": -0.1, "day_excess_pct": 0.3021,
+                "private_equity": 10014.87,
+            },
+            "holdings": [{
+                "symbol": "ZS", "quantity": 3, "average_entry_price": 162.79,
+                "current_price": 171.273, "market_value": 513.819,
+                "cost_basis": 488.37, "unrealized_pl_usd": 25.449,
+                "unrealized_return_pct": 5.211, "day_pl_usd": 20.199,
+                "day_return_pct": 4.092, "asset_id": "private-id",
+            }],
+            "account_number": "private-number",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            data = public_dashboard.build_data(Path(td), portfolio_snapshot=snapshot)
+        self.assertEqual(data["live_portfolio"]["summary"], {
+            "day_pl_usd": 20.2, "day_return_pct": 0.2021,
+            "spy_day_return_pct": -0.1, "day_excess_pct": 0.3021,
+        })
+        self.assertEqual(data["live_portfolio"]["holdings"][0]["symbol"], "ZS")
+        blob = json.dumps(data["live_portfolio"])
+        self.assertNotIn("account_number", blob)
+        self.assertNotIn("asset_id", blob)
+        self.assertNotIn("private_equity", blob)
+
+    def test_dashboard_html_shows_live_holdings_and_spy_comparison(self):
+        html = public_dashboard.html_template()
+        self.assertIn("Live portfolio vs SPY", html)
+        self.assertIn("Current Alpaca holdings", html)
+        self.assertIn("d.live_portfolio", html)
+        self.assertIn("day_excess_pct", html)
+        self.assertIn("portfolioRows", html)
+
+    def test_dashboard_live_portfolio_uses_pinned_bridge_runtime(self):
+        completed=subprocess.CompletedProcess([],0,json.dumps({"summary":{},"holdings":[]}),"")
+        with patch("public_dashboard.subprocess.run",return_value=completed) as run:
+            public_dashboard.fetch_live_portfolio(Path("/desk"))
+        command=run.call_args.args[0]
+        self.assertEqual(command[:5],["/usr/local/bin/uv","run","--with","fastmcp<4","python"])
+        self.assertEqual(command[-2:], ["/desk/broker_mcp_bridge.py","portfolio"])
 
     def test_dashboard_explains_simplified_workflow_blockers(self):
         expected_codes = {

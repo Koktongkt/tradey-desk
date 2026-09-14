@@ -634,6 +634,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_main_reports_typed_research_timeout(self):
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", alpha_radar.ROOT), \
+             patch.object(alpha_radar, "reusable_fresh_candidate", return_value=None), \
              patch.object(alpha_radar, "fresh_verified_candidate", return_value=None):
             with patch.object(alpha_radar, "live_research", side_effect=RuntimeError("research_synthesis_timeout")):
                 rc = alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
@@ -660,7 +661,8 @@ class AlphaRadarTests(unittest.TestCase):
             candidates = Path(td) / "candidates.jsonl"
             candidates.write_text(json.dumps(reused) + "\n")
             before = candidates.read_text()
-            with patch.object(alpha_radar, "fresh_verified_candidate", return_value=reused) as lookup:
+            with patch.object(alpha_radar, "reusable_fresh_candidate", return_value=None), \
+                 patch.object(alpha_radar, "fresh_verified_candidate", return_value=reused) as lookup:
                 with patch.object(alpha_radar, "live_research", side_effect=RuntimeError("research_synthesis_timeout")):
                     rc = alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
             lookup.assert_called_once()

@@ -21,6 +21,12 @@ class CycleTests(unittest.TestCase):
         late=dt.datetime(2026,8,31,18,30,tzinfo=ZoneInfo("America/New_York"))
         self.assertTrue(run_cycle.in_window("postclose",ok)); self.assertFalse(run_cycle.in_window("postclose",late))
 
+    def test_dashboard_window_supports_intraday_live_refreshes(self):
+        market=dt.datetime(2026,8,31,10,0,tzinfo=ZoneInfo("America/New_York"))
+        after_close=dt.datetime(2026,8,31,17,30,tzinfo=ZoneInfo("America/New_York"))
+        self.assertTrue(run_cycle.in_window("dashboard",market))
+        self.assertTrue(run_cycle.in_window("dashboard",after_close))
+
     def test_execute_retries_safe_task_and_uses_explicit_timeout(self):
         failed=subprocess.CompletedProcess([],3,"","temporary")
         passed=subprocess.CompletedProcess([],0,"","")
@@ -103,6 +109,17 @@ class CycleTests(unittest.TestCase):
         self.assertTrue(any(command[-1].endswith("candidate_outcomes.py") for command in commands))
         self.assertTrue(any(command[-1].endswith("shadow_calibration.py") for command in commands))
         self.assertTrue(any(command[-1].endswith("public_dashboard.py") for command in commands))
+
+    def test_dashboard_refresh_is_not_suppressed_after_first_daily_deploy(self):
+        with patch.object(sys,"argv",["run_cycle.py","dashboard"]), \
+             patch("run_cycle.in_window",return_value=True), \
+             patch("run_cycle.completed_today") as completed, \
+             patch("run_cycle.mark_completed") as mark, \
+             patch("run_cycle.execute",return_value=0) as execute:
+            self.assertEqual(run_cycle.main(),0)
+        completed.assert_not_called()
+        mark.assert_not_called()
+        self.assertTrue(execute.call_args.args[0][-1].endswith("deploy_dashboard.sh"))
 
     def test_daily_completion_is_written_only_after_success(self):
         with tempfile.TemporaryDirectory() as td:

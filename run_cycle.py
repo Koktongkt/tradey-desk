@@ -40,7 +40,7 @@ def in_window(mode:str,now:dt.datetime|None=None)->bool:
     n=(now or dt.datetime.now(NY)).astimezone(NY)
     if n.weekday()>4:return False
     t=n.time()
-    windows={"premarket":(dt.time(7,0),dt.time(9,25)),"market":(dt.time(9,30),dt.time(16,0)),"postclose":(dt.time(16,10),dt.time(17,30)),"dashboard":(dt.time(16,15),dt.time(18,0))}
+    windows={"premarket":(dt.time(7,0),dt.time(9,25)),"market":(dt.time(9,30),dt.time(16,0)),"postclose":(dt.time(16,10),dt.time(17,30)),"dashboard":(dt.time(9,30),dt.time(18,0))}
     lo,hi=windows[mode];return lo<=t<=hi
 
 def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|None=None,audit_stage:str="cycle",audit_path:Path=AUDIT_PATH)->int:
@@ -70,7 +70,7 @@ def main()->int:
     ap=argparse.ArgumentParser();ap.add_argument("mode",choices=["premarket","radar","autotrader","postclose","dashboard"]);a=ap.parse_args()
     window="market" if a.mode in {"radar","autotrader"} else a.mode
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
-    daily=a.mode in {"premarket","postclose","dashboard"}
+    daily=a.mode in {"premarket","postclose"}
     if daily and completed_today(a.mode):audit_result(a.mode,"schedule",0,"DECISION skipped already_completed");return 0
     if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=720,attempts=1,audit_mode=a.mode,audit_stage="research")
     elif a.mode=="autotrader":rc=execute([sys.executable,str(ROOT/"autotrader.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="execution")
