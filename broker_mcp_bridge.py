@@ -233,6 +233,17 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             "client_order_id":p["client_order_id"],"order_class":"oco",
             "stop_loss_stop_price":p["stop"],
         })
+    if op=="reconcile_many":
+        refs=p.get("client_order_ids")
+        if (
+            not isinstance(refs,list) or not 1<=len(refs)<=100
+            or any(not isinstance(ref,str) or not ref or len(ref)>128 for ref in refs)
+        ):
+            raise RuntimeError("client_order_ids required")
+        raw_orders=await asyncio.gather(*(
+            a.call("get_order_by_client_id",{"client_order_id":ref}) for ref in refs
+        ))
+        return {"orders":[find_mapping_with_keys(raw,{"status"}) or first_dict(raw) for raw in raw_orders]}
     if op=="reconcile":
         raw=await a.call("get_order_by_client_id",{"client_order_id":p["client_order_id"]})
         return find_mapping_with_keys(raw,{"status"}) or first_dict(raw)

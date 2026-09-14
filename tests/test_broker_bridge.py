@@ -139,6 +139,29 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((status, sessions), ("upcoming", 2))
 
+    async def test_reconcile_many_fetches_all_parent_brackets_in_one_session(self):
+        class OrdersAlpaca:
+            def __init__(self):
+                self.calls = []
+
+            async def call(self, name, values=None):
+                self.calls.append((name, values))
+                return {"client_order_id": values["client_order_id"], "status": "filled", "legs": []}
+
+        alpaca = OrdersAlpaca()
+        result = await broker_mcp_bridge.operation(
+            alpaca, "reconcile_many", {"client_order_ids": ["tradey-a", "tradey-b"]},
+        )
+
+        self.assertEqual(result, {"orders": [
+            {"client_order_id": "tradey-a", "status": "filled", "legs": []},
+            {"client_order_id": "tradey-b", "status": "filled", "legs": []},
+        ]})
+        self.assertEqual(alpaca.calls, [
+            ("get_order_by_client_id", {"client_order_id": "tradey-a"}),
+            ("get_order_by_client_id", {"client_order_id": "tradey-b"}),
+        ])
+
     async def test_shadow_outcome_read_supports_thirty_sessions(self):
         rows = await broker_mcp_bridge.operation(_FakeAlpaca(), "outcomes", {"candidates": [{
             "candidate_id": "shadow-a", "symbol": "AAPL", "researched_at": "2026-09-01T14:00:00Z",

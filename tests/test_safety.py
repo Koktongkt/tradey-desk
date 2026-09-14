@@ -1,6 +1,7 @@
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -532,6 +533,235 @@ class TradeySafetyTests(unittest.TestCase):
             autotrader.reconcile_pending_orders(ledger, intents, journal, broker)
             self.assertEqual(json.loads(journal.read_text())["status"], "filled")
             self.assertEqual(json.loads(ledger.read_text().splitlines()[-1])["status"], "filled")
+
+    def test_filled_bracket_stop_is_journaled_as_sell_and_parent_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text(json.dumps({
+                "symbol": "AAPL", "action": "BUY", "quantity": 1, "entry": 100.01,
+                "status": "filled",
+            }) + "\n")
+            calls = []
+            def broker(operation, payload):
+                calls.append((operation, payload))
+                return {"orders": [{
+                    "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                    "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+                    "legs": [
+                        {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+                         "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+                         "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+                        {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
+                         "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+                         "symbol": "AAPL", "qty": "1", "filled_qty": "1",
+                         "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+                    ],
+                }]}
+
+            updates = autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
+
+            rows = [json.loads(line) for line in journal.read_text().splitlines()]
+            self.assertEqual(calls, [("reconcile_many", {"client_order_ids": [ref]})])
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(rows[-1]["action"], "SELL")
+            self.assertEqual(rows[-1]["entry"], 97.75)
+            self.assertEqual(rows[-1]["exit_reason"], "protective_stop")
+            self.assertEqual(rows[-1]["timestamp"], "2026-09-10T17:44:20Z")
+            self.assertEqual(json.loads(ledger.read_text().splitlines()[-1])["status"], "closed")
+
+    def test_unlinked_sell_fill_cannot_suppress_parent_exit_reconciliation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text("\n".join(json.dumps(row) for row in [
+                {"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"},
+                {"symbol": "AAPL", "action": "SELL", "quantity": 1, "status": "filled"},
+            ]) + "\n")
+            broker = lambda operation, payload: {"orders": [{
+                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+                "legs": [
+                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
+                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+                ],
+            }]}
+
+            updates = autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(len(journal.read_text().splitlines()), 3)
+            self.assertEqual(updates[0]["parent_client_order_id"], ref)
+            self.assertEqual(json.loads(ledger.read_text().splitlines()[-1])["status"], "closed")
+
+    def test_partial_protective_exit_fails_closed_without_closing_parent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
+            broker = lambda operation, payload: {"orders": [{
+                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+                "legs": [
+                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "0.5",
+                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+                ],
+            }]}
+
+            with self.assertRaisesRegex(RuntimeError, "managed_exit_reconciliation_invalid"):
+                autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
+
+            self.assertEqual(len(journal.read_text().splitlines()), 1)
+            self.assertEqual(json.loads(ledger.read_text().splitlines()[-1])["status"], "filled")
+
+    def test_filled_parent_without_leg_list_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
+            broker = lambda operation, payload: {"orders": [{
+                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+            }]}
+
+            with self.assertRaisesRegex(RuntimeError, "managed_exit_reconciliation_invalid"):
+                autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
+
+    def test_duplicate_parent_responses_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            parent = {"client_order_id": ref, "status": "filled"}
+            broker = lambda operation, payload: {"orders": [parent, parent]}
+
+            with self.assertRaisesRegex(RuntimeError, "managed_exit_reconciliation_invalid"):
+                autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
+
+            self.assertFalse(journal.exists())
+
+    def test_parent_specific_closure_key_recovers_ledger_without_duplicate_sell(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            leg_ref = "stop-loss"
+            filled_at = "2026-09-10T17:44:20Z"
+            closure_key = autotrader.hashlib.sha256(f"{ref}|{leg_ref}|{filled_at}".encode()).hexdigest()
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text(json.dumps({
+                "symbol": "AAPL", "action": "SELL", "quantity": 1, "status": "filled",
+                "closure_key": closure_key, "parent_client_order_id": ref,
+            }) + "\n")
+            parent = {
+                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+                "legs": [
+                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+                    {"client_order_id": leg_ref, "status": "filled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
+                     "filled_avg_price": "97.75", "filled_at": filled_at},
+                ],
+            }
+
+            updates = autotrader.reconcile_managed_exits(
+                ledger, intents, journal, lambda operation, payload: {"orders": [parent]},
+            )
+
+            self.assertEqual(updates, [])
+            self.assertEqual(len(journal.read_text().splitlines()), 1)
+            self.assertEqual(json.loads(ledger.read_text().splitlines()[-1])["status"], "closed")
+
+    def test_concurrent_exit_reconciliation_journals_one_sell(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ledger = root / "ledger.jsonl"
+            intents = root / "intents.jsonl"
+            journal = root / "journal.jsonl"
+            ref = "tradey-filled"
+            ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
+            journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
+            parent = {
+                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+                "legs": [
+                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
+                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
+                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+                ],
+            }
+            barrier = threading.Barrier(2)
+            real_sha256 = autotrader.hashlib.sha256
+            def synchronized_sha256(value=b""):
+                if isinstance(value, bytes) and value.startswith(f"{ref}|".encode()):
+                    barrier.wait(timeout=5)
+                return real_sha256(value)
+            results = []
+            errors = []
+            def worker():
+                try:
+                    results.append(autotrader.reconcile_managed_exits(
+                        ledger, intents, journal,
+                        lambda operation, payload: {"orders": [parent]},
+                    ))
+                except Exception as error:
+                    errors.append(error)
+
+            with patch("autotrader.hashlib.sha256", side_effect=synchronized_sha256):
+                threads = [threading.Thread(target=worker) for _ in range(2)]
+                for thread in threads: thread.start()
+                for thread in threads: thread.join(timeout=10)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            self.assertEqual(sum(len(result) for result in results), 1)
+            self.assertEqual(len(journal.read_text().splitlines()), 2)
+            self.assertEqual(len(ledger.read_text().splitlines()), 2)
 
     def test_idempotency_reference_is_stable(self):
         a = autotrader.idempotency_ref(self.decision, "2026-08-29")

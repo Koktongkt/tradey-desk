@@ -224,6 +224,29 @@ class NoOpCycleSkipTests(unittest.TestCase):
                     autotrader.run(autotrader.argparse.Namespace(dry_run_fixture=False, live_dry_run=False))
             self.assertEqual(calls, ["reconcile"])
 
+    def test_managed_exit_reconciliation_runs_before_spent_dossier_skip(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "autonomy_config.json").write_text(json.dumps(_cfg()))
+            spent = self._write_dossier(root, _candidate())
+            (root / "private").mkdir()
+            (root / "private" / "reviews.jsonl").write_text(
+                json.dumps({"timestamp": _review_ts(), "dossier_hash": spent["dossier_hash"], "reviews": [{"decision": "HOLD"}]}) + "\n")
+            calls = []
+            def fake_exit_reconcile(*args, **kwargs):
+                calls.append("managed_exits")
+                return []
+            with patch.object(autotrader, "ROOT", root), patch(
+                "autotrader.reconcile_pending_orders", return_value=[]
+            ), patch(
+                "autotrader.reconcile_managed_exits", side_effect=fake_exit_reconcile
+            ), patch("autotrader._broker_bridge", side_effect=AssertionError("snapshot must not run")):
+                import contextlib
+                with contextlib.redirect_stdout(__import__("io").StringIO()):
+                    code = autotrader.run(autotrader.argparse.Namespace(dry_run_fixture=False, live_dry_run=False))
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, ["managed_exits"])
+
 
 class SkipEventAuditTests(unittest.TestCase):
     def test_run_cycle_parses_already_reviewed_skip(self):

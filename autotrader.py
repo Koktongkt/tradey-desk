@@ -12,6 +12,7 @@ import argparse
 import concurrent.futures
 import datetime as dt
 from decimal import Decimal
+import fcntl
 import hashlib
 import json
 import math
@@ -774,7 +775,7 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
     cmd = bridge_command(operation)
     data = json.dumps(payload or {})
     # Only read-only operations retry: execution must never be re-sent.
-    attempts = 2 if operation in {"snapshot", "review", "reconcile", "tools"} else 1
+    attempts = 2 if operation in {"snapshot", "review", "reconcile", "reconcile_many", "tools"} else 1
     started = dt.datetime.now(dt.timezone.utc)
     result = None
     for attempt in range(1, attempts + 1):
@@ -803,6 +804,165 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
     duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
     _record_bridge_diagnostics(operation, attempts, duration_ms, result, "nonzero_exit")
     raise RuntimeError("broker_mcp_failure")
+
+
+def managed_entry_intents(ledger: list[dict[str, Any]], intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return managed BUY intents whose parent bracket filled and is not closed."""
+    latest: dict[str, str] = {}
+    for row in ledger:
+        ref = row.get("client_order_id")
+        if ref:
+            latest[str(ref)] = str(row.get("status") or "")
+    return [
+        intent for intent in intents
+        if isinstance(intent, dict)
+        and isinstance(intent.get("plan"), dict)
+        and intent["plan"].get("action") == "BUY"
+        and latest.get(str(intent.get("client_order_id") or "")) == "filled"
+    ]
+
+
+def reconcile_managed_exits(
+    ledger_path: Path, intents_path: Path, journal_path: Path, broker: Any = None,
+) -> list[dict[str, Any]]:
+    """Journal broker-confirmed bracket exits exactly once before new entries."""
+    bridge = broker or _broker_bridge
+    intents = managed_entry_intents(read_jsonl(ledger_path), read_jsonl(intents_path))
+    if not intents:
+        return []
+    refs = [str(intent["client_order_id"]) for intent in intents]
+    response = bridge("reconcile_many", {"client_order_ids": refs})
+    orders = response.get("orders") if isinstance(response, dict) else None
+    if (
+        not isinstance(orders, list) or len(orders) != len(refs)
+        or len(set(refs)) != len(refs) or any(not isinstance(order, dict) for order in orders)
+    ):
+        raise RuntimeError("managed_exit_reconciliation_invalid")
+    order_refs = [str(order.get("client_order_id") or "") for order in orders]
+    if len(set(order_refs)) != len(order_refs) or set(order_refs) != set(refs):
+        raise RuntimeError("managed_exit_reconciliation_invalid")
+    by_ref = {str(order["client_order_id"]): order for order in orders}
+    closures: list[dict[str, Any]] = []
+    for intent in intents:
+        ref = str(intent["client_order_id"])
+        plan = intent["plan"]
+        order = by_ref.get(ref)
+        if not isinstance(order, dict):
+            raise RuntimeError("managed_exit_reconciliation_missing")
+        symbol = str(plan.get("symbol") or "").upper()
+        if (
+            str(order.get("status") or "").lower() != "filled"
+            or str(order.get("symbol") or "").upper() != symbol
+            or str(order.get("side") or "").lower() != "buy"
+            or str(order.get("position_intent") or "").lower() != "buy_to_open"
+            or str(order.get("order_class") or "").lower() != "bracket"
+        ):
+            raise RuntimeError("managed_exit_reconciliation_invalid")
+        legs = order.get("legs")
+        if not isinstance(legs, list) or len(legs) != 2:
+            raise RuntimeError("managed_exit_reconciliation_invalid")
+        allowed_statuses = {
+            "new", "accepted", "pending_new", "held", "filled", "canceled",
+            "expired", "done_for_day", "replaced", "stopped", "rejected", "suspended", "calculated",
+        }
+        for leg in legs:
+            if not isinstance(leg, dict):
+                raise RuntimeError("managed_exit_reconciliation_invalid")
+            try:
+                declared_quantity = Decimal(str(leg.get("qty") or 0))
+            except Exception as error:
+                raise RuntimeError("managed_exit_reconciliation_invalid") from error
+            if (
+                str(leg.get("status") or "").lower() not in allowed_statuses
+                or str(leg.get("side") or "").lower() != "sell"
+                or str(leg.get("position_intent") or "").lower() != "sell_to_close"
+                or str(leg.get("order_class") or "").lower() not in {"bracket", "oco"}
+                or str(leg.get("symbol") or "").upper() != symbol
+                or str(leg.get("type") or leg.get("order_type") or "").lower() not in {"stop", "limit"}
+                or not str(leg.get("client_order_id") or "")
+                or not declared_quantity.is_finite() or declared_quantity <= 0
+            ):
+                raise RuntimeError("managed_exit_reconciliation_invalid")
+            if str(leg.get("status") or "").lower() == "partially_filled":
+                raise RuntimeError("managed_exit_reconciliation_invalid")
+        filled_legs = [leg for leg in legs if str(leg.get("status") or "").lower() == "filled"]
+        if not filled_legs:
+            continue
+        if len(filled_legs) != 1:
+            raise RuntimeError("managed_exit_reconciliation_ambiguous")
+        leg = filled_legs[0]
+        try:
+            quantity = Decimal(str(leg.get("filled_qty") or 0))
+            leg_quantity = Decimal(str(leg.get("qty") or 0))
+            fill_price = Decimal(str(leg.get("filled_avg_price") or 0))
+            planned_quantity = Decimal(str(plan.get("quantity") or 0))
+        except Exception as error:
+            raise RuntimeError("managed_exit_reconciliation_invalid") from error
+        if (
+            not quantity.is_finite() or not leg_quantity.is_finite()
+            or not fill_price.is_finite() or not planned_quantity.is_finite()
+            or quantity <= 0 or leg_quantity <= 0 or fill_price <= 0 or planned_quantity <= 0
+            or quantity != leg_quantity or quantity != planned_quantity
+        ):
+            raise RuntimeError("managed_exit_reconciliation_invalid")
+        leg_ref = str(leg.get("client_order_id") or "")
+        filled_at = str(leg.get("filled_at") or "")
+        if not leg_ref or not filled_at:
+            raise RuntimeError("managed_exit_reconciliation_invalid")
+        try:
+            parsed_filled_at = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise RuntimeError("managed_exit_reconciliation_invalid") from error
+        if parsed_filled_at.tzinfo is None:
+            raise RuntimeError("managed_exit_reconciliation_invalid")
+        closure_key = hashlib.sha256(f"{ref}|{leg_ref}|{filled_at}".encode()).hexdigest()
+        order_type = str(leg.get("type") or leg.get("order_type") or "").lower()
+        exit_reason = "protective_stop" if order_type == "stop" else "take_profit" if order_type == "limit" else "protective_exit"
+        row = {
+            "timestamp": filled_at, "symbol": symbol, "action": "SELL",
+            "entry": float(fill_price), "quantity": float(quantity),
+            "dollar_basis": float((fill_price * quantity).quantize(Decimal("0.01"))),
+            "stop": plan.get("stop"), "target": plan.get("target"),
+            "horizon": plan.get("horizon"), "confidence": plan.get("confidence"),
+            "thesis": plan.get("thesis"), "status": "filled",
+            "exit_reason": exit_reason, "closure_key": closure_key,
+            "parent_client_order_id": ref,
+        }
+        closures.append({
+            "ref": ref, "filled_at": filled_at, "symbol": symbol,
+            "quantity": float(quantity), "closure_key": closure_key, "row": row,
+        })
+    if not closures:
+        return []
+    lock_path = ledger_path.parent / ".managed_exit_reconciliation.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    updates: list[dict[str, Any]] = []
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        latest: dict[str, str] = {}
+        for ledger_row in read_jsonl(ledger_path):
+            ledger_ref = ledger_row.get("client_order_id")
+            if ledger_ref:
+                latest[str(ledger_ref)] = str(ledger_row.get("status") or "")
+        known_closures = {
+            str(journal_row.get("closure_key"))
+            for journal_row in read_jsonl(journal_path) if journal_row.get("closure_key")
+        }
+        for closure in closures:
+            ref = closure["ref"]
+            if latest.get(ref) != "filled":
+                continue
+            closure_key = closure["closure_key"]
+            if closure_key not in known_closures:
+                append_jsonl(journal_path, closure["row"])
+                known_closures.add(closure_key)
+                updates.append(closure["row"])
+            append_jsonl(ledger_path, {
+                "timestamp": closure["filled_at"], "client_order_id": ref, "status": "closed",
+                "symbol": closure["symbol"], "action": "SELL", "quantity": closure["quantity"],
+            })
+            latest[ref] = "closed"
+    return updates
 
 
 def reconcile_pending_orders(
@@ -937,6 +1097,13 @@ def run(args: argparse.Namespace) -> int:
                     print(f"TRADE {update.get('action')} {update.get('symbol')} @ {update.get('filled_avg_price')}"); return 0
             if pending_updates:
                 print("BLOCKER order_pending_or_partial"); return 2
+            try: exit_updates=reconcile_managed_exits(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
+            except Exception:
+                print("SYSTEM_FAILURE managed_exit_reconciliation"); return 4
+            if exit_updates:
+                update=exit_updates[0]
+                print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")
+                return 0
         candidates=[]
         p=ROOT/"candidates.jsonl"
         if p.exists():
