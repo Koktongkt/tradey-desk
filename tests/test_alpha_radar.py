@@ -57,12 +57,25 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual([c["symbol"] for c in candidates],["AAA"])
         self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":1,"parsed_candidate_count":1,"valid_url_count":1})
 
-    def test_scout_parse_result_enforces_three_candidate_and_url_budget(self):
-        # >3 candidates total is rejected outright...
-        payload={"candidates":[json.loads(structured_scout(symbol,["https://a.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD")]}
+    def test_scout_parse_result_funnels_surplus_candidates_to_ranked_top_three(self):
+        payload={"candidates":[json.loads(structured_scout(symbol,[f"https://{symbol.lower()}.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD")]}
         candidates,diag=alpha_radar.scout_parse_result(json.dumps(payload))
-        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
-        # ...and discovery output carries at most three URLs across all candidates (four are unparseable).
+        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB","CCC"])
+        self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":4,"parsed_candidate_count":3,"valid_url_count":3})
+
+    def test_scout_parse_result_skips_malformed_ranked_entries_before_funneling(self):
+        malformed=[
+            {"symbol":"bad","catalyst":"invalid ticker","event_date":"2026-09-14","urls":["https://bad.example/1"]},
+            {"symbol":"NOPE","catalyst":"invalid date","event_date":"not-a-date","urls":["https://nope.example/1"]},
+        ]
+        valid=[json.loads(structured_scout(symbol,[f"https://{symbol.lower()}.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD")]
+        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":malformed+valid}))
+        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB","CCC"])
+        self.assertEqual(diag["raw_candidate_count"],6)
+        self.assertEqual(diag["parsed_candidate_count"],3)
+        self.assertEqual(diag["reason"],"discovery_candidates_ready")
+
+    def test_scout_parse_result_enforces_three_url_budget(self):
         candidates,diag=alpha_radar.scout_parse_result(structured_scout("AAA",[
             "https://a.example/1","https://b.example/2","https://c.example/3","https://d.example/4",
         ]))

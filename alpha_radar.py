@@ -434,8 +434,9 @@ def extract_scout_candidates(text:str,max_candidates:int=3,max_urls:int=7)->list
     raw_candidates=payload.get("candidates")
     if not isinstance(raw_candidates,list):return []
     candidates=[];remaining=max_urls
-    for raw in raw_candidates[:max_candidates]:
-        if not isinstance(raw,dict) or remaining<=0:continue
+    for raw in raw_candidates:
+        if len(candidates)>=max_candidates or remaining<=0:break
+        if not isinstance(raw,dict):continue
         symbol=raw.get("symbol")
         catalyst=raw.get("catalyst")
         event_date=raw.get("event_date")
@@ -469,8 +470,6 @@ def scout_parse_result(text:str,max_candidates:int=3,max_urls:int=3)->tuple[list
     raw=payload.get("candidates") if isinstance(payload,dict) else None
     if not isinstance(raw,list):return [],{"reason":"candidate_schema_rejected",**base}
     raw_count=min(len(raw),100)
-    if len(raw)>max_candidates:
-        return [],{"reason":"candidate_schema_rejected","raw_candidate_count":raw_count,"parsed_candidate_count":0,"valid_url_count":0}
     candidates=extract_scout_candidates(text,max_candidates=max_candidates,max_urls=max_urls)
     valid_urls=sum(len(c.get("urls",[])) for c in candidates)
     reason="discovery_candidates_ready" if candidates else ("no_discovered_candidate" if not raw else "candidate_schema_rejected")
