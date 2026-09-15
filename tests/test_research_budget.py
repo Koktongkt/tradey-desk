@@ -29,16 +29,25 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         budget_index = command.index("--run-budget") + 1
         self.assertEqual(command[budget_index], "180")
 
+    def test_focused_retrieval_has_bounded_tool_budget_and_timeout(self):
+        command=alpha_radar.focused_retrieval_command()
+        self.assertEqual(command[command.index("--max-turns")+1],"3")
+        self.assertEqual(command[command.index("--run-budget")+1],"120")
+        source=(alpha_radar.ROOT/"alpha_radar.py").read_text()
+        self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=240",source)
+
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # 360 + 110 + 120 + SEC 45 = 635; outer 720 leaves 85 seconds.
+        # 360 scout + 240 focused retrieval + 110 fetch/fallback + 120 synthesis
+        # + 150 sequential thin-bundle rescue + 45 SEC lookup = 1025;
+        # outer 1110 leaves 85 seconds.
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
         self.assertIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=720',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110',
             source,
         )
         self.assertNotIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=660',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=960',
             source,
         )
 

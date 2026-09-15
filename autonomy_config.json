@@ -4,6 +4,7 @@
   "account_cap_usd": 10000,
   "max_daily_orders": 2,
   "max_position_usd": 500,
+  "focused_retrieval_enabled": true,
   "allow_fractional_shares": false,
   "min_price_usd": 10,
   "min_average_volume": 600000,
