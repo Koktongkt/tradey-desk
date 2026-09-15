@@ -55,8 +55,19 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertIn("Return only URLs you actually retrieved", alpha_radar.SCOUT_PROMPT)
         self.assertIn("never construct or guess", alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_returns_verified_urls_for_one_selected_setup(self):
-        self.assertIn("Return ONLY 2-7 plain http(s) URLs", alpha_radar.SCOUT_PROMPT)
+    def test_scout_returns_ranked_company_event_groups(self):
+        self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
+        self.assertIn("one to three candidates in ranked order", alpha_radar.SCOUT_PROMPT)
+
+    def test_scout_allocates_a_two_domain_bundle_per_returned_candidate(self):
+        self.assertIn(
+            "allocate at least two different-domain URLs to each candidate before extraction",
+            alpha_radar.SCOUT_PROMPT,
+        )
+        self.assertIn(
+            "Return only candidates with at least two successfully extracted useful URLs",
+            alpha_radar.SCOUT_PROMPT,
+        )
 
     def test_scout_uses_both_search_calls_in_first_tool_turn(self):
         self.assertIn(
@@ -70,11 +81,11 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
             alpha_radar.SCOUT_PROMPT,
         )
         self.assertIn(
-            "five URLs in the first web_extract call and two in the second",
+            "up to five URLs in the first web_extract call and up to two in the second",
             alpha_radar.SCOUT_PROMPT,
         )
         self.assertIn(
-            "seven different registered domains",
+            "different registered domains",
             alpha_radar.SCOUT_PROMPT,
         )
         self.assertIn(
@@ -84,7 +95,7 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
 
     def test_live_research_requests_seven_candidate_urls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("extract_candidate_urls(scout.stdout,limit=7)", source)
+        self.assertIn("extract_scout_candidates(scout.stdout,max_candidates=3,max_urls=7)", source)
 
     def test_gather_evidence_retries_timeouts_once(self):
         attempts = {"n": 0}
@@ -117,7 +128,7 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertEqual(pages, [])
         self.assertEqual(
             diagnostics,
-            [{"domain": "down.example", "reason": "source_fetch_timeout"}],
+            [{"url":"https://down.example/a","domain": "down.example", "reason": "source_fetch_timeout"}],
         )
 
     def test_gather_evidence_does_not_retry_non_timeout_failures(self):
@@ -181,7 +192,7 @@ class GatewayFallbackGuardTests(unittest.TestCase):
             )
 
         self.assertEqual(pages, [])
-        self.assertEqual(diagnostics, [{"domain": "walled.example", "reason": "source_fetch_timeout"}])
+        self.assertEqual(diagnostics, [{"url":"https://walled.example/a","domain": "walled.example", "reason": "source_fetch_timeout"}])
 
     def test_gateway_fallback_only_invoked_for_failures_not_successes(self):
         def direct(url, _timeout):
