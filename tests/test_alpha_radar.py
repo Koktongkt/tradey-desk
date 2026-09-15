@@ -531,6 +531,23 @@ class AlphaRadarTests(unittest.TestCase):
                     alpha_radar.live_research({"max_position_usd": 500})
         self.assertEqual(str(ctx.exception), "research_scout_timeout")
 
+    def test_schema_rejection_is_no_candidate_with_private_diagnostic(self):
+        out=io.StringIO()
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[{"symbol":"bad"}]*3}),"")
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/"autonomy_config.json").write_text('{}')
+            with patch.object(alpha_radar,"ROOT",root), patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(alpha_radar,"fresh_verified_candidate",return_value=None), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(alpha_radar,"append") as append, patch.object(alpha_radar,"gather_evidence") as gather, contextlib.redirect_stdout(out):
+                rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+            diag=json.loads((root/"private"/"research_diagnostics.jsonl").read_text())
+        self.assertEqual(rc,0)
+        self.assertEqual(out.getvalue().strip(),"DECISION skipped no_valid_discovery_candidate")
+        self.assertEqual(diag["reason"],"candidate_schema_rejected")
+        self.assertEqual(diag["raw_candidate_count"],3)
+        self.assertEqual(diag["parsed_candidate_count"],0)
+        append.assert_not_called()
+        gather.assert_not_called()
+
     def test_main_reports_scout_timeout_without_generic_fallback(self):
         out=io.StringIO()
         with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(

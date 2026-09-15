@@ -24,7 +24,7 @@ def audit_result(mode:str,stage:str,returncode:int,stdout:str,path:Path=AUDIT_PA
         if len(parts)>=2 and parts[1] in {"candidate_qualified"}:
             row["decision"]=parts[1]
             if len(parts)>=3 and re.fullmatch(r"[A-Z]{1,6}",parts[2]):row["symbol"]=parts[2]
-        elif len(parts)>=2 and parts[1]=="skipped" and len(parts)>=3 and parts[2] in {"outside_window","already_completed","already_reviewed","no_fresh_setup"}:
+        elif len(parts)>=2 and parts[1]=="skipped" and len(parts)>=3 and parts[2] in {"outside_window","already_completed","already_reviewed","no_fresh_setup","no_valid_discovery_candidate"}:
             row["decision"]="skipped";row["reason"]=parts[2]
         elif len(parts)>=2 and parts[1]=="reused_fresh_candidate":
             row["decision"]="reused_fresh_candidate"
@@ -52,6 +52,17 @@ def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|
             result=subprocess.CompletedProcess(cmd,124,"","timeout")
         if result.returncode==0:
             if audit_mode:audit_result(audit_mode,audit_stage,0,result.stdout,audit_path)
+            if audit_mode=="radar" and audit_stage=="research":
+                if result.stdout.strip()=="DECISION skipped no_fresh_setup":
+                    print("Alpha Radar: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.")
+                elif result.stdout.strip()=="DECISION skipped no_valid_discovery_candidate":
+                    print("Alpha Radar: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.")
+                else:
+                    match=re.fullmatch(r"DECISION (candidate_qualified|reused_fresh_candidate) ([A-Z]{1,6})",result.stdout.strip())
+                    if match:
+                        event,symbol=match.groups()
+                        label=f"Final qualified candidate: {symbol}" if event=="candidate_qualified" else f"Reusing existing fresh candidate: {symbol} (not a new qualification)"
+                        print(f"Alpha Radar: {label}. Research only; not a trade approval or execution.")
             return 0
     if result and result.stdout.strip():print(result.stdout.strip())
     elif result:print("SYSTEM_FAILURE scheduled_task")

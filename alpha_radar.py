@@ -1158,6 +1158,8 @@ def main_with_args(a:argparse.Namespace)->int:
         if reused is not None:
             print("DECISION reused_fresh_candidate "+str(reused.get("symbol","")).upper()); return 0
         if isinstance(e,ResearchFailure):
+            if e.code=="research_scout_schema_rejected":
+                print("DECISION skipped no_valid_discovery_candidate"); return 0
             print("SYSTEM_FAILURE "+e.code); return 3
         print("SYSTEM_FAILURE alpha_radar"); return 3
 if __name__=="__main__":
