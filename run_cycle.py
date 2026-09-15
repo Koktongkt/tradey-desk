@@ -66,8 +66,19 @@ def mark_completed(mode:str,state:Path|None=None)->None:
     directory=state or ROOT/"state";directory.mkdir(exist_ok=True);p=directory/f"{mode}.date"
     p.write_text(dt.datetime.now(NY).date().isoformat())
 
+def scheduled_slot(mode:str,now:dt.datetime|None=None)->bool:
+    """Return whether this fire matches the NY-time producer/consumer cadence."""
+    n=(now or dt.datetime.now(NY)).astimezone(NY)
+    if mode=="premarket":return n.hour==9 and n.minute==0
+    if mode=="radar":return 10<=n.hour<=15 and n.minute in {0,30}
+    if mode=="autotrader":
+        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {20,50})
+    return True
+
+
 def main()->int:
     ap=argparse.ArgumentParser();ap.add_argument("mode",choices=["premarket","radar","autotrader","postclose","dashboard"]);a=ap.parse_args()
+    if not scheduled_slot(a.mode):return 0
     window="market" if a.mode in {"radar","autotrader"} else a.mode
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
     daily=a.mode in {"premarket","postclose"}

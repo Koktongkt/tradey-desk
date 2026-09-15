@@ -92,13 +92,13 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(row["reason"],"outside_window")
 
     def test_main_enables_auditing_for_an_autotrader_cycle(self):
-        with patch.object(sys,"argv",["run_cycle.py","autotrader"]), patch("run_cycle.in_window",return_value=True), patch("run_cycle.execute",return_value=0) as call:
+        with patch.object(sys,"argv",["run_cycle.py","autotrader"]), patch("run_cycle.scheduled_slot",return_value=True), patch("run_cycle.in_window",return_value=True), patch("run_cycle.execute",return_value=0) as call:
             self.assertEqual(run_cycle.main(),0)
         self.assertEqual(call.call_args.kwargs["audit_mode"],"autotrader")
         self.assertEqual(call.call_args.kwargs["audit_stage"],"execution")
 
     def test_main_audits_a_cycle_skipped_outside_its_window(self):
-        with patch.object(sys,"argv",["run_cycle.py","radar"]), patch("run_cycle.in_window",return_value=False), patch("run_cycle.audit_result") as audit:
+        with patch.object(sys,"argv",["run_cycle.py","radar"]), patch("run_cycle.scheduled_slot",return_value=True), patch("run_cycle.in_window",return_value=False), patch("run_cycle.audit_result") as audit:
             self.assertEqual(run_cycle.main(),0)
         audit.assert_called_once_with("radar","schedule",0,"DECISION skipped outside_window")
 
@@ -129,8 +129,39 @@ class CycleTests(unittest.TestCase):
             run_cycle.mark_completed("radar",state=state)
             self.assertTrue(run_cycle.completed_today("radar",state=state))
 
+    def test_new_york_pairing_slots(self):
+        ny=ZoneInfo("America/New_York")
+        day=dt.date(2026,9,15)
+        at=lambda h,m:dt.datetime.combine(day,dt.time(h,m),tzinfo=ny)
+        self.assertTrue(run_cycle.scheduled_slot("premarket",at(9,0)))
+        self.assertFalse(run_cycle.scheduled_slot("premarket",at(8,30)))
+        for h,m in [(10,0),(10,30),(15,0),(15,30)]:
+            self.assertTrue(run_cycle.scheduled_slot("radar",at(h,m)))
+        for h,m in [(9,30),(9,40),(16,0)]:
+            self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
+        for h,m in [(9,40),(10,20),(10,50),(15,20),(15,50)]:
+            self.assertTrue(run_cycle.scheduled_slot("autotrader",at(h,m)))
+        for h,m in [(9,30),(9,45),(10,0),(16,20)]:
+            self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
+
+    def test_slot_classification_is_dst_safe(self):
+        summer=dt.datetime(2026,9,15,13,0,tzinfo=dt.timezone.utc)
+        winter=dt.datetime(2026,12,15,14,0,tzinfo=dt.timezone.utc)
+        self.assertTrue(run_cycle.scheduled_slot("premarket",summer))
+        self.assertTrue(run_cycle.scheduled_slot("premarket",winter))
+
+    def test_main_silently_skips_broad_cron_fire_outside_exact_slot(self):
+        with patch.object(sys,"argv",["run_cycle.py","radar"]), patch(
+            "run_cycle.scheduled_slot",return_value=False
+        ), patch("run_cycle.in_window") as window, patch("run_cycle.execute") as execute, patch(
+            "run_cycle.audit_result"
+        ) as audit:
+            self.assertEqual(run_cycle.main(),0)
+        window.assert_not_called();execute.assert_not_called();audit.assert_not_called()
+
     def test_radar_research_runs_under_a_1110_second_budget(self):
         with patch.object(sys,"argv",["run_cycle.py","radar"]), \
+             patch("run_cycle.scheduled_slot",return_value=True), \
              patch("run_cycle.in_window",return_value=True), \
              patch.object(run_cycle,"execute",return_value=0) as call:
             run_cycle.main()
