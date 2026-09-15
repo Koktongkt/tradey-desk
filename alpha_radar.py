@@ -324,7 +324,7 @@ def discovery_command()->list[str]:
     return [
         "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
         "--provider", "nous", "-m", "deepseek/deepseek-v4-flash-0731",
-        "-t", "web", "--ignore-rules", "--max-turns", "3",
+        "-t", "search", "--ignore-rules", "--max-turns", "2",
         "--run-budget", "180", "--query-file", "-",
     ]
 
@@ -398,17 +398,20 @@ def research_prompt(cfg:dict[str,Any]|None=None)->str:
 
 
 RESEARCHED_AT_TOLERANCE_MINUTES = 15
-SCOUT_PROMPT = """You are the bounded discovery stage of a stock research pipeline. Using web tools ONLY, identify up to three ranked US-listed cash-equity company + catalyst pairs worth deeper research today. Do not propose a trade. A catalyst must be specific and dated: state what changed, when, the prior expectation/state, and why it could affect earnings, cash flow, valuation, competitive position, or market expectations. Do not select imminent pre-earnings setups or generic AI narratives, routine conference appearances, unexplained price moves, recycled stories, or promotional commentary.
 
-Use exactly two tool-using turns. On the first tool-using turn, call web_search exactly twice in parallel with limit 10: one broad query for fresh US-equity catalysts and one source-first query emphasizing SEC/issuer evidence plus Reuters, Bloomberg, Dow Jones/WSJ, CNBC, AP, or FT corroboration. Do not finalize a company yet.
 
-On the second tool-using turn, call web_extract exactly twice in parallel. Select up to seven eligible article URLs copied from the combined search results, across up to three candidate companies and different registered domains. Before calling web_extract, allocate at least two different-domain URLs to each candidate before extraction; drop a candidate rather than spending an extraction slot on an unsupported one. Use up to five URLs in the first web_extract call and up to two in the second. Prefer, when available, primary sources (SEC, issuer IR, regulator/exchange), independent reporting, then authenticated wire copies (Business Wire, PR Newswire, GlobeNewswire). For each candidate, seek up to two primary, up to three independent, and up to two wire/fallback pages; these are retrieval targets, not quotas, and missing a lane must never cause filler or disqualify an otherwise credible two-domain bundle. Do not submit search-result pages, landing/index pages, symbol pages, homepages, or guessed URLs.
+def discovery_prompt(cfg:dict[str,Any])->str:
+    floor=f"{float(cfg.get('min_price_usd',1)):g}";cap=f"{float(cfg.get('max_position_usd',500)):g}"
+    return f"""You are the broad discovery stage of a stock research pipeline. Using web search ONLY, identify up to three provisionally ranked US-listed cash-equity company + catalyst pairs worth deeper research today. Do not extract pages, perform focused corroboration, synthesize a trade, or require a two-source bundle; the focused retrieval stage does that next. A catalyst must be specific and dated: state what changed, when, the prior expectation/state, and why it could affect earnings, cash flow, valuation, competitive position, or market expectations. Prefer liquid common stocks whose approximate whole-share price is within the deterministic ${floor}-${cap} intake range. Do not select imminent pre-earnings setups, non-common-stock instruments, generic AI narratives, routine conference appearances, unexplained price moves, recycled stories, or promotional commentary.
 
-After extraction, rank company-event pairs by: source credibility and completeness; catalyst materiality and certainty; freshness; fit for a 1-30-session horizon; observable market confirmation; liquidity/whole-share affordability indications; and lower binary-event risk. Sourceability is a gate. Return only candidates with at least two successfully extracted useful URLs from different registered domains. Return only URLs you actually retrieved or confirmed to exist; never construct or guess an issuer IR URL. Do not include pages with unavailable bodies or event evidence older than 180 days.
+Use exactly one tool-using turn: call web_search exactly twice in parallel with limit 10, one broad query for fresh US-equity catalysts and one source-first query emphasizing SEC/issuer disclosures plus Reuters, Bloomberg, Dow Jones/WSJ, CNBC, AP, FT, Business Wire, PR Newswire, or GlobeNewswire. Rank the provisional company-event pairs by catalyst materiality/certainty, freshness, 1-30-session horizon fit, observable market confirmation, liquidity/approximate ${floor}-${cap} affordability, and lower binary-event risk.
 
-Return exactly one JSON object and No commentary or markdown:
-{"candidates":[{"symbol":"ABC","catalyst":"specific dated change","event_date":"YYYY-MM-DD","urls":["https://...","https://..."]}]}
-Return one to three candidates in ranked order, at most seven URLs total, at most 500 characters per catalyst, and at most one URL per registered domain within each candidate. If nothing credible survives, return {"candidates":[]}. Never hide a shortfall with duplicates, landing pages, or filler. Do not propose trades, stops, targets, quantities, or account data."""
+Return exactly one JSON object and no commentary or markdown:
+{{"candidates":[{{"symbol":"ABC","catalyst":"specific dated change","event_date":"YYYY-MM-DD","urls":["https://..."]}}]}}
+Return one to three candidates in ranked order, each with at least one confirmed article URL copied exactly from the web_search results. Return at most three URLs total, at most one URL per candidate, and at most 500 characters per catalyst. Never construct or guess URLs, and do not use landing, index, search, symbol, or homepage URLs. If no credible provisional candidate survives, return {{"candidates":[]}}. The focused retrieval stage—not this discovery stage—will search primary, independent, and wire lanes and apply the final two-domain evidence gate. Never propose trades, stops, targets, quantities, or account data."""
+
+
+SCOUT_PROMPT=discovery_prompt({"min_price_usd":1,"max_position_usd":500})
 
 
 def extract_candidate_urls(text:str,limit:int=6)->list[str]:
@@ -443,6 +446,7 @@ def extract_scout_candidates(text:str,max_candidates:int=3,max_urls:int=7)->list
         try:dt.date.fromisoformat(event_date)
         except ValueError:continue
         if not isinstance(raw_urls,list) or not raw_urls:continue
+        if len(raw_urls)>max_urls:continue
         if any(
             not isinstance(url,str)
             or any(ch.isspace() for ch in url)
@@ -456,6 +460,21 @@ def extract_scout_candidates(text:str,max_candidates:int=3,max_urls:int=7)->list
         candidates.append({"symbol":symbol,"catalyst":catalyst,"event_date":event_date,"urls":urls})
         remaining-=len(urls)
     return candidates
+
+
+def scout_parse_result(text:str,max_candidates:int=3,max_urls:int=3)->tuple[list[dict[str,Any]],dict[str,Any]]:
+    base={"raw_candidate_count":0,"parsed_candidate_count":0,"valid_url_count":0}
+    try:payload=json.loads(text)
+    except (json.JSONDecodeError,TypeError):return [],{"reason":"invalid_json",**base}
+    raw=payload.get("candidates") if isinstance(payload,dict) else None
+    if not isinstance(raw,list):return [],{"reason":"candidate_schema_rejected",**base}
+    raw_count=min(len(raw),100)
+    if len(raw)>max_candidates:
+        return [],{"reason":"candidate_schema_rejected","raw_candidate_count":raw_count,"parsed_candidate_count":0,"valid_url_count":0}
+    candidates=extract_scout_candidates(text,max_candidates=max_candidates,max_urls=max_urls)
+    valid_urls=sum(len(c.get("urls",[])) for c in candidates)
+    reason="discovery_candidates_ready" if candidates else ("no_discovered_candidate" if not raw else "candidate_schema_rejected")
+    return candidates,{"reason":reason,"raw_candidate_count":raw_count,"parsed_candidate_count":len(candidates),"valid_url_count":valid_urls}
 
 
 def extract_page_text(body:str)->str:
@@ -757,6 +776,19 @@ def record_research_diagnostics(
             f.write(json.dumps({"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain},sort_keys=True,separators=(",",":"))+"\n")
 
 
+def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str|None=None)->None:
+    """Persist a bounded discovery summary without symbols, URLs, or raw model text."""
+    allowed={"invalid_json","no_discovered_candidate","candidate_schema_rejected","discovery_candidates_ready"}
+    reason=str(diagnostic.get("reason") or "")
+    if reason not in allowed:reason="candidate_schema_rejected"
+    def count(key:str)->int:
+        value=diagnostic.get(key,0)
+        return min(100,max(0,value if isinstance(value,int) and not isinstance(value,bool) else 0))
+    row={"timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),"stage":"discovery","reason":reason,"raw_candidate_count":count("raw_candidate_count"),"parsed_candidate_count":count("parsed_candidate_count"),"valid_url_count":count("valid_url_count")}
+    target=path or ROOT/"private"/"research_diagnostics.jsonl";target.parent.mkdir(parents=True,exist_ok=True)
+    with target.open("a",encoding="utf-8") as f:f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+
+
 def record_synthesis_none(
     candidate:dict[str,Any],
     evidence_prompt:str,
@@ -869,11 +901,17 @@ def rescue_candidate_bundle(candidate:dict[str,Any])->list[str]:
 
 def live_research(cfg:dict[str,Any])->dict[str,Any]:
     try:
-        scout=subprocess.run(discovery_command(),input=SCOUT_PROMPT,capture_output=True,text=True,timeout=360,cwd=ROOT)
+        scout=subprocess.run(discovery_command(),input=discovery_prompt(cfg),capture_output=True,text=True,timeout=360,cwd=ROOT)
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_scout_timeout")
     if scout.returncode: raise ResearchFailure("research_scout_unavailable")
-    scout_candidates=extract_scout_candidates(scout.stdout,max_candidates=3,max_urls=7)
+    scout_candidates,scout_diagnostic=scout_parse_result(scout.stdout,max_candidates=3,max_urls=3)
+    try:record_scout_diagnostic(scout_diagnostic)
+    except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+    if not scout_candidates:
+        if scout_diagnostic["reason"]=="no_discovered_candidate":return {"status":"none","none_reason":"no_fresh_setup"}
+        if scout_diagnostic["reason"]=="invalid_json":raise ResearchFailure("research_scout_parse_failure")
+        raise ResearchFailure("research_scout_schema_rejected")
     if cfg.get("focused_retrieval_enabled",False):
         focused=focused_retrieval(scout_candidates)
         for scout_candidate in scout_candidates:

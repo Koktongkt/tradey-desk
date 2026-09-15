@@ -17,17 +17,19 @@ import earnings_calendar
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
-    def test_scout_timeout_covers_two_search_and_two_extract_calls(self):
+    def test_scout_timeout_covers_bounded_discovery_call(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=360", source)
+        self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=360", source)
         self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
         # synthesis timeout is unchanged
         self.assertIn("timeout=120,cwd=ROOT", source)
 
-    def test_scout_run_budget_allows_both_tool_turns(self):
+    def test_scout_run_budget_bounds_discovery(self):
         command = alpha_radar.discovery_command()
         budget_index = command.index("--run-budget") + 1
         self.assertEqual(command[budget_index], "180")
+        self.assertEqual(command[command.index("--max-turns")+1],"2")
+        self.assertEqual(command[command.index("-t")+1],"search")
 
     def test_focused_retrieval_has_bounded_tool_budget_and_timeout(self):
         command=alpha_radar.focused_retrieval_command()
@@ -61,50 +63,31 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
     """
 
     def test_scout_prompt_forbids_unverified_url_construction(self):
-        self.assertIn("Return only URLs you actually retrieved", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("never construct or guess", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("confirmed article URL copied exactly from the web_search results", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Never construct or guess", alpha_radar.SCOUT_PROMPT)
 
     def test_scout_returns_ranked_company_event_groups(self):
         self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
         self.assertIn("one to three candidates in ranked order", alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_allocates_a_two_domain_bundle_per_returned_candidate(self):
+    def test_scout_defers_two_domain_bundle_to_focused_retrieval(self):
+        self.assertIn("at least one confirmed article URL",alpha_radar.SCOUT_PROMPT)
+        self.assertIn("focused retrieval stage",alpha_radar.SCOUT_PROMPT)
+        self.assertIn("apply the final two-domain evidence gate",alpha_radar.SCOUT_PROMPT)
+
+    def test_scout_uses_both_search_calls_in_only_tool_turn(self):
         self.assertIn(
-            "allocate at least two different-domain URLs to each candidate before extraction",
-            alpha_radar.SCOUT_PROMPT,
-        )
-        self.assertIn(
-            "Return only candidates with at least two successfully extracted useful URLs",
+            "call web_search exactly twice in parallel",
             alpha_radar.SCOUT_PROMPT,
         )
 
-    def test_scout_uses_both_search_calls_in_first_tool_turn(self):
-        self.assertIn(
-            "first tool-using turn, call web_search exactly twice in parallel",
-            alpha_radar.SCOUT_PROMPT,
-        )
+    def test_scout_does_not_extract_or_apply_focused_source_gate(self):
+        self.assertNotIn("web_extract",alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Do not extract pages",alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_uses_both_extract_calls_in_second_tool_turn(self):
-        self.assertIn(
-            "second tool-using turn, call web_extract exactly twice in parallel",
-            alpha_radar.SCOUT_PROMPT,
-        )
-        self.assertIn(
-            "up to five URLs in the first web_extract call and up to two in the second",
-            alpha_radar.SCOUT_PROMPT,
-        )
-        self.assertIn(
-            "different registered domains",
-            alpha_radar.SCOUT_PROMPT,
-        )
-        self.assertIn(
-            "across up to three candidate companies",
-            alpha_radar.SCOUT_PROMPT,
-        )
-
-    def test_live_research_requests_seven_candidate_urls(self):
+    def test_live_research_enforces_three_total_discovery_urls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("extract_scout_candidates(scout.stdout,max_candidates=3,max_urls=7)", source)
+        self.assertIn("scout_parse_result(scout.stdout,max_candidates=3,max_urls=3)", source)
 
     def test_gather_evidence_retries_timeouts_once(self):
         attempts = {"n": 0}

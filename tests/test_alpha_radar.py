@@ -29,13 +29,75 @@ class AlphaRadarTests(unittest.TestCase):
         scout = alpha_radar.discovery_command()
         synthesis = alpha_radar.synthesis_command()
 
-        self.assertEqual(scout[scout.index("-t") + 1], "web")
-        self.assertEqual(scout[scout.index("--max-turns") + 1], "3")
+        self.assertEqual(scout[scout.index("-t") + 1], "search")
+        self.assertEqual(scout[scout.index("--max-turns") + 1], "2")
         self.assertEqual(scout[scout.index("--run-budget") + 1], "180")
         self.assertIn("--safe-mode", synthesis)
         self.assertEqual(synthesis[synthesis.index("-t") + 1], "")
         self.assertEqual(synthesis[synthesis.index("--max-turns") + 1], "1")
         self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
+
+    def test_scout_prompt_is_discovery_only_and_allows_one_confirmed_url(self):
+        prompt=alpha_radar.discovery_prompt({"min_price_usd":1,"max_position_usd":500})
+        self.assertIn("$1-$500",prompt)
+        self.assertIn("at least one confirmed",prompt)
+        self.assertIn("web_search exactly twice in parallel",prompt)
+        self.assertNotIn("web_extract",prompt)
+        self.assertNotIn("at least two successfully extracted",prompt)
+        self.assertIn("focused retrieval stage",prompt)
+
+    def test_scout_parse_result_distinguishes_empty_invalid_and_schema_rejection(self):
+        candidates,diag=alpha_radar.scout_parse_result('{bad')
+        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"invalid_json")
+        candidates,diag=alpha_radar.scout_parse_result('{"candidates":[]}')
+        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"no_discovered_candidate")
+        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":[{"symbol":"bad"}]}))
+        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
+        candidates,diag=alpha_radar.scout_parse_result(structured_scout("AAA",["https://a.example/1"]))
+        self.assertEqual([c["symbol"] for c in candidates],["AAA"])
+        self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":1,"parsed_candidate_count":1,"valid_url_count":1})
+
+    def test_scout_parse_result_enforces_three_candidate_and_url_budget(self):
+        # >3 candidates total is rejected outright...
+        payload={"candidates":[json.loads(structured_scout(symbol,["https://a.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD")]}
+        candidates,diag=alpha_radar.scout_parse_result(json.dumps(payload))
+        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
+        # ...and discovery output carries at most three URLs across all candidates (four are unparseable).
+        candidates,diag=alpha_radar.scout_parse_result(structured_scout("AAA",[
+            "https://a.example/1","https://b.example/2","https://c.example/3","https://d.example/4",
+        ]))
+        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
+
+    def test_record_scout_diagnostic_persists_only_sanitized_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"research.jsonl"
+            alpha_radar.record_scout_diagnostic({
+                "reason":"candidate_schema_rejected","raw_candidate_count":2,
+                "parsed_candidate_count":0,"valid_url_count":0,"raw":"private",
+            },path=path,now="2026-09-15T00:00:00Z")
+            row=json.loads(path.read_text())
+        self.assertEqual(set(row),{"timestamp","stage","reason","raw_candidate_count","parsed_candidate_count","valid_url_count"})
+        self.assertEqual(row["stage"],"discovery")
+
+    def test_live_research_treats_empty_discovery_as_healthy_no_setup(self):
+        scout=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout):
+            result=alpha_radar.live_research({"min_price_usd":1,"max_position_usd":500})
+            row=json.loads((Path(td)/"private"/"research_diagnostics.jsonl").read_text())
+        self.assertEqual(result,{"status":"none","none_reason":"no_fresh_setup"})
+        self.assertEqual(row["reason"],"no_discovered_candidate")
+
+    def test_live_research_types_invalid_discovery_json(self):
+        scout=subprocess.CompletedProcess([],0,'not-json',"")
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.live_research({"min_price_usd":1,"max_position_usd":500})
+        self.assertEqual(ctx.exception.code,"research_scout_parse_failure")
+
+    def test_policy_price_range_is_one_to_five_hundred(self):
+        cfg=json.loads((alpha_radar.ROOT/"autonomy_config.json").read_text())
+        self.assertEqual(cfg["min_price_usd"],1)
+        self.assertEqual(cfg["max_position_usd"],500)
 
     def test_scout_prompt_bounded_and_structured(self):
         self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
@@ -43,15 +105,14 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn('"catalyst"', alpha_radar.SCOUT_PROMPT)
         self.assertIn("at most 500 characters",alpha_radar.SCOUT_PROMPT)
         self.assertIn('"urls"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn("No commentary", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("web_extract exactly twice in parallel", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Do not submit search-result pages", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("older than 180 days", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("no commentary", alpha_radar.SCOUT_PROMPT)
+        self.assertNotIn("web_extract", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("landing, index, search, symbol, or homepage URLs", alpha_radar.SCOUT_PROMPT)
         self.assertIn("web_search exactly twice in parallel", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Use exactly two tool-using turns", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("retrieval targets, not quotas", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("Use exactly one tool-using turn", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("focused retrieval stage", alpha_radar.SCOUT_PROMPT)
         self.assertIn("catalyst materiality", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("source credibility and completeness", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("at least one confirmed article URL", alpha_radar.SCOUT_PROMPT)
 
     def test_extract_candidate_urls_dedupes_per_domain_and_caps_six(self):
         text = "https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y"
@@ -537,10 +598,10 @@ class AlphaRadarTests(unittest.TestCase):
 
         self.assertEqual(candidate["none_reason"],"no_fresh_setup")
         self.assertNotIn("old.example",calls[1])
-        self.assertEqual([row["reason"] for row in diagnostics[:3]],["stale_source","fetched","fetched"])
-        self.assertEqual(diagnostics[3]["stage"],"synthesis")
-        self.assertEqual(diagnostics[3]["reason"],"no_fresh_setup")
-        self.assertEqual(len(diagnostics[3]["evidence_sha256"]),64)
+        self.assertEqual([row["reason"] for row in diagnostics[:4]],["discovery_candidates_ready","stale_source","fetched","fetched"])
+        self.assertEqual(diagnostics[4]["stage"],"synthesis")
+        self.assertEqual(diagnostics[4]["reason"],"no_fresh_setup")
+        self.assertEqual(len(diagnostics[4]["evidence_sha256"]),64)
 
     def test_live_research_attributes_evidence_blocker_to_top_candidate_only(self):
         scout_payload=json.dumps({"candidates":[
@@ -563,9 +624,25 @@ class AlphaRadarTests(unittest.TestCase):
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_source_retrieval_failed")
 
+    def test_live_research_does_not_rescue_when_focused_retrieval_supplies_second_domain(self):
+        scout=subprocess.CompletedProcess([],0,structured_scout("AAA",["https://a.example/1"]),"")
+        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        pages=[
+            {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
+            {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
+        ]
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",side_effect=[scout,synth]
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+            alpha_radar,"focused_retrieval",return_value={"AAA":["https://b.example/2"]}
+        ), patch.object(alpha_radar,"rescue_candidate_bundle") as rescue:
+            result=alpha_radar.live_research({"max_position_usd":500,"focused_retrieval_enabled":True})
+        self.assertEqual(result["none_reason"],"no_fresh_setup")
+        rescue.assert_not_called()
+
     def test_live_research_synthesizes_next_candidate_when_first_bundle_is_thin(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-14","urls":["https://a.example/1","https://missing.example/2"]},
+            {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-14","urls":["https://a.example/1"]},
             {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-14","urls":["https://c.example/3","https://d.example/4"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
@@ -581,7 +658,9 @@ class AlphaRadarTests(unittest.TestCase):
             return scout if len(calls)==1 else synth
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
             alpha_radar.subprocess,"run",side_effect=run
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages):
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+            alpha_radar,"rescue_candidate_bundle",return_value=[]
+        ):
             alpha_radar.live_research({"max_position_usd":500})
         self.assertNotIn("https://a.example/1",calls[1])
         self.assertIn("https://c.example/3",calls[1])

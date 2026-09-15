@@ -191,7 +191,7 @@ class PipelineTests(unittest.TestCase):
         cmd = alpha_radar.research_command()
         self.assertEqual(cmd[cmd.index("--provider") + 1], "nous")
         self.assertEqual(cmd[cmd.index("-m") + 1], "deepseek/deepseek-v4-flash-0731")
-        self.assertEqual(cmd[cmd.index("-t") + 1], "web")
+        self.assertEqual(cmd[cmd.index("-t") + 1], "search")
         self.assertNotIn("x_search", cmd)
         self.assertEqual(cmd[-2:], ["--query-file", "-"])
 
