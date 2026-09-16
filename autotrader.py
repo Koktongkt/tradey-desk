@@ -22,6 +22,7 @@ import sys
 from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
+import managed_reconciliation
 
 ROOT = Path(__file__).resolve().parent
 PRIVATE_DIR = ROOT / "private"
@@ -95,12 +96,23 @@ def managed_exposure(positions: list[dict[str, Any]], journal: list[dict[str, An
             continue
         quantities[symbol] = quantities.get(symbol, 0.0) + (quantity if action == "BUY" else -quantity)
     open_symbols = {symbol for symbol, quantity in quantities.items() if quantity > 0}
+    broker_holding: dict[str, float] = {}
+    for position in positions:
+        if not isinstance(position, dict): continue
+        symbol = str(position.get("symbol", "")).upper()
+        try: qty = float(position.get("qty"))
+        except (TypeError, ValueError): qty = None
+        broker_holding[symbol] = qty
+    for symbol in sorted(open_symbols):
+        qty = broker_holding.get(symbol)
+        if qty is None or abs(qty - quantities[symbol]) > 1e-9:
+            errors.append("managed_position_reconciliation_failed")
     broker_values = {
         str(position.get("symbol", "")).upper(): abs(float(position.get("market_value") or 0))
         for position in positions if isinstance(position, dict)
     }
-    if any(symbol not in broker_values for symbol in open_symbols):
-        errors.append("managed_position_reconciliation_failed")
+    if "managed_position_reconciliation_failed" in errors:
+        return 0.0, sorted(set(errors))
     return sum(broker_values.get(symbol, 0.0) for symbol in open_symbols), sorted(set(errors))
 
 
@@ -775,7 +787,7 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
     cmd = bridge_command(operation)
     data = json.dumps(payload or {})
     # Only read-only operations retry: execution must never be re-sent.
-    attempts = 2 if operation in {"snapshot", "review", "reconcile", "reconcile_many", "tools"} else 1
+    attempts = 2 if operation in {"snapshot", "review", "reconcile", "reconcile_many", "reconciliation_snapshot", "tools"} else 1
     started = dt.datetime.now(dt.timezone.utc)
     result = None
     for attempt in range(1, attempts + 1):
@@ -1028,12 +1040,15 @@ REVIEWED_SKIP_GRACE_MINUTES = 10
 
 
 def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> bool:
-    """True when this dossier hash already reached a completed review outcome.
+    """True when this dossier hash's LATEST review row is a completed outcome.
 
-    A review row counts as completed only when at least one reviewer returned
-    actual content: rows whose reviewer entries are all None/missing are
-    subprocess failures (reviewer_unavailable), which must retry next cycle,
-    not suppress it.
+    A row counts as completed only when at least one reviewer returned actual
+    content other than a reconciliation-blocked marker. Rows whose reviewer
+    entries are all None/missing are subprocess failures (reviewer_unavailable)
+    and must retry. When the latest row for the hash is a reconciliation-blocked
+    marker, the dossier is retried: that candidate was never evaluated, so it
+    must not be permanently marked already_reviewed. Fresh reviews appended on
+    the retry supersede the marker (narrow retry: latest same-dossier row only).
     """
     expected = candidate.get("dossier_hash")
     if not isinstance(expected, str):
@@ -1042,6 +1057,7 @@ def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> b
         lines = reviews_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
+    completed = False
     for line in lines:
         try:
             row = json.loads(line)
@@ -1050,9 +1066,37 @@ def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> b
         if not isinstance(row, dict) or row.get("dossier_hash") != expected:
             continue
         reviews = row.get("reviews")
-        if isinstance(reviews, list) and any(isinstance(r, dict) and r.get("decision") for r in reviews):
-            return True
-    return False
+        completed = (
+            isinstance(reviews, list)
+            and any(
+                isinstance(r, dict) and r.get("decision")
+                and r.get("decision") != "reconciliation_blocked"
+                for r in reviews
+            )
+        )
+    return completed
+
+
+def note_reconciliation_blocked(reviews_path: Path) -> None:
+    """Record a reconciliation block for the current latest candidate so the
+    narrow retry semantics (dossier_already_reviewed) can retry it later."""
+    try:
+        candidates = read_jsonl(ROOT / "candidates.jsonl")
+    except OSError:
+        return
+    if not candidates:
+        return
+    dossier_hash = candidates[-1].get("dossier_hash")
+    if isinstance(dossier_hash, str) and dossier_hash:
+        append_jsonl(reviews_path, {
+            "timestamp": utcnow(), "dossier_hash": dossier_hash,
+            "reviews": [{"decision": "reconciliation_blocked"}],
+        })
+
+
+def reconcile_managed_protection(root: Path, bridge: Any) -> list[dict[str, Any]]:
+    """Shared replacement-OCO reconciliation (read-only broker + local repair)."""
+    return managed_reconciliation.reconcile(root, bridge)
 
 
 def output_paths(root:Path,dry_run:bool)->tuple[Path,Path,Path]:
@@ -1100,6 +1144,17 @@ def run(args: argparse.Namespace) -> int:
             try: exit_updates=reconcile_managed_exits(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
             except Exception:
                 print("SYSTEM_FAILURE managed_exit_reconciliation"); return 4
+            try:
+                shared_updates=reconcile_managed_protection(ROOT,_broker_bridge)
+            except managed_reconciliation.ReconciliationBlocked as error:
+                note_reconciliation_blocked(reviews_path)
+                print(f"BLOCKER managed_reconciliation:{error}"); return 2
+            except Exception:
+                print("SYSTEM_FAILURE managed_reconciliation"); return 4
+            if shared_updates:
+                update=shared_updates[0]
+                print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")
+                return 0
             if exit_updates:
                 update=exit_updates[0]
                 print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")

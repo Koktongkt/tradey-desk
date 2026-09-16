@@ -204,8 +204,8 @@ class TradeySafetyTests(unittest.TestCase):
 
     def test_managed_exposure_uses_only_net_open_tradey_symbols(self):
         positions = [
-            {"symbol": "NEW", "market_value": "120"},
-            {"symbol": "OLD", "market_value": "5000"},
+            {"symbol": "NEW", "qty": "2", "market_value": "120"},
+            {"symbol": "OLD", "qty": "9", "market_value": "5000"},
         ]
         journal = [
             {"symbol": "NEW", "action": "BUY", "quantity": 2, "status": "filled"},

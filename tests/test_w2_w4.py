@@ -176,7 +176,9 @@ class NoOpCycleSkipTests(unittest.TestCase):
                 json.dumps({"timestamp": _review_ts(), "dossier_hash": candidate["dossier_hash"], "reviews": [{"decision": "HOLD"}, {"decision": "HOLD"}]}) + "\n")
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=AssertionError("snapshot must not run")
-            ), patch("autotrader.independent_reviews", side_effect=AssertionError("reviews must not run")):
+            ), patch("autotrader.independent_reviews", side_effect=AssertionError("reviews must not run")), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
+            ):
                 captured_out = __import__("io").StringIO()
                 import contextlib
                 with contextlib.redirect_stdout(captured_out):
@@ -218,6 +220,8 @@ class NoOpCycleSkipTests(unittest.TestCase):
                 return []
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader.reconcile_pending_orders", side_effect=fake_reconcile
+            ), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
             ), patch("autotrader._broker_bridge", side_effect=AssertionError("snapshot must not run")):
                 import contextlib
                 with contextlib.redirect_stdout(__import__("io").StringIO()):
@@ -240,6 +244,8 @@ class NoOpCycleSkipTests(unittest.TestCase):
                 "autotrader.reconcile_pending_orders", return_value=[]
             ), patch(
                 "autotrader.reconcile_managed_exits", side_effect=fake_exit_reconcile
+            ), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
             ), patch("autotrader._broker_bridge", side_effect=AssertionError("snapshot must not run")):
                 import contextlib
                 with contextlib.redirect_stdout(__import__("io").StringIO()):

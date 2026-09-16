@@ -175,7 +175,9 @@ def _run_in_root(root, snapshot, live_dry_run=False, review_snapshot=None):
         raise AssertionError(f"unexpected bridge op {op}")
     with patch.object(autotrader, "ROOT", root), patch(
         "autotrader._broker_bridge", side_effect=fake_bridge
-    ), patch("autotrader.load_baseline_symbols", return_value=set()):
+    ), patch("autotrader.load_baseline_symbols", return_value=set()), patch(
+        "autotrader.reconcile_managed_protection", return_value=[]
+    ):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = autotrader.run(autotrader.argparse.Namespace(
@@ -268,6 +270,8 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=fake_bridge
             ), patch("autotrader.load_baseline_symbols", return_value=set()), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
+            ), patch(
                 "autotrader.independent_reviews", return_value=reviews
             ):
                 out = io.StringIO()
