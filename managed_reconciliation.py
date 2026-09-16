@@ -190,17 +190,23 @@ def check_protection(snapshot, active, legs_by_parent, closing):
         if ref in closing:
             continue
         current = []
+        represented = False
         for leg in legs_by_parent[ref]:
             if leg['status'] not in ACTIVE:
                 continue
             leg_ref = leg['client_order_id']
+            require(leg.get('time_in_force') == 'gtc', 'managed_protection_not_persistent')
             observed = opened.get(leg_ref)
-            require(observed is not None, 'managed_protection_missing')
-            validate_exit(observed, intent['plan'], leg['order_class'])
-            require(observed.get('status') in ACTIVE, 'managed_protection_missing')
-            require(observed.get('time_in_force') == 'gtc', 'managed_protection_not_persistent')
-            current.append(observed.get('type', observed.get('order_type')))
+            if observed is not None:
+                require(observed.get('type', observed.get('order_type')) ==
+                        leg.get('type', leg.get('order_type')), 'managed_protection_inconsistent')
+                validate_exit(observed, intent['plan'], leg['order_class'])
+                require(observed.get('status') in ACTIVE, 'managed_protection_missing')
+                require(observed.get('time_in_force') == 'gtc', 'managed_protection_not_persistent')
+                represented = True
+            current.append(leg.get('type', leg.get('order_type')))
             allowed.add(leg_ref)
+        require(represented, 'managed_protection_missing')
         require(sorted(current) == ['limit', 'stop'], 'managed_protection_missing_or_oversized')
     # No symbol-only exemption: every active exit must be a known linked leg.
     require(all(ref in allowed for ref, order in opened.items() if order.get('status') in ACTIVE), 'managed_open_order_unlinked')

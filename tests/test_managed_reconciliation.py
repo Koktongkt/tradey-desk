@@ -78,6 +78,40 @@ class ManagedReconciliationTests(unittest.TestCase):
         with self.assertRaises(m.ReconciliationBlocked):
             self.reconcile()
 
+    def test_original_bracket_accepts_parent_verified_held_stop_omitted_from_open_orders(self):
+        (self.root / 'private/protection_orders.jsonl').write_text('')
+        target = dict(client_order_id='target', symbol='ZS', side='sell',
+                      position_intent='sell_to_close', order_class='bracket',
+                      type='limit', qty='3', filled_qty='0', status='new',
+                      limit_price='184.37', time_in_force='gtc', legs=None)
+        stop = dict(client_order_id='stop', symbol='ZS', side='sell',
+                    position_intent='sell_to_close', order_class='bracket',
+                    type='stop', qty='3', filled_qty='0', status='held',
+                    stop_price='151.24', time_in_force='gtc', legs=None)
+        self.parent['legs'] = [stop, target]
+        self.positions = [{'symbol': 'ZS', 'qty': '3'}]
+        self.open_orders = [copy.deepcopy(target)]
+
+        self.assertEqual(self.reconcile(), [])
+
+    def test_open_order_representation_must_match_the_same_parent_leg_type(self):
+        (self.root / 'private/protection_orders.jsonl').write_text('')
+        target = dict(client_order_id='target', symbol='ZS', side='sell',
+                      position_intent='sell_to_close', order_class='bracket',
+                      type='limit', qty='3', filled_qty='0', status='new',
+                      limit_price='184.37', time_in_force='gtc', legs=None)
+        stop = dict(client_order_id='stop', symbol='ZS', side='sell',
+                    position_intent='sell_to_close', order_class='bracket',
+                    type='stop', qty='3', filled_qty='0', status='held',
+                    stop_price='151.24', time_in_force='gtc', legs=None)
+        self.parent['legs'] = [stop, target]
+        self.positions = [{'symbol': 'ZS', 'qty': '3'}]
+        self.open_orders = [dict(stop, client_order_id='target', status='new')]
+
+        import managed_reconciliation as m
+        with self.assertRaises(m.ReconciliationBlocked):
+            self.reconcile()
+
     def test_journal_lifecycle_contradictions_fail_closed(self):
         import managed_reconciliation as m
         original_target = copy.deepcopy(self.target)
