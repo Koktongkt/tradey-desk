@@ -22,7 +22,8 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=360", source)
         self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
         # synthesis timeout is unchanged
-        self.assertIn("timeout=120,cwd=ROOT", source)
+        self.assertIn("synthesis_deadline=monotonic()+120", source)
+        self.assertIn("timeout=min(120,remaining),cwd=ROOT", source)
 
     def test_scout_run_budget_bounds_discovery(self):
         command = alpha_radar.discovery_command()
@@ -68,7 +69,7 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
 
     def test_scout_returns_ranked_company_event_groups(self):
         self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn("one to three candidates in ranked order", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("one to five candidates in ranked order", alpha_radar.SCOUT_PROMPT)
 
     def test_scout_defers_two_domain_bundle_to_focused_retrieval(self):
         self.assertIn("at least one confirmed article URL",alpha_radar.SCOUT_PROMPT)
@@ -85,9 +86,9 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertNotIn("web_extract",alpha_radar.SCOUT_PROMPT)
         self.assertIn("Do not extract pages",alpha_radar.SCOUT_PROMPT)
 
-    def test_live_research_enforces_three_total_discovery_urls(self):
+    def test_live_research_enforces_five_total_discovery_urls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("scout_parse_result(scout.stdout,max_candidates=3,max_urls=3)", source)
+        self.assertIn("scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)", source)
 
     def test_gather_evidence_retries_timeouts_once(self):
         attempts = {"n": 0}
