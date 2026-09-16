@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse,datetime as dt,json,re,subprocess,sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from durable_jsonl import append_jsonl, DurableAppendError
 ROOT=Path(__file__).resolve().parent
 NY=ZoneInfo("America/New_York")
 AUDIT_PATH=ROOT/"decision_audit.jsonl"
@@ -33,8 +34,7 @@ def audit_result(mode:str,stage:str,returncode:int,stdout:str,path:Path=AUDIT_PA
         detail=first[len(prefix):].strip()
         tokens=re.findall(r"[A-Za-z][A-Za-z0-9_:-]{0,63}",detail)
         row["reason"]=",".join(tokens[:8]) or "unspecified"
-    path.parent.mkdir(parents=True,exist_ok=True)
-    with path.open("a",encoding="utf-8") as f:f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    append_jsonl(path,row)
 
 def in_window(mode:str,now:dt.datetime|None=None)->bool:
     n=(now or dt.datetime.now(NY)).astimezone(NY)
@@ -104,4 +104,11 @@ def main()->int:
     else:rc=execute(["bash",str(ROOT/"deploy_dashboard.sh")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="deployment")
     if daily and rc==0:mark_completed(a.mode)
     return rc
-if __name__=="__main__":raise SystemExit(main())
+def cli()->int:
+    try:
+        return main()
+    except DurableAppendError:
+        print("SYSTEM_FAILURE audit_persistence_failure")
+        return 3
+
+if __name__=="__main__":raise SystemExit(cli())

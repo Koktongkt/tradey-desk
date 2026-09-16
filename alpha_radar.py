@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
+from durable_jsonl import append_jsonl, DurableAppendError
 from earnings_calendar import default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
@@ -275,7 +276,6 @@ def record_source_verification_diagnostic(
     """Persist a strict failure projection without URLs, hashes, or raw errors."""
     if validation.get("passed") is True:return
     target=path or ROOT/"private"/"research_diagnostics.jsonl"
-    target.parent.mkdir(parents=True,exist_ok=True)
     reason=validation.get("reason")
     if reason not in SOURCE_VERIFICATION_REASONS:reason="source_verification_failed"
     domain=str(validation.get("domain") or "unknown").lower()
@@ -295,8 +295,7 @@ def record_source_verification_diagnostic(
         "independent_domains":bounded_count("independent_domains"),
         "required_independent_domains":bounded_count("required_independent_domains"),
     }
-    with target.open("a",encoding="utf-8") as f:
-        f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    append_jsonl(target,row)
 
 def extract_json(text:str)->dict[str,Any]:
     d=json.JSONDecoder()
@@ -309,7 +308,7 @@ def extract_json(text:str)->dict[str,Any]:
     raise ValueError("no json")
 
 def append(row:dict[str,Any])->None:
-    with (ROOT/"candidates.jsonl").open("a",encoding="utf-8") as f: f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    append_jsonl(ROOT/"candidates.jsonl",row)
 
 def decision_line(candidate:dict[str,Any])->str:
     symbol=str(candidate.get("symbol","")).upper()
@@ -763,16 +762,14 @@ def record_research_diagnostics(
     """Append a strict private projection; never persist raw exception text."""
     if not diagnostics:return
     target=path or ROOT/"private"/"research_diagnostics.jsonl"
-    target.parent.mkdir(parents=True,exist_ok=True)
     timestamp=now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
-    with target.open("a",encoding="utf-8") as f:
-        for item in diagnostics:
-            reason=item.get("reason")
-            if reason not in SOURCE_DIAGNOSTIC_REASONS:continue
-            domain=str(item.get("domain") or "unknown").lower()
-            if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
-            stage="source_fetch" if reason=="fetched" or reason.startswith("source_fetch_") else "source_quality"
-            f.write(json.dumps({"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain},sort_keys=True,separators=(",",":"))+"\n")
+    for item in diagnostics:
+        reason=item.get("reason")
+        if reason not in SOURCE_DIAGNOSTIC_REASONS:continue
+        domain=str(item.get("domain") or "unknown").lower()
+        if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
+        stage="source_fetch" if reason=="fetched" or reason.startswith("source_fetch_") else "source_quality"
+        append_jsonl(target,{"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain})
 
 
 def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str|None=None)->None:
@@ -784,8 +781,8 @@ def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str
         value=diagnostic.get(key,0)
         return min(100,max(0,value if isinstance(value,int) and not isinstance(value,bool) else 0))
     row={"timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),"stage":"discovery","reason":reason,"raw_candidate_count":count("raw_candidate_count"),"parsed_candidate_count":count("parsed_candidate_count"),"valid_url_count":count("valid_url_count")}
-    target=path or ROOT/"private"/"research_diagnostics.jsonl";target.parent.mkdir(parents=True,exist_ok=True)
-    with target.open("a",encoding="utf-8") as f:f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    target=path or ROOT/"private"/"research_diagnostics.jsonl"
+    append_jsonl(target,row)
 
 
 def record_synthesis_none(
@@ -796,15 +793,13 @@ def record_synthesis_none(
 )->None:
     """Persist only normalized status metadata and the immutable evidence hash."""
     target=path or ROOT/"private"/"research_diagnostics.jsonl"
-    target.parent.mkdir(parents=True,exist_ok=True)
     row={
         "timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
         "stage":"synthesis",
         "reason":synthesis_none_reason(candidate),
         "evidence_sha256":hashlib.sha256(evidence_prompt.encode("utf-8")).hexdigest(),
     }
-    with target.open("a",encoding="utf-8") as f:
-        f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    append_jsonl(target,row)
 
 
 def synthesis_prompt(
@@ -1152,6 +1147,8 @@ def main_with_args(a:argparse.Namespace)->int:
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         print(decision_line(c)); return 0
     except Exception as e:
+        if isinstance(e,DurableAppendError) or (isinstance(e,ResearchFailure) and e.code=="research_persistence_failure"):
+            print("SYSTEM_FAILURE research_persistence_failure"); return 3
         if a.dry_run_fixture:
             print("SYSTEM_FAILURE alpha_radar"); return 3
         reused=fresh_verified_candidate(ROOT/"candidates.jsonl")
