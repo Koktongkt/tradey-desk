@@ -52,17 +52,18 @@ def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|
             result=subprocess.CompletedProcess(cmd,124,"","timeout")
         if result.returncode==0:
             if audit_mode:audit_result(audit_mode,audit_stage,0,result.stdout,audit_path)
-            if audit_mode=="radar" and audit_stage=="research":
+            if audit_mode in {"premarket","radar"} and audit_stage=="research":
+                notice_name="Premarket Research" if audit_mode=="premarket" else "Alpha Radar"
                 if result.stdout.strip()=="DECISION skipped no_fresh_setup":
-                    print("Alpha Radar: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.")
+                    print(f"{notice_name}: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.")
                 elif result.stdout.strip()=="DECISION skipped no_valid_discovery_candidate":
-                    print("Alpha Radar: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.")
+                    print(f"{notice_name}: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.")
                 else:
                     match=re.fullmatch(r"DECISION (candidate_qualified|reused_fresh_candidate) ([A-Z]{1,6})",result.stdout.strip())
                     if match:
                         event,symbol=match.groups()
                         label=f"Final qualified candidate: {symbol}" if event=="candidate_qualified" else f"Reusing existing fresh candidate: {symbol} (not a new qualification)"
-                        print(f"Alpha Radar: {label}. Research only; not a trade approval or execution.")
+                        print(f"{notice_name}: {label}. Research only; not a trade approval or execution.")
             return 0
     if result and result.stdout.strip():print(result.stdout.strip())
     elif result:print("SYSTEM_FAILURE scheduled_task")

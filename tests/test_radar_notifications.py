@@ -29,8 +29,20 @@ class RadarNotifications(unittest.TestCase):
     def test_unrelated_and_untrusted_output_remains_silent(self):
         for text in ['', 'DECISION skipped outside_window', 'DECISION skipped already_completed', 'DECISION candidate_qualified AAPL secret', 'DECISION candidate_qualified AAPL\nprivate data']:
             self.assertEqual(self.run_output(text)[1], '')
-        for mode in ['premarket', 'autotrader', 'dashboard', 'postclose']:
+        for mode in ['autotrader', 'dashboard', 'postclose']:
             self.assertEqual(self.run_output('DECISION skipped no_fresh_setup', mode=mode)[1], '')
+
+    def test_premarket_qualified_candidate_notifies(self):
+        rc, out, row = self.run_output('DECISION candidate_qualified AAPL\n', mode='premarket')
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, 'Premarket Research: Final qualified candidate: AAPL. Research only; not a trade approval or execution.\n')
+        self.assertEqual(row['decision'], 'candidate_qualified')
+
+    def test_premarket_no_candidate_notifies(self):
+        rc, out, row = self.run_output('DECISION skipped no_fresh_setup\n', mode='premarket')
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, 'Premarket Research: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.\n')
+        self.assertEqual(row['reason'], 'no_fresh_setup')
 
     def test_blocker_still_delivered(self):
         rc, out, row = self.run_output('BLOCKER research_source_freshness_insufficient', code=2)
