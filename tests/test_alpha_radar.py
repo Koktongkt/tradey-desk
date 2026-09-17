@@ -344,6 +344,60 @@ class AlphaRadarTests(unittest.TestCase):
             "2026-09-08T00:00:00Z",
         )
 
+    def test_gateway_fallback_parses_marketscreener_numeric_publication_date(self):
+        result=subprocess.CompletedProcess(
+            [],0,
+            "Published on 08/05/2026 at 10:07 am EDT\n"
+            "# Thomson Reuters raises 2026 guidance\n"
+            + _body("guidance details"),
+            "",
+        )
+        with patch.object(alpha_radar.subprocess,"run",return_value=result):
+            page=alpha_radar.fetch_source_via_gateway(
+                "https://www.marketscreener.com/news/thomson-reuters-guidance"
+            )
+        self.assertEqual(page["published_at"],"2026-08-05T00:00:00Z")
+
+    def test_gateway_fallback_parses_reuters_dateline_when_url_date_matches(self):
+        result=subprocess.CompletedProcess(
+            [],0,
+            "Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. "
+            + _body("revenue and guidance details"),
+            "",
+        )
+        with patch.object(alpha_radar.subprocess,"run",return_value=result):
+            page=alpha_radar.fetch_source_via_gateway(
+                "https://www.reuters.com/business/thomson-reuters-results-2026-08-05/"
+            )
+        self.assertEqual(page["published_at"],"2026-08-05T00:00:00Z")
+
+    def test_gateway_fallback_ignores_marketscreener_date_format_on_other_domains(self):
+        result=subprocess.CompletedProcess(
+            [],0,
+            "Published on 08/05/2026 at 10:07 am EDT\n" + _body("guidance details"),
+            "",
+        )
+        with patch.object(alpha_radar.subprocess,"run",return_value=result):
+            page=alpha_radar.fetch_source_via_gateway("https://example.com/news/guidance")
+        self.assertIsNone(page["published_at"])
+
+    def test_gateway_fallback_reuters_dateline_requires_matching_reuters_url_date(self):
+        result=subprocess.CompletedProcess(
+            [],0,
+            "Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. "
+            + _body("revenue and guidance details"),
+            "",
+        )
+        urls=(
+            "https://www.reuters.com/business/thomson-reuters-results-2026-08-06/",
+            "https://example.com/business/thomson-reuters-results-2026-08-05/",
+        )
+        with patch.object(alpha_radar.subprocess,"run",return_value=result):
+            for url in urls:
+                with self.subTest(url=url):
+                    page=alpha_radar.fetch_source_via_gateway(url)
+                    self.assertIsNone(page["published_at"])
+
     def test_filter_evidence_drops_explicitly_stale_articles(self):
         pages = [
             {"url": "https://old.example/story", "title": "Old", "text": _body("old event"), "published_at": "2025-08-28T14:57:00Z"},

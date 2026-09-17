@@ -43,7 +43,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         now=dt.datetime.now(dt.timezone.utc)
         return dict({'symbol':symbol,'instrument_type':'cash_equity','setup_type':'event_momentum',
                      'planned_exit_at':(now+dt.timedelta(days=10)).isoformat(),
-                     'earnings_event_at':(now-dt.timedelta(days=1)).date().isoformat(),
+                     'earnings_event_at':(now-dt.timedelta(days=2)).date().isoformat(),
                      'horizon_rationale':'Post event follow-through','sources':[{'url':f'https://{d}.example/{symbol}'} for d in ('one','two')]},**changes)
 
     def test_none_advances_to_second_candidate_and_persists_once(self):

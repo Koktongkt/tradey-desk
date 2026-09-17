@@ -554,10 +554,29 @@ def fetch_source_via_gateway(url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOU
     text=re.sub(r"\s+"," ",text).strip()[:6000]
     if not text:return None
     published=None
-    match=re.search(r"(\d{4}-\d{2}-\d{2})",text) or re.search(r"(?i)\b([A-Z][a-z]{2,8} \d{1,2}, \d{4})",text)
+    host=(urllib.parse.urlparse(url).hostname or "").lower()
+    match=None
+    formats=("%Y-%m-%d","%B %d, %Y","%b %d, %Y")
+    if host=="marketscreener.com" or host.endswith(".marketscreener.com"):
+        match=re.search(r"(?i)\bPublished on (\d{1,2}/\d{1,2}/\d{4})\b",text)
+        if match:formats=("%m/%d/%Y",)
+    if match is None and (host=="reuters.com" or host.endswith(".reuters.com")):
+        url_date=re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)",urllib.parse.urlparse(url).path)
+        dateline=re.search(r"(?i)\b([A-Z][a-z]{2,8}) (\d{1,2}) \(Reuters\)",text)
+        if url_date and dateline:
+            try:
+                dated=dt.datetime.strptime(url_date.group(1),"%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+                visible=dt.datetime.strptime(
+                    f"{dateline.group(1)} {dateline.group(2)} {dated.year}","%b %d %Y"
+                ).replace(tzinfo=dt.timezone.utc)
+                if (visible.month,visible.day)==(dated.month,dated.day):
+                    published=dated.isoformat().replace("+00:00","Z")
+            except ValueError:pass
+    if match is None and published is None:
+        match=re.search(r"(\d{4}-\d{2}-\d{2})",text) or re.search(r"(?i)\b([A-Z][a-z]{2,8} \d{1,2}, \d{4})",text)
     if match:
         raw=match.group(1)
-        for fmt in ("%Y-%m-%d","%B %d, %Y","%b %d, %Y"):
+        for fmt in formats:
             try:
                 published=dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
                 break
