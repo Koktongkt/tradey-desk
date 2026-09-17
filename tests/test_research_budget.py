@@ -4,12 +4,15 @@ and scout-reliability hardening.
 Timeouts must be calibrated against OBSERVED provider latency, and the outer cycle
 budget must cover the serialized worst case of every research stage:
 
-    model scout 360 + deterministic fetch/fallback 110 + synthesis 120
-    + deterministic SEC lookup 45 + 85-second outer margin
+    model scout 360 + focused retrieval 240 + shared evidence pipeline 260
+    + synthesis 120 + deterministic earnings SEC lookup 45 + 85-second margin
 """
 import json
 import subprocess
+import tempfile
 import unittest
+import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 import alpha_radar
@@ -40,10 +43,11 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=240",source)
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # 360 scout + 240 focused retrieval + 110 fetch/fallback + 120 synthesis
-        # + 150 sequential thin-bundle rescue + 45 SEC lookup = 1025;
+        # 360 scout + 240 focused retrieval + 260 shared rescue/fetch pipeline
+        # + 120 synthesis + 45 earnings SEC lookup = 1025;
         # outer 1110 leaves 85 seconds.
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
+        self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS,260)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
         self.assertIn(
             'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110',
@@ -124,20 +128,57 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
             [{"url":"https://down.example/a","domain": "down.example", "reason": "source_fetch_timeout"}],
         )
 
-    def test_gather_evidence_does_not_retry_non_timeout_failures(self):
+    def test_gather_evidence_retries_transient_connection_failure_once(self):
         attempts = {"n": 0}
 
         def fetch(url, _timeout):
             attempts["n"] += 1
-            raise ConnectionResetError("reset")
+            if attempts["n"] == 1:
+                raise ConnectionResetError("reset")
+            return {"url":url,"title":"Recovered","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
-            alpha_radar, "fetch_source_via_gateway", return_value=None
-        ):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
             pages = alpha_radar.gather_evidence(["https://bad.example/a"])
 
-        self.assertEqual(attempts["n"], 1)
-        self.assertEqual(pages, [])
+        self.assertEqual(attempts["n"], 2)
+        self.assertEqual([page["title"] for page in pages],["Recovered"])
+
+    def test_gather_evidence_retries_wrapped_urlerror_connection_failure(self):
+        attempts={"n":0}
+        def fetch(url,_timeout):
+            attempts["n"]+=1
+            if attempts["n"]==1:
+                raise urllib.error.URLError(ConnectionResetError("reset"))
+            return {"url":url,"title":"Recovered","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
+        with patch.object(alpha_radar,"fetch_source",side_effect=fetch):
+            pages=alpha_radar.gather_evidence(["https://wrapped.example/a"])
+        self.assertEqual(attempts["n"],2)
+        self.assertEqual([page["title"] for page in pages],["Recovered"])
+
+    def test_collection_budget_exhaustion_is_typed_without_starting_fetch(self):
+        diagnostics=[]
+        with patch.object(alpha_radar,"fetch_source") as direct:
+            pages=alpha_radar.gather_evidence(
+                ["https://late.example/a"],diagnostics=diagnostics,collection_budget_seconds=0
+            )
+        direct.assert_not_called()
+        self.assertEqual(pages,[])
+        self.assertEqual(diagnostics,[{
+            "url":"https://late.example/a","domain":"late.example","reason":"source_deadline_exhausted"
+        }])
+
+    def test_fresh_source_cache_avoids_network_fetch(self):
+        page={"url":"https://cached.example/a","title":"Cached","text":"usable cached evidence","published_at":"2026-09-08T15:00:00Z"}
+        with tempfile.TemporaryDirectory() as td:
+            cache=Path(td)/"source_cache.json"
+            with patch.object(alpha_radar,"fetch_source",return_value=page) as direct:
+                first=alpha_radar.gather_evidence([page["url"]],cache_path=cache)
+                original_checked_at=json.loads(cache.read_text())[page["url"]]["checked_at"]
+                second=alpha_radar.gather_evidence([page["url"]],cache_path=cache)
+                cached_checked_at=json.loads(cache.read_text())[page["url"]]["checked_at"]
+        self.assertEqual(first,second)
+        self.assertEqual(direct.call_count,1)
+        self.assertEqual(cached_checked_at,original_checked_at)
 
 
 class GatewayFallbackGuardTests(unittest.TestCase):
@@ -170,6 +211,21 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         self.assertEqual(len(pages), 1)
         self.assertEqual(pages[0]["url"], "https://walled.example/a")
         self.assertIn("37 percent", pages[0]["text"])
+
+    def test_businesswire_forbidden_skips_direct_retry_and_uses_gateway(self):
+        calls=[]
+        def direct(url,_timeout):
+            calls.append("direct")
+            raise urllib.error.HTTPError(url,403,"forbidden",{},None)
+        def gateway(url,timeout_seconds=60):
+            calls.append("gateway")
+            return {"url":url,"title":"Wire","text":"usable wire evidence","published_at":"2026-09-08T15:00:00Z"}
+        with patch.object(alpha_radar,"fetch_source",side_effect=direct), patch.object(
+            alpha_radar,"fetch_source_via_gateway",side_effect=gateway
+        ):
+            pages=alpha_radar.gather_evidence(["https://www.businesswire.com/news/home/1/en/Test"])
+        self.assertEqual(calls,["direct","gateway"])
+        self.assertEqual([page["title"] for page in pages],["Wire"])
 
     def test_gateway_fallback_failure_keeps_typed_timeout(self):
         diagnostics = []

@@ -80,13 +80,13 @@ class CandidateAlternativesTests(unittest.TestCase):
 
     def test_alternatives_share_one_monotonic_120_second_budget(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[100,100,145,190]):
+        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[0,100,100,145,190]):
             radar.live_research(cfg)
             self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[120,75,30])
 
     def test_exhausted_budget_never_starts_another_subprocess(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[100,100,220,230]):
+        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[0,100,100,220]):
             with self.assertRaises(radar.ResearchFailure) as caught:
                 radar.live_research(cfg)
             self.assertEqual(caught.exception.code,'research_synthesis_timeout')

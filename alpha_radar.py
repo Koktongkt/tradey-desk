@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Live research radar. Writes qualified candidate dossiers; never orders."""
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.parse, urllib.request
+import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
 from durable_jsonl import append_jsonl, DurableAppendError
-from earnings_calendar import default_trusted_date_loader, resolve_candidate_earnings
+from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}
-SOURCE_DIAGNOSTIC_REASONS={"fetched","source_fetch_timeout","source_fetch_failed","stale_source","article_body_missing","source_freshness_unknown","bundle_rescue_unavailable"}
+RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted"}
+SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source","article_body_missing","source_freshness_unknown","bundle_rescue_unavailable"}
 MIN_EVIDENCE_BODY_CHARS=80
 GATEWAY_RESCUE_TIMEOUT_SECONDS=60
-EDGAR_FTS_ENDPOINT="https://efts.sec.gov/LATEST/search-index"
+EVIDENCE_PIPELINE_BUDGET_SECONDS=260
+SEC_TICKERS_ENDPOINT="https://www.sec.gov/files/company_tickers.json"
+SEC_SUBMISSIONS_BASE="https://data.sec.gov/submissions"
 EDGAR_ARCHIVE_BASE="https://www.sec.gov/Archives/edgar/data"
 GATEWAY_RESCUE_PROMPT=(
     "Call web_search exactly once for recent independent news or wire coverage "
@@ -591,16 +594,43 @@ def gather_evidence(
     urls:list[str],
     per_source_timeout:int=15,
     diagnostics:list[dict[str,str]]|None=None,
+    collection_budget_seconds:float|None=None,
+    cache_path:Path|None=None,
+    collection_deadline:float|None=None,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
+    budget=(per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10 if collection_budget_seconds is None else max(0,collection_budget_seconds)
+    deadline=collection_deadline if collection_deadline is not None else monotonic()+budget
     results:list[dict[str,Any]]=[{} for _ in urls]
     failures:list[dict[str,str]|None]=[None for _ in urls]
     lock=threading.Lock()
     collected=[False]
+    cache:dict[str,Any]={}
+    cached_urls:set[str]=set()
+    current=dt.datetime.now(dt.timezone.utc)
+    if cache_path is not None:
+        try:
+            raw=json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(raw,dict):cache=raw
+        except (OSError,ValueError):pass
+        for i,url in enumerate(urls):
+            entry=cache.get(url)
+            if not isinstance(entry,dict) or not isinstance(entry.get("page"),dict):continue
+            try:checked=dt.datetime.fromisoformat(str(entry["checked_at"]).replace("Z","+00:00"))
+            except (KeyError,ValueError):continue
+            if checked.tzinfo is not None and checked<=current and current-checked<=dt.timedelta(hours=24):
+                results[i]=entry["page"];cached_urls.add(url)
     def worker(i:int,u:str)->None:
+        if results[i]:return
+        host=(urllib.parse.urlparse(u).hostname or "").lower()
+        if monotonic()>=deadline:
+            with lock:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_deadline_exhausted"}
+            return
         for attempt in range(2):
             try:
-                page=fetch_source(u,per_source_timeout)
+                remaining=deadline-monotonic()
+                if remaining<=0:raise TimeoutError("collection deadline exhausted")
+                page=fetch_source(u,min(per_source_timeout,remaining))
                 with lock:
                     if not collected[0]:results[i]=page
                 return
@@ -611,33 +641,59 @@ def gather_evidence(
                         if not collected[0]:failures[i]=failure
                     return
                 timed_out=isinstance(error,TimeoutError) or isinstance(getattr(error,"reason",None),TimeoutError)
-                if timed_out and attempt==0:
+                http_code=error.code if isinstance(error,urllib.error.HTTPError) else None
+                reason_error=getattr(error,"reason",None)
+                connection_error=isinstance(error,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError)) or isinstance(reason_error,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError))
+                transient=timed_out or connection_error or http_code==429 or (isinstance(http_code,int) and 500<=http_code<=599)
+                businesswire=host=="businesswire.com" or host.endswith(".businesswire.com")
+                if transient and attempt==0 and not (businesswire and http_code in {401,403}):
                     continue
-                page=fetch_source_via_gateway(u) if not collected[0] else None
+                remaining=deadline-monotonic()
+                page=fetch_source_via_gateway(u,timeout_seconds=min(GATEWAY_FALLBACK_TIMEOUT_SECONDS,max(0.001,remaining))) if not collected[0] and remaining>0 else None
                 if page is not None:
                     with lock:
                         if not collected[0]:results[i]=page
                     return
+                if monotonic()>=deadline:reason="source_deadline_exhausted"
+                elif http_code in {401,403}:reason="source_http_forbidden"
+                elif http_code==429:reason="source_rate_limited"
+                elif isinstance(http_code,int) and 500<=http_code<=599:reason="source_upstream_error"
+                elif connection_error:reason="source_connection_failed"
+                else:reason="source_fetch_timeout" if timed_out else "source_fetch_failed"
                 failure={
                     "url":u,
                     "domain":urllib.parse.urlparse(u).netloc.lower(),
-                    "reason":"source_fetch_timeout" if timed_out else "source_fetch_failed",
+                    "reason":reason,
                 }
                 with lock:
                     if not collected[0]:failures[i]=failure
                 return
     threads=[threading.Thread(target=worker,args=(i,u),daemon=True) for i,u in enumerate(urls)]
     for t in threads:t.start()
-    for t in threads:t.join((per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10)
+    for t in threads:
+        remaining=deadline-monotonic()
+        if remaining>0:t.join(remaining)
     with lock:collected[0]=True
     for i,t in enumerate(threads):
         if t.is_alive() and failures[i] is None:
             failures[i]={
                 "url":urls[i],
                 "domain":urllib.parse.urlparse(urls[i]).netloc.lower(),
-                "reason":"source_fetch_timeout",
+                "reason":"source_deadline_exhausted",
             }
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
+    if cache_path is not None:
+        stamp=current.isoformat().replace("+00:00","Z")
+        for page in results:
+            if page and isinstance(page.get("url"),str) and page["url"] not in cached_urls:
+                cache[page["url"]]={"checked_at":stamp,"page":page}
+        cache=dict(sorted(cache.items(),key=lambda item:str(item[1].get("checked_at", "")) if isinstance(item[1],dict) else "",reverse=True)[:200])
+        try:
+            cache_path.parent.mkdir(parents=True,exist_ok=True)
+            temporary=cache_path.with_suffix(cache_path.suffix+".tmp")
+            temporary.write_text(json.dumps(cache,separators=(",",":"),sort_keys=True),encoding="utf-8")
+            temporary.replace(cache_path)
+        except OSError:pass
     return [r for r in results if r]
 
 
@@ -778,7 +834,7 @@ def evidence_failure_code(
     if quality_reasons & {"source_freshness_unknown","stale_source"}:
         return "research_source_freshness_insufficient"
     fetch_reasons={item.get("reason") for item in fetch_diagnostics}
-    if fetched_count<2 and fetch_reasons & {"source_fetch_timeout","source_fetch_failed"}:
+    if fetched_count<2 and fetch_reasons & RETRIEVAL_DIAGNOSTIC_REASONS:
         return "research_source_retrieval_failed"
     return "research_evidence_insufficient"
 
@@ -797,7 +853,7 @@ def record_research_diagnostics(
         if reason not in SOURCE_DIAGNOSTIC_REASONS:continue
         domain=str(item.get("domain") or "unknown").lower()
         if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
-        stage="source_fetch" if reason=="fetched" or reason.startswith("source_fetch_") else "source_quality"
+        stage="source_fetch" if reason=="fetched" or reason in RETRIEVAL_DIAGNOSTIC_REASONS else "source_quality"
         append_jsonl(target,{"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain})
 
 
@@ -859,34 +915,69 @@ EVIDENCE:
 {evidence}"""
 
 
-def sec_edgar_filing_url(symbol:str,urlopen=urllib.request.urlopen)->str|None:
-    """Primary-lane rescue: locate one recent EDGAR filing document for symbol."""
-    query=urllib.parse.urlencode({"q":f'"{symbol}"',"dateRange":"custom","startdt":"2026-03-01","enddt":"2026-12-31","forms":"8-K,10-Q,10-K"})
-    req=urllib.request.Request(f"{EDGAR_FTS_ENDPOINT}?{query}",headers={"User-Agent":"TradeyDesk/1.0"})
+def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlopen,cache_path:Path|None=None,deadline:float|None=None)->str|None:
+    """Locate an exact-CIK filing close to the candidate event date."""
+    normalized=str(symbol or "").upper()
+    if not re.fullmatch(r"[A-Z]{1,6}",normalized):return None
+    try:event=dt.date.fromisoformat(str(event_date))
+    except ValueError:return None
+    cache_key=f"{normalized}:{event.isoformat()}"
+    cache:dict[str,Any]={}
+    now=dt.datetime.now(dt.timezone.utc)
+    if cache_path is not None:
+        try:
+            raw=json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(raw,dict):cache=raw
+            entry=cache.get(cache_key)
+            checked=dt.datetime.fromisoformat(str(entry["checked_at"]).replace("Z","+00:00")) if isinstance(entry,dict) else None
+            if checked and checked.tzinfo is not None and checked<=now and now-checked<=dt.timedelta(minutes=15) and isinstance(entry.get("url"),str):return entry["url"]
+        except (OSError,ValueError,KeyError):pass
+    headers={"User-Agent":SEC_USER_AGENT,"Accept":"application/json"}
+    def load(url:str)->Any:
+        remaining=(deadline-monotonic()) if deadline is not None else 15
+        if remaining<=0:raise TimeoutError("evidence deadline exhausted")
+        with urlopen(urllib.request.Request(url,headers=headers),timeout=min(15,remaining)) as response:
+            return json.loads(response.read(2_000_000).decode("utf-8",errors="replace"))
     try:
-        with urlopen(req,timeout=15) as r:
-            payload=json.loads(r.read(1_000_000).decode("utf-8",errors="replace"))
-    except Exception:
+        tickers=load(SEC_TICKERS_ENDPOINT)
+        company=next((row for row in tickers.values() if isinstance(row,dict) and str(row.get("ticker") or "").upper()==normalized),None) if isinstance(tickers,dict) else None
+        if not company:return None
+        cik=int(company["cik_str"])
+        submissions=load(f"{SEC_SUBMISSIONS_BASE}/CIK{cik:010d}.json")
+        recent=submissions.get("filings",{}).get("recent",{}) if isinstance(submissions,dict) else {}
+        forms=recent.get("form",[])
+        for index,form in enumerate(forms if isinstance(forms,list) else []):
+            if form not in {"8-K","8-K/A","10-Q","10-K","6-K"}:continue
+            filed=dt.date.fromisoformat(str(recent["filingDate"][index]))
+            if abs((filed-event).days)>3:continue
+            accession=str(recent["accessionNumber"][index])
+            primary=str(recent["primaryDocument"][index])
+            if not re.fullmatch(r"\d{10}-\d{2}-\d{6}",accession) or not re.fullmatch(r"[A-Za-z0-9._-]+",primary):continue
+            url=f"{EDGAR_ARCHIVE_BASE}/{cik}/{accession.replace('-','')}/{primary}"
+            if cache_path is not None:
+                cache[cache_key]={"checked_at":now.isoformat().replace("+00:00","Z"),"url":url}
+                try:
+                    cache_path.parent.mkdir(parents=True,exist_ok=True)
+                    temporary=cache_path.with_suffix(cache_path.suffix+".tmp")
+                    temporary.write_text(json.dumps(cache,separators=(",",":"),sort_keys=True),encoding="utf-8")
+                    temporary.replace(cache_path)
+                except OSError:pass
+            return url
+    except (OSError,ValueError,TypeError,KeyError,IndexError,json.JSONDecodeError):
         return None
-    hits=(payload.get("hits") or {}).get("hits") or []
-    for hit in hits:
-        hit_id=str(hit.get("_id") or "")
-        parts=hit_id.split(":")
-        if len(parts)==2 and parts[1].endswith(".htm"):
-            cik=str((hit.get("_source") or {}).get("cik") or "").lstrip("0")
-            if cik and cik.isdigit():
-                return f"{EDGAR_ARCHIVE_BASE}/{cik}/{parts[0].replace('-','')}/{parts[1]}"
     return None
 
 
-def gateway_rescue_url(symbol:str,catalyst:str,run=subprocess.run)->str|None:
+def gateway_rescue_url(symbol:str,catalyst:str,run=subprocess.run,deadline:float|None=None)->str|None:
     """Secondary-lane rescue: one bounded model call for an independent/wire URL."""
     prompt=GATEWAY_RESCUE_PROMPT.format(symbol=symbol,catalyst=str(catalyst)[:300])
     cmd=["/opt/hermes/bin/hermes","chat","-Q","--source","tool","--provider","nous",
          "-m","deepseek/deepseek-v4-flash-0731","-t","web","--ignore-rules",
          "--max-turns","2","--run-budget","45","--query-file","-"]
     try:
-        result=run(cmd,input=prompt,capture_output=True,text=True,timeout=GATEWAY_RESCUE_TIMEOUT_SECONDS,cwd=ROOT)
+        remaining=(deadline-monotonic()) if deadline is not None else GATEWAY_RESCUE_TIMEOUT_SECONDS
+        if remaining<=0:return None
+        result=run(cmd,input=prompt,capture_output=True,text=True,timeout=min(GATEWAY_RESCUE_TIMEOUT_SECONDS,remaining),cwd=ROOT)
     except (subprocess.TimeoutExpired,OSError):
         return None
     if result.returncode or not result.stdout.strip():
@@ -902,7 +993,7 @@ def gateway_rescue_url(symbol:str,catalyst:str,run=subprocess.run)->str|None:
     return None
 
 
-def rescue_candidate_bundle(candidate:dict[str,Any])->list[str]:
+def rescue_candidate_bundle(candidate:dict[str,Any],deadline:float|None=None)->list[str]:
     """Complete a thin (<2 distinct-domain) scout bundle before the evidence gate.
 
     Primary lane first (deterministic EDGAR full-text search), then one bounded
@@ -912,11 +1003,16 @@ def rescue_candidate_bundle(candidate:dict[str,Any])->list[str]:
     existing_domains={publisher_domain(url) for url in candidate.get("urls",[])}
     rescued:list[str]=[]
     if any(source_profile(url)["role"]!="primary" for url in candidate.get("urls",[])):
-        edgar_url=sec_edgar_filing_url(str(candidate.get("symbol") or ""))
+        edgar_url=sec_edgar_filing_url(
+            str(candidate.get("symbol") or ""),str(candidate.get("event_date") or ""),
+            cache_path=ROOT/"private"/"sec_source_cache.json",deadline=deadline,
+        )
         if edgar_url and publisher_domain(edgar_url) not in existing_domains:
             rescued.append(edgar_url);existing_domains.add(publisher_domain(edgar_url))
     if len(rescued)<1:
-        gateway_url=gateway_rescue_url(str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""))
+        gateway_url=gateway_rescue_url(
+            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),deadline=deadline
+        )
         if gateway_url and publisher_domain(gateway_url) not in existing_domains:
             rescued.append(gateway_url)
     return rescued
@@ -969,8 +1065,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         for url in scout_candidate.get("urls",[]):
             if url not in urls:urls.append(url)
     source_diagnostics:list[dict[str,str]]=[]
+    evidence_deadline=monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS
     for scout_candidate in [c for c in scout_candidates if len({publisher_domain(u) for u in c.get("urls",[])})<2][:2]:
-        rescued=rescue_candidate_bundle(scout_candidate)
+        rescued=rescue_candidate_bundle(scout_candidate,evidence_deadline)
         if rescued:
             for url in rescued:
                 if url not in urls:urls.append(url)
@@ -985,7 +1082,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             })
     if len(urls)<2:
         raise ResearchFailure("research_source_retrieval_failed" if scout_candidates else "research_evidence_insufficient")
-    fetched_evidence=gather_evidence(urls,diagnostics=source_diagnostics)
+    fetched_evidence=gather_evidence(
+        urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
+        collection_deadline=evidence_deadline,
+    )
     fetch_diagnostics=list(source_diagnostics)
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
     filtered_evidence,quality_diagnostics=filter_evidence(fetched_evidence)

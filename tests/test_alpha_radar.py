@@ -508,7 +508,7 @@ class AlphaRadarTests(unittest.TestCase):
 
         self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
         self.assertEqual(pages[0]["text"], _body("usable evidence"))
-        self.assertEqual(diagnostics, [{"url":"https://hung.example/a","domain": "hung.example", "reason": "source_fetch_timeout"}])
+        self.assertEqual(diagnostics, [{"url":"https://hung.example/a","domain": "hung.example", "reason": "source_deadline_exhausted"}])
 
     def test_record_research_diagnostics_uses_strict_private_projection(self):
         with tempfile.TemporaryDirectory() as td:
@@ -698,7 +698,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://old-c.example/3","title":"C","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
             {"url":"https://old-d.example/4","title":"D","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
         ]
-        def gather(_urls,diagnostics):
+        def gather(_urls,diagnostics,cache_path=None,collection_deadline=None):
             diagnostics.append({"url":"https://missing.example/2","domain":"missing.example","reason":"source_fetch_timeout"})
             return pages
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
@@ -1152,26 +1152,58 @@ class BundleRescueTests(unittest.TestCase):
         self.assertEqual([c["symbol"] for c in candidates],["SYRE"])
         self.assertEqual(len(candidates[0]["urls"]),1)
 
-    def test_rescue_primary_lane_queries_edgar_full_text_search(self):
-        edgar=json.dumps({"hits":{"hits":[
-            {"_id":"0001636282-26-000113:syre-20260908.htm","_source":{"cik":"1636282","file_date":"2026-09-08"}},
-        ]}})
+    def test_rescue_primary_lane_uses_exact_cik_submissions(self):
+        tickers={"0":{"cik_str":1636282,"ticker":"SYRE","title":"Spyre Therapeutics"}}
+        submissions={"filings":{"recent":{
+            "form":["8-K","10-Q"],
+            "filingDate":["2026-09-08","2026-08-12"],
+            "accessionNumber":["0001636282-26-000113","0001636282-26-000099"],
+            "primaryDocument":["syre-20260908.htm","syre-20260812.htm"],
+        }}}
         class Response:
+            def __init__(self,payload):self.payload=payload
             def __enter__(self): return self
             def __exit__(self,*_): return False
-            def read(self,_limit): return edgar.encode()
+            def read(self,_limit): return json.dumps(self.payload).encode()
         reqs=[]
         def fake_urlopen(req,timeout=None):
             reqs.append(req.full_url)
-            return Response()
-        url=alpha_radar.sec_edgar_filing_url("SYRE",urlopen=fake_urlopen)
-        self.assertIn("efts.sec.gov",reqs[0])
-        self.assertIn("SYRE",reqs[0])
+            self.assertNotIn("Accept-encoding",dict(req.header_items()))
+            return Response(tickers if "company_tickers" in req.full_url else submissions)
+        url=alpha_radar.sec_edgar_filing_url("SYRE","2026-09-08",urlopen=fake_urlopen)
+        self.assertEqual(reqs,[
+            "https://www.sec.gov/files/company_tickers.json",
+            "https://data.sec.gov/submissions/CIK0001636282.json",
+        ])
         self.assertEqual(url,"https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm")
 
-    def test_rescue_primary_lane_returns_none_when_no_hits_or_bad_payload(self):
-        self.assertIsNone(alpha_radar.sec_edgar_filing_url("ZZZZ",urlopen=lambda req,timeout=None: _empty_response()))
-        self.assertIsNone(alpha_radar.sec_edgar_filing_url("ZZZZ",urlopen=lambda req,timeout=None: _bad_response()))
+    def test_rescue_primary_lane_returns_none_for_unknown_symbol_or_distant_filing(self):
+        tickers={"0":{"cik_str":1636282,"ticker":"SYRE"}}
+        submissions={"filings":{"recent":{
+            "form":["8-K"],"filingDate":["2026-08-01"],
+            "accessionNumber":["0001636282-26-000099"],"primaryDocument":["old.htm"],
+        }}}
+        payloads=iter((tickers,submissions))
+        def fake_urlopen(req,timeout=None):return _json_response(next(payloads))
+        self.assertIsNone(alpha_radar.sec_edgar_filing_url("SYRE","2026-09-08",urlopen=fake_urlopen))
+        self.assertIsNone(alpha_radar.sec_edgar_filing_url("ZZZZ","2026-09-08",urlopen=lambda req,timeout=None:_json_response(tickers)))
+
+    def test_rescue_primary_lane_cache_avoids_repeat_sec_requests(self):
+        tickers={"0":{"cik_str":1636282,"ticker":"SYRE"}}
+        submissions={"filings":{"recent":{
+            "form":["8-K"],"filingDate":["2026-09-08"],
+            "accessionNumber":["0001636282-26-000113"],"primaryDocument":["syre.htm"],
+        }}}
+        payloads=iter((tickers,submissions))
+        calls=[]
+        def fake_urlopen(req,timeout=None):
+            calls.append(req.full_url);return _json_response(next(payloads))
+        with tempfile.TemporaryDirectory() as td:
+            cache=Path(td)/"sec.json"
+            first=alpha_radar.sec_edgar_filing_url("SYRE","2026-09-08",urlopen=fake_urlopen,cache_path=cache)
+            second=alpha_radar.sec_edgar_filing_url("SYRE","2026-09-08",urlopen=fake_urlopen,cache_path=cache)
+        self.assertEqual(first,second)
+        self.assertEqual(len(calls),2)
 
     def test_rescue_gateway_lane_uses_bounded_model_search(self):
         calls=[]
@@ -1246,7 +1278,7 @@ class BundleRescueTests(unittest.TestCase):
         synth=subprocess.CompletedProcess([],0,"not-json","")
         pages=[]
         rescued=[]
-        def rescue(candidate):
+        def rescue(candidate,deadline=None):
             rescued.append(candidate["symbol"])
             return ["https://x.example/9"]
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
@@ -1265,6 +1297,14 @@ class BundleRescueTests(unittest.TestCase):
             ])
             rows=[json.loads(l) for l in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
         self.assertEqual(rows[0]["reason"],"bundle_rescue_unavailable")
+
+def _json_response(payload):
+    class R:
+        def __enter__(self): return self
+        def __exit__(self,*_): return False
+        def read(self,_limit): return json.dumps(payload).encode()
+    return R()
+
 
 def _empty_response():
     class R:
