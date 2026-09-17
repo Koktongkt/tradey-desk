@@ -10,6 +10,7 @@ budget must cover the serialized worst case of every research stage:
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -180,6 +181,20 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertEqual(direct.call_count,1)
         self.assertEqual(cached_checked_at,original_checked_at)
 
+    def test_fresh_source_cache_rejects_page_bound_to_different_url(self):
+        requested="https://cached.example/requested"
+        correct={"url":requested,"title":"Fresh","text":"usable fresh evidence","published_at":"2026-09-08T15:00:00Z"}
+        with tempfile.TemporaryDirectory() as td:
+            cache=Path(td)/"source_cache.json"
+            cache.write_text(json.dumps({requested:{
+                "checked_at":alpha_radar.dt.datetime.now(alpha_radar.dt.timezone.utc).isoformat().replace("+00:00","Z"),
+                "page":{"url":"https://wrong.example/article","title":"Wrong","text":"wrong cached evidence","published_at":"2026-09-08T15:00:00Z"},
+            }}))
+            with patch.object(alpha_radar,"fetch_source",return_value=correct) as direct:
+                pages=alpha_radar.gather_evidence([requested],cache_path=cache)
+        direct.assert_called_once()
+        self.assertEqual(pages,[correct])
+
 
 class GatewayFallbackGuardTests(unittest.TestCase):
     """Bot-walled and timing-out primary sources (businesswire.com timeouts,
@@ -242,6 +257,43 @@ class GatewayFallbackGuardTests(unittest.TestCase):
 
         self.assertEqual(pages, [])
         self.assertEqual(diagnostics, [{"url":"https://walled.example/a","domain": "walled.example", "reason": "source_fetch_timeout"}])
+
+    def test_strict_gateway_failure_propagates_as_global_research_failure(self):
+        def direct(url, _timeout):
+            raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
+
+        failed = subprocess.CompletedProcess([], 1, "", "provider unavailable")
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar.subprocess, "run", return_value=failed
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.gather_evidence(
+                    ["https://www.reuters.com/markets/requested"],
+                    strict_gateway_provider=True,
+                )
+
+        self.assertEqual(ctx.exception.code, "research_rescue_unavailable")
+
+    def test_strict_gateway_inflight_at_shared_deadline_is_global_failure(self):
+        def direct(url, _timeout):
+            raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
+
+        def slow_gateway(url, timeout_seconds=None, strict_provider=False):
+            self.assertTrue(strict_provider)
+            time.sleep(0.05)
+            raise alpha_radar.ResearchFailure("research_rescue_unavailable")
+
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+            alpha_radar, "fetch_source_via_gateway", side_effect=slow_gateway
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.gather_evidence(
+                    ["https://www.reuters.com/markets/requested"],
+                    collection_deadline=alpha_radar.monotonic()+0.01,
+                    strict_gateway_provider=True,
+                )
+
+        self.assertEqual(ctx.exception.code, "research_rescue_unavailable")
 
     def test_gateway_fallback_only_invoked_for_failures_not_successes(self):
         def direct(url, _timeout):

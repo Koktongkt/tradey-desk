@@ -13,21 +13,32 @@ from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resol
 ROOT=Path(__file__).resolve().parent
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}
-RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted"}
-SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source","article_body_missing","source_freshness_unknown","bundle_rescue_unavailable"}
+RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted","source_url_mismatch","bundle_rescue_unavailable"}
+SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source","article_body_missing","source_freshness_unknown"}
 MIN_EVIDENCE_BODY_CHARS=80
 GATEWAY_RESCUE_TIMEOUT_SECONDS=60
 EVIDENCE_PIPELINE_BUDGET_SECONDS=260
+MAX_CANDIDATE_URLS_AFTER_RESCUE=8
 SEC_TICKERS_ENDPOINT="https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_BASE="https://data.sec.gov/submissions"
 EDGAR_ARCHIVE_BASE="https://www.sec.gov/Archives/edgar/data"
-GATEWAY_RESCUE_PROMPT=(
-    "Call web_search exactly once for recent independent news or wire coverage "
-    "(Reuters, Bloomberg, WSJ, CNBC, AP, FT, Business Wire, PR Newswire, GlobeNewswire) "
-    "of this company event: {symbol} — {catalyst}. Then reply with only one JSON object "
-    '{{"urls":["..."]}} listing at most 3 article URLs from different registered domains, '
-    "none on sec.gov, no landing pages, no commentary."
-)
+GATEWAY_RESCUE_PROMPTS={
+    "independent":(
+        "Call web_search exactly once for recent independent reporting "
+        "(Reuters, Bloomberg, WSJ, CNBC, AP, FT or Barron's) "
+        "of this company event: {symbol} — {catalyst}. Then reply with only one JSON object "
+        '{{"urls":["..."]}} listing at most 3 article URLs from different registered domains, '
+        "none on sec.gov or press-release wire domains, no landing pages, no commentary."
+    ),
+    "wire":(
+        "Call web_search exactly once for recent authenticated wire coverage "
+        "(Business Wire, PR Newswire or GlobeNewswire) of this company event: "
+        "{symbol} — {catalyst}. Then reply with only one JSON object "
+        '{{"urls":["..."]}} listing at most 3 article URLs from different registered domains, '
+        "wire domains only, no landing pages, no commentary."
+    ),
+}
+GATEWAY_RESCUE_PROMPT=GATEWAY_RESCUE_PROMPTS["independent"]
 
 SOURCE_REGISTRY={
     "primary":{
@@ -534,7 +545,9 @@ GATEWAY_FALLBACK_PROMPT=(
     "page text starting with its publication date if present; no commentary.\nURL: {url}"
 )
 
-def fetch_source_via_gateway(url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOUT_SECONDS)->dict[str,Any]|None:
+def fetch_source_via_gateway(
+    url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOUT_SECONDS,strict_provider:bool=False,
+)->dict[str,Any]|None:
     """Bounded gateway-backed extraction fallback for bot-walled or timing-out pages.
 
     Routes through the hermes web toolset (gateway-fronted extraction), which
@@ -548,14 +561,18 @@ def fetch_source_via_gateway(url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOU
             cmd,input=GATEWAY_FALLBACK_PROMPT.format(url=url),
             capture_output=True,text=True,timeout=timeout_seconds,cwd=ROOT,
         )
-    except (subprocess.TimeoutExpired,OSError):
+    except (subprocess.TimeoutExpired,OSError) as error:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
         return None
     if result.returncode or not result.stdout.strip():
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
         return None
     lines=[line for line in result.stdout.strip().splitlines() if not line.startswith("session_id:")]
     text=extract_page_text(html.escape("\n".join(lines),quote=False)) if "<" in "\n".join(lines) else " ".join(lines)
     text=re.sub(r"\s+"," ",text).strip()[:6000]
-    if not text:return None
+    if not text:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
+        return None
     published=None
     host=(urllib.parse.urlparse(url).hostname or "").lower()
     match=None
@@ -597,12 +614,15 @@ def gather_evidence(
     collection_budget_seconds:float|None=None,
     cache_path:Path|None=None,
     collection_deadline:float|None=None,
+    strict_gateway_provider:bool=False,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     budget=(per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10 if collection_budget_seconds is None else max(0,collection_budget_seconds)
     deadline=collection_deadline if collection_deadline is not None else monotonic()+budget
     results:list[dict[str,Any]]=[{} for _ in urls]
     failures:list[dict[str,str]|None]=[None for _ in urls]
+    fatal_failures:list[ResearchFailure|None]=[None for _ in urls]
+    gateway_active=[False for _ in urls]
     lock=threading.Lock()
     collected=[False]
     cache:dict[str,Any]={}
@@ -616,6 +636,7 @@ def gather_evidence(
         for i,url in enumerate(urls):
             entry=cache.get(url)
             if not isinstance(entry,dict) or not isinstance(entry.get("page"),dict):continue
+            if str(entry["page"].get("url") or "")!=url:continue
             try:checked=dt.datetime.fromisoformat(str(entry["checked_at"]).replace("Z","+00:00"))
             except (KeyError,ValueError):continue
             if checked.tzinfo is not None and checked<=current and current-checked<=dt.timedelta(hours=24):
@@ -649,7 +670,23 @@ def gather_evidence(
                 if transient and attempt==0 and not (businesswire and http_code in {401,403}):
                     continue
                 remaining=deadline-monotonic()
-                page=fetch_source_via_gateway(u,timeout_seconds=min(GATEWAY_FALLBACK_TIMEOUT_SECONDS,max(0.001,remaining))) if not collected[0] and remaining>0 else None
+                try:
+                    gateway_timeout=min(GATEWAY_FALLBACK_TIMEOUT_SECONDS,max(0.001,remaining))
+                    if not collected[0] and remaining>0:
+                        with lock:gateway_active[i]=True
+                        try:
+                            page=(
+                                fetch_source_via_gateway(u,timeout_seconds=gateway_timeout,strict_provider=True)
+                                if strict_gateway_provider else
+                                fetch_source_via_gateway(u,timeout_seconds=gateway_timeout)
+                            )
+                        finally:
+                            with lock:gateway_active[i]=False
+                    else:page=None
+                except ResearchFailure as fatal:
+                    with lock:
+                        fatal_failures[i]=fatal
+                    return
                 if page is not None:
                     with lock:
                         if not collected[0]:results[i]=page
@@ -673,7 +710,11 @@ def gather_evidence(
     for t in threads:
         remaining=deadline-monotonic()
         if remaining>0:t.join(remaining)
-    with lock:collected[0]=True
+    with lock:
+        for i,t in enumerate(threads):
+            if strict_gateway_provider and t.is_alive() and gateway_active[i] and fatal_failures[i] is None:
+                fatal_failures[i]=ResearchFailure("research_rescue_unavailable")
+        collected[0]=True
     for i,t in enumerate(threads):
         if t.is_alive() and failures[i] is None:
             failures[i]={
@@ -681,6 +722,8 @@ def gather_evidence(
                 "domain":urllib.parse.urlparse(urls[i]).netloc.lower(),
                 "reason":"source_deadline_exhausted",
             }
+    for fatal in fatal_failures:
+        if fatal is not None:raise fatal
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
     if cache_path is not None:
         stamp=current.isoformat().replace("+00:00","Z")
@@ -915,6 +958,18 @@ EVIDENCE:
 {evidence}"""
 
 
+def is_sec_archive_filing_url(url:str)->bool:
+    try:parsed=urllib.parse.urlparse(str(url))
+    except ValueError:return False
+    return (
+        parsed.scheme=="https" and parsed.hostname=="www.sec.gov"
+        and parsed.username is None and parsed.password is None
+        and parsed.port in {None,443}
+        and re.fullmatch(r"/Archives/edgar/data/\d+/\d+/[^/?#]+",parsed.path) is not None
+        and not parsed.query and not parsed.fragment
+    )
+
+
 def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlopen,cache_path:Path|None=None,deadline:float|None=None)->str|None:
     """Locate an exact-CIK filing close to the candidate event date."""
     normalized=str(symbol or "").upper()
@@ -930,7 +985,12 @@ def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlope
             if isinstance(raw,dict):cache=raw
             entry=cache.get(cache_key)
             checked=dt.datetime.fromisoformat(str(entry["checked_at"]).replace("Z","+00:00")) if isinstance(entry,dict) else None
-            if checked and checked.tzinfo is not None and checked<=now and now-checked<=dt.timedelta(minutes=15) and isinstance(entry.get("url"),str):return entry["url"]
+            if (
+                checked and checked.tzinfo is not None and checked<=now
+                and now-checked<=dt.timedelta(minutes=15)
+                and isinstance(entry.get("url"),str)
+                and is_sec_archive_filing_url(entry["url"])
+            ):return entry["url"]
         except (OSError,ValueError,KeyError):pass
     headers={"User-Agent":SEC_USER_AGENT,"Accept":"application/json"}
     def load(url:str)->Any:
@@ -968,9 +1028,13 @@ def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlope
     return None
 
 
-def gateway_rescue_url(symbol:str,catalyst:str,run=subprocess.run,deadline:float|None=None)->str|None:
-    """Secondary-lane rescue: one bounded model call for an independent/wire URL."""
-    prompt=GATEWAY_RESCUE_PROMPT.format(symbol=symbol,catalyst=str(catalyst)[:300])
+def gateway_rescue_url(
+    symbol:str,catalyst:str,run=subprocess.run,deadline:float|None=None,
+    role:str="independent",strict_provider:bool=False,
+)->str|None:
+    """Return one source URL from the requested independent or wire lane."""
+    if role not in GATEWAY_RESCUE_PROMPTS:return None
+    prompt=GATEWAY_RESCUE_PROMPTS[role].format(symbol=symbol,catalyst=str(catalyst)[:300])
     cmd=["/opt/hermes/bin/hermes","chat","-Q","--source","tool","--provider","nous",
          "-m","deepseek/deepseek-v4-flash-0731","-t","web","--ignore-rules",
          "--max-turns","2","--run-budget","45","--query-file","-"]
@@ -978,44 +1042,91 @@ def gateway_rescue_url(symbol:str,catalyst:str,run=subprocess.run,deadline:float
         remaining=(deadline-monotonic()) if deadline is not None else GATEWAY_RESCUE_TIMEOUT_SECONDS
         if remaining<=0:return None
         result=run(cmd,input=prompt,capture_output=True,text=True,timeout=min(GATEWAY_RESCUE_TIMEOUT_SECONDS,remaining),cwd=ROOT)
-    except (subprocess.TimeoutExpired,OSError):
+    except (subprocess.TimeoutExpired,OSError) as error:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
         return None
-    if result.returncode or not result.stdout.strip():
+    if result.returncode:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
+        return None
+    if not result.stdout.strip():
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
         return None
     match=re.search(r"\{.*\}",result.stdout.strip(),re.DOTALL)
-    if not match:return None
+    if not match:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
+        return None
     try:payload=json.loads(match.group(0))
-    except (json.JSONDecodeError,TypeError):return None
-    owned=extract_candidate_urls("\n".join(str(u) for u in (payload.get("urls") or [])),limit=3)
+    except (json.JSONDecodeError,TypeError) as error:
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
+        return None
+    if not isinstance(payload,dict):
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
+        return None
+    raw_urls=payload.get("urls")
+    if not isinstance(raw_urls,list) or any(not isinstance(url,str) for url in raw_urls):
+        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
+        return None
+    owned=extract_candidate_urls("\n".join(raw_urls),limit=3)
     for url in owned:
-        if source_profile(url)["role"]!="primary":
-            return url
+        if source_profile(url)["role"]==role:return url
     return None
 
 
-def rescue_candidate_bundle(candidate:dict[str,Any],deadline:float|None=None)->list[str]:
-    """Complete a thin (<2 distinct-domain) scout bundle before the evidence gate.
-
-    Primary lane first (deterministic EDGAR full-text search), then one bounded
-    gateway-model attempt for an independent/wire corroboration. Returns only
-    URLs on domains the candidate does not already cover.
-    """
-    existing_domains={publisher_domain(url) for url in candidate.get("urls",[])}
-    rescued:list[str]=[]
-    if any(source_profile(url)["role"]!="primary" for url in candidate.get("urls",[])):
-        edgar_url=sec_edgar_filing_url(
+def post_fetch_rescue_candidate(
+    candidate:dict[str,Any],accepted_pages:list[dict[str,Any]],*,
+    diagnostics:list[dict[str,str]],deadline:float,
+)->list[dict[str,Any]]:
+    """Try primary, independent, then wire evidence after filtering leaves <2 domains."""
+    accepted=list(accepted_pages)
+    attempted=set(str(url) for url in candidate.get("urls",[]) if isinstance(url,str))
+    def domains()->set[str]:return {publisher_domain(str(page.get("url") or "")) for page in accepted}
+    def roles()->set[str]:return {source_profile(str(page.get("url") or ""))["role"] for page in accepted}
+    def try_url(url:str|None)->None:
+        if not url or url in attempted or monotonic()>=deadline:return
+        attempted.add(url)
+        candidate.setdefault("urls",[])
+        if url not in candidate["urls"] and len(candidate["urls"])<MAX_CANDIDATE_URLS_AFTER_RESCUE:
+            candidate["urls"].append(url)
+        fetched=gather_evidence(
+            [url],diagnostics=diagnostics,cache_path=ROOT/"private"/"source_cache.json",
+            collection_deadline=deadline,strict_gateway_provider=True,
+        )
+        bound=[]
+        for page in fetched:
+            if str(page.get("url") or "")==url:bound.append(page)
+            else:
+                diagnostics.append({
+                    "url":url,"domain":urllib.parse.urlparse(url).netloc.lower(),
+                    "reason":"source_url_mismatch",
+                })
+        filtered,quality=filter_evidence(bound)
+        diagnostics.extend(quality)
+        for page in filtered:
+            domain=publisher_domain(str(page.get("url") or ""))
+            if domain and domain not in domains():accepted.append(page)
+    if len(domains())>=2:return accepted
+    if "primary" not in roles():
+        try_url(sec_edgar_filing_url(
             str(candidate.get("symbol") or ""),str(candidate.get("event_date") or ""),
             cache_path=ROOT/"private"/"sec_source_cache.json",deadline=deadline,
-        )
-        if edgar_url and publisher_domain(edgar_url) not in existing_domains:
-            rescued.append(edgar_url);existing_domains.add(publisher_domain(edgar_url))
-    if len(rescued)<1:
-        gateway_url=gateway_rescue_url(
-            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),deadline=deadline
-        )
-        if gateway_url and publisher_domain(gateway_url) not in existing_domains:
-            rescued.append(gateway_url)
-    return rescued
+        ))
+    if len(domains())<2 and "independent" not in roles():
+        try_url(gateway_rescue_url(
+            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
+            deadline=deadline,role="independent",strict_provider=True,
+        ))
+    if len(domains())<2 and "wire" not in roles():
+        try_url(gateway_rescue_url(
+            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
+            deadline=deadline,role="wire",strict_provider=True,
+        ))
+    if len(domains())<2:
+        first_url=str((candidate.get("urls") or [""])[0])
+        diagnostics.append({
+            "url":first_url,"domain":urllib.parse.urlparse(first_url).netloc.lower(),
+            "reason":"bundle_rescue_unavailable",
+        })
+    return accepted
 
 
 class CandidateRejection(ResearchFailure):
@@ -1066,30 +1177,30 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             if url not in urls:urls.append(url)
     source_diagnostics:list[dict[str,str]]=[]
     evidence_deadline=monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS
-    for scout_candidate in [c for c in scout_candidates if len({publisher_domain(u) for u in c.get("urls",[])})<2][:2]:
-        rescued=rescue_candidate_bundle(scout_candidate,evidence_deadline)
-        if rescued:
-            for url in rescued:
-                if url not in urls:urls.append(url)
-            scout_candidate.setdefault("urls",[])
-            for url in rescued:
-                if url not in scout_candidate["urls"]:scout_candidate["urls"].append(url)
-        else:
-            source_diagnostics.append({
-                "url":str((scout_candidate.get("urls") or [""])[0]),
-                "domain":urllib.parse.urlparse(str((scout_candidate.get("urls") or [""])[0])).netloc.lower(),
-                "reason":"bundle_rescue_unavailable",
-            })
-    if len(urls)<2:
+    if not urls:
         raise ResearchFailure("research_source_retrieval_failed" if scout_candidates else "research_evidence_insufficient")
     fetched_evidence=gather_evidence(
         urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
         collection_deadline=evidence_deadline,
     )
-    fetch_diagnostics=list(source_diagnostics)
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
-    filtered_evidence,quality_diagnostics=filter_evidence(fetched_evidence)
-    source_diagnostics.extend(quality_diagnostics)
+    filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
+    source_diagnostics.extend(initial_quality)
+    rescued_candidates=0
+    for scout_candidate in scout_candidates:
+        candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
+        accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
+        if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
+        if rescued_candidates>=3 or monotonic()>=evidence_deadline:break
+        rescued_candidates+=1
+        rescued_pages=post_fetch_rescue_candidate(
+            scout_candidate,accepted,diagnostics=source_diagnostics,deadline=evidence_deadline,
+        )
+        for page in rescued_pages:
+            if page.get("url") and all(existing.get("url")!=page.get("url") for existing in filtered_evidence):
+                filtered_evidence.append(page)
+    fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
+    quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
     source_diagnostics.extend({
         "domain":urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower(),
         "reason":"fetched",
@@ -1100,9 +1211,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     if not ranked:
         blocker_urls=list(scout_candidates[0].get("urls",[])) if scout_candidates else []
         raise ResearchFailure(evidence_failure_code(
-            fetch_diagnostics,quality_diagnostics,len(fetched_evidence),
+            fetch_diagnostics,quality_diagnostics,len(filtered_evidence),
             candidate_urls=blocker_urls,
-            fetched_urls=[str(page.get("url") or "") for page in fetched_evidence],
+            fetched_urls=[str(page.get("url") or "") for page in filtered_evidence],
         ))
     synthesis_deadline=monotonic()+120
     last_rejection=None

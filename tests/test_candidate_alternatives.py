@@ -200,7 +200,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         self.assertEqual(radar.scout_parse_result(text)[0],[])
 
     def test_focused_provider_failure_stops_before_rescue_or_fetch(self):
-        with self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'rescue_candidate_bundle') as rescue:
+        with self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue:
             # Exercise the real focused stage rather than the fixture's URL map.
             with patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
                 calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),
@@ -212,7 +212,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         for fault,reason in [(subprocess.TimeoutExpired('focused',240),'research_focused_retrieval_timeout'),
                              (OSError('private'),'research_focused_retrieval_unavailable'),
                              (radar.DurableAppendError('private'),'research_persistence_failure')]:
-            with self.subTest(reason=reason), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'rescue_candidate_bundle') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
+            with self.subTest(reason=reason), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
                 calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
                 self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()
