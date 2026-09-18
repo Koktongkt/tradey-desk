@@ -1081,16 +1081,38 @@ def post_fetch_rescue_candidate(
     attempted=set(str(url) for url in candidate.get("urls",[]) if isinstance(url,str))
     def domains()->set[str]:return {publisher_domain(str(page.get("url") or "")) for page in accepted}
     def roles()->set[str]:return {source_profile(str(page.get("url") or ""))["role"] for page in accepted}
+    def note_local_rescue_failure(url:str|None=None)->None:
+        candidate_url=str(url or (candidate.get("urls") or [""])[0])
+        diagnostics.append({
+            "url":candidate_url,
+            "domain":urllib.parse.urlparse(candidate_url).netloc.lower(),
+            "reason":"bundle_rescue_unavailable",
+        })
+    def candidate_rescue_url(role:str)->str|None:
+        try:
+            return gateway_rescue_url(
+                str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
+                deadline=deadline,role=role,strict_provider=True,
+            )
+        except ResearchFailure as error:
+            if error.code!="research_rescue_unavailable":raise
+            note_local_rescue_failure()
+            return None
     def try_url(url:str|None)->None:
         if not url or url in attempted or monotonic()>=deadline:return
         attempted.add(url)
         candidate.setdefault("urls",[])
         if url not in candidate["urls"] and len(candidate["urls"])<MAX_CANDIDATE_URLS_AFTER_RESCUE:
             candidate["urls"].append(url)
-        fetched=gather_evidence(
-            [url],diagnostics=diagnostics,cache_path=ROOT/"private"/"source_cache.json",
-            collection_deadline=deadline,strict_gateway_provider=True,
-        )
+        try:
+            fetched=gather_evidence(
+                [url],diagnostics=diagnostics,cache_path=ROOT/"private"/"source_cache.json",
+                collection_deadline=deadline,strict_gateway_provider=True,
+            )
+        except ResearchFailure as error:
+            if error.code!="research_rescue_unavailable":raise
+            note_local_rescue_failure(url)
+            return
         bound=[]
         for page in fetched:
             if str(page.get("url") or "")==url:bound.append(page)
@@ -1111,21 +1133,15 @@ def post_fetch_rescue_candidate(
             cache_path=ROOT/"private"/"sec_source_cache.json",deadline=deadline,
         ))
     if len(domains())<2 and "independent" not in roles():
-        try_url(gateway_rescue_url(
-            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
-            deadline=deadline,role="independent",strict_provider=True,
-        ))
+        try_url(candidate_rescue_url("independent"))
     if len(domains())<2 and "wire" not in roles():
-        try_url(gateway_rescue_url(
-            str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
-            deadline=deadline,role="wire",strict_provider=True,
-        ))
-    if len(domains())<2:
-        first_url=str((candidate.get("urls") or [""])[0])
-        diagnostics.append({
-            "url":first_url,"domain":urllib.parse.urlparse(first_url).netloc.lower(),
-            "reason":"bundle_rescue_unavailable",
-        })
+        try_url(candidate_rescue_url("wire"))
+    if len(domains())<2 and not any(
+        item.get("reason")=="bundle_rescue_unavailable"
+        and str(item.get("url") or "") in set(candidate.get("urls") or [])
+        for item in diagnostics
+    ):
+        note_local_rescue_failure()
     return accepted
 
 

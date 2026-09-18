@@ -1301,6 +1301,58 @@ class BundleRescueTests(unittest.TestCase):
         self.assertEqual(lanes,["independent","wire"])
         self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
 
+    def test_post_fetch_rescue_localizes_gateway_search_failure_and_tries_wire(self):
+        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
+        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
+        wire_url="https://www.prnewswire.com/news/a"
+        wire_page={"url":wire_url,"title":"Wire","text":_body("wire"),"published_at":"2026-09-08T13:00:00Z"}
+        lanes=[];diagnostics=[]
+        def rescue_url(symbol,catalyst,role="independent",**_kwargs):
+            lanes.append(role)
+            if role=="independent":
+                raise alpha_radar.ResearchFailure("research_rescue_unavailable")
+            return wire_url
+        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
+            alpha_radar,"gateway_rescue_url",side_effect=rescue_url
+        ), patch.object(alpha_radar,"gather_evidence",return_value=[wire_page]):
+            pages=alpha_radar.post_fetch_rescue_candidate(
+                candidate,accepted,diagnostics=diagnostics,deadline=alpha_radar.monotonic()+60
+            )
+        self.assertEqual(lanes,["independent","wire"])
+        self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
+        self.assertTrue(any(item["reason"]=="bundle_rescue_unavailable" for item in diagnostics))
+
+    def test_post_fetch_rescue_localizes_gateway_fetch_failure_and_tries_wire(self):
+        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
+        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
+        independent_url="https://www.reuters.com/markets/a";wire_url="https://www.prnewswire.com/news/a"
+        wire_page={"url":wire_url,"title":"Wire","text":_body("wire"),"published_at":"2026-09-08T13:00:00Z"}
+        diagnostics=[]
+        def rescue_url(symbol,catalyst,role="independent",**_kwargs):
+            return {"independent":independent_url,"wire":wire_url}[role]
+        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
+            alpha_radar,"gateway_rescue_url",side_effect=rescue_url
+        ), patch.object(alpha_radar,"gather_evidence",side_effect=[
+            alpha_radar.ResearchFailure("research_rescue_unavailable"),[wire_page]
+        ]):
+            pages=alpha_radar.post_fetch_rescue_candidate(
+                candidate,accepted,diagnostics=diagnostics,deadline=alpha_radar.monotonic()+60
+            )
+        self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
+        self.assertTrue(any(item["reason"]=="bundle_rescue_unavailable" for item in diagnostics))
+
+    def test_post_fetch_rescue_preserves_unrelated_global_failure(self):
+        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
+        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
+        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
+            alpha_radar,"gateway_rescue_url",side_effect=alpha_radar.ResearchFailure("research_persistence_failure")
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                alpha_radar.post_fetch_rescue_candidate(
+                    candidate,accepted,diagnostics=[],deadline=alpha_radar.monotonic()+60
+                )
+        self.assertEqual(ctx.exception.code,"research_persistence_failure")
+
     def test_post_fetch_rescue_rejects_unbound_page_then_tries_wire(self):
         candidate={
             "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-08",
@@ -1441,6 +1493,31 @@ class BundleRescueTests(unittest.TestCase):
             result=alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(result["none_reason"],"no_fresh_setup")
         rescue.assert_called_once()
+
+    def test_live_research_continues_to_sourceable_candidate_after_rescue_outage(self):
+        scout_payload=json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-08","urls":["https://one.example/a"]},
+            {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-08","urls":["https://two.example/b","https://three.example/b"]},
+        ]})
+        scout=subprocess.CompletedProcess([],0,scout_payload,"")
+        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        pages=[
+            {"url":"https://one.example/a","title":"One","text":_body("thin"),"published_at":"2026-09-08T12:00:00Z"},
+            {"url":"https://two.example/b","title":"Two","text":_body("support"),"published_at":"2026-09-08T12:00:00Z"},
+            {"url":"https://three.example/b","title":"Three","text":_body("corroboration"),"published_at":"2026-09-08T13:00:00Z"},
+        ]
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",side_effect=[scout,synth]
+        ) as runs, patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+            alpha_radar,"sec_edgar_filing_url",return_value=None
+        ), patch.object(
+            alpha_radar,"gateway_rescue_url",side_effect=alpha_radar.ResearchFailure("research_rescue_unavailable")
+        ):
+            result=alpha_radar.live_research({"max_position_usd":500})
+            diagnostics=[json.loads(line) for line in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
+        self.assertEqual(result["none_reason"],"no_fresh_setup")
+        self.assertIn("SELECTED SYMBOL: BBB",runs.call_args_list[-1].kwargs["input"])
+        self.assertTrue(any(row["reason"]=="bundle_rescue_unavailable" for row in diagnostics))
 
     def test_live_research_reports_retrieval_blocker_when_rescue_cannot_complete_bundle(self):
         scout_payload=json.dumps({"candidates":[
