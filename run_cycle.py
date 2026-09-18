@@ -10,7 +10,7 @@ NY=ZoneInfo("America/New_York")
 AUDIT_PATH=ROOT/"decision_audit.jsonl"
 
 ORDER_EVENT_RE=re.compile(
-    r"ORDER (?P<status>new|accepted|pending_new|partially_filled|held|filled) "
+    r"ORDER (?P<status>placing|new|accepted|pending_new|partially_filled|held|filled) "
     r"(?P<action>BUY|SELL) (?P<quantity>[1-9]\d*) (?P<symbol>[A-Z]{1,6}) "
     r"LIMIT (?P<limit>\d+\.\d{2}) STOP (?P<stop>\d+\.\d{2}) "
     r"TARGET (?P<target>\d+\.\d{2})(?: AVG (?P<average>\d+\.\d{2}))? PAPER"
@@ -70,7 +70,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "research_synthesis_timeout","research_synthesis_unavailable","reviewer_unavailable",
     "reviewer_veto","scheduled_task","shadow_calibration","short_sale_forbidden",
     "sizing_state_unavailable","spread_too_wide","stale_or_unverified_research","stale_quote",
-    "technical_bars_unavailable","trading_calendar_unavailable","unknown_buying_power",
+    "submission_notification_failed","technical_bars_unavailable","trading_calendar_unavailable","unknown_buying_power",
     "unknown_cash","unknown_spread","unsupported_action","unsupported_technical_setup",
     "weak_reward_to_risk","whole_share_unaffordable",
 })
@@ -177,7 +177,9 @@ def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|
                     status=order_event.group("status");action=order_event.group("action")
                     quantity=order_event.group("quantity");symbol=order_event.group("symbol")
                     limit_price=order_event.group("limit");stop=order_event.group("stop");target=order_event.group("target")
-                    if status=="filled":
+                    if status=="placing":
+                        print(f"Tradey Autotrader: Placing paper bracket order to Alpaca — {action} {quantity} {symbol} at limit ${limit_price}; stop ${stop}; target ${target}. This is a placement notice, not confirmation of acceptance or fill.")
+                    elif status=="filled":
                         print(f"Tradey Autotrader: Paper bracket order filled — {action} {quantity} {symbol}; average fill ${order_event.group('average')}; limit ${limit_price}; stop ${stop}; target ${target}. Broker-confirmed fill.")
                     else:
                         print(f"Tradey Autotrader: Paper bracket order accepted — {action} {quantity} {symbol} at limit ${limit_price}; stop ${stop}; target ${target}. Broker status: {status}. This confirms order acceptance, not a fill.")

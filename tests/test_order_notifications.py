@@ -9,7 +9,7 @@ from unittest.mock import patch
 import autotrader
 
 
-class OrderNotificationTests(unittest.TestCase):
+class PlacingNotificationTests(unittest.TestCase):
     def setUp(self):
         self.plan = {
             "action": "BUY", "symbol": "ZS", "quantity": 3,
@@ -23,72 +23,78 @@ class OrderNotificationTests(unittest.TestCase):
             "side": "buy", "qty": "3", "type": "limit", "order_class": "bracket",
         }
 
-    def test_broker_bound_accepted_order_emits_once_without_private_identifier(self):
+    def test_placing_notification_emits_once_without_private_identifier(self):
         with tempfile.TemporaryDirectory() as td:
             marker = Path(td) / "notifications.jsonl"
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertTrue(autotrader.emit_order_notification_once(marker, self.ref, self.plan, self.accepted, "paper"))
-                self.assertTrue(autotrader.emit_order_notification_once(marker, self.ref, self.plan, self.accepted, "paper"))
-        self.assertEqual(output.getvalue(), "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
+                self.assertTrue(autotrader.emit_placing_notification_once(marker, self.ref, self.plan, "paper"))
+                self.assertTrue(autotrader.emit_placing_notification_once(marker, self.ref, self.plan, "paper"))
+        self.assertEqual(output.getvalue(), "ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
         self.assertNotIn(self.ref, output.getvalue())
-        self.assertNotIn("filled", output.getvalue().lower())
+        self.assertNotIn("accepted", output.getvalue())
+        self.assertNotIn("filled", output.getvalue())
 
-    def test_filled_claim_requires_broker_fill_fields(self):
-        filled = dict(self.accepted, status="filled", filled_qty="3", filled_avg_price="162.80")
+    def test_placing_notification_live_mode_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertTrue(autotrader.emit_order_notification_once(Path(td)/"notifications.jsonl", self.ref, self.plan, filled, "paper"))
-        self.assertEqual(output.getvalue(), "ORDER filled BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n")
-
-    def test_unbound_unsupported_or_live_readback_fails_closed(self):
-        cases = [
-            dict(self.accepted, client_order_id="other"),
-            dict(self.accepted, status="rejected"),
-            dict(self.accepted, symbol="AAPL"),
-            dict(self.accepted, qty="4"),
-        ]
-        for order in cases:
-            with self.subTest(order=order), tempfile.TemporaryDirectory() as td:
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    self.assertFalse(autotrader.emit_order_notification_once(Path(td)/"notifications.jsonl", self.ref, self.plan, order, "paper"))
-                self.assertEqual(output.getvalue(), "")
-        with tempfile.TemporaryDirectory() as td:
-            self.assertFalse(autotrader.emit_order_notification_once(Path(td)/"notifications.jsonl", self.ref, self.plan, self.accepted, "live"))
-
-    def test_persisted_non_limit_plan_fails_closed(self):
-        plan = dict(self.plan, order_type="market")
-        with tempfile.TemporaryDirectory() as td:
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.assertFalse(autotrader.emit_order_notification_once(
-                    Path(td)/"notifications.jsonl", self.ref, plan, self.accepted, "paper"))
+                self.assertFalse(autotrader.emit_placing_notification_once(
+                    Path(td) / "notifications.jsonl", self.ref, self.plan, "live"))
         self.assertEqual(output.getvalue(), "")
 
-    def test_corrupt_notification_state_fails_closed(self):
+    def test_placing_notification_invalid_plan_fails_closed(self):
+        for plan in (
+            dict(self.plan, order_type="market"),
+            dict(self.plan, action="HOLD"),
+            dict(self.plan, symbol="AAPL123"),
+            dict(self.plan, quantity=0),
+            dict(self.plan, stop=-1),
+        ):
+            with self.subTest(plan=plan), tempfile.TemporaryDirectory() as td:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertFalse(autotrader.emit_placing_notification_once(
+                        Path(td) / "notifications.jsonl", self.ref, plan, "paper"))
+                self.assertEqual(output.getvalue(), "")
+
+    def test_placing_notification_corrupt_state_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             marker = Path(td) / "notifications.jsonl"
             marker.write_text("not-json\n")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertFalse(autotrader.emit_order_notification_once(
-                    marker, self.ref, self.plan, self.accepted, "paper"))
+                self.assertFalse(autotrader.emit_placing_notification_once(marker, self.ref, self.plan, "paper"))
         self.assertEqual(output.getvalue(), "")
 
-    def test_print_failure_remains_retryable(self):
+    def test_placing_notification_print_failure_remains_retryable(self):
         with tempfile.TemporaryDirectory() as td:
             marker = Path(td) / "notifications.jsonl"
             with patch("builtins.print", side_effect=OSError("pipe")):
                 with self.assertRaises(OSError):
-                    autotrader.emit_order_notification_once(
-                        marker, self.ref, self.plan, self.accepted, "paper")
+                    autotrader.emit_placing_notification_once(marker, self.ref, self.plan, "paper")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertTrue(autotrader.emit_order_notification_once(
-                    marker, self.ref, self.plan, self.accepted, "paper"))
-        self.assertEqual(output.getvalue(), "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
+                self.assertTrue(autotrader.emit_placing_notification_once(marker, self.ref, self.plan, "paper"))
+        self.assertEqual(output.getvalue(), "ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
+
+    def test_placement_emits_placing_notification_once_with_marker_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "private").mkdir()
+            (root / "public").mkdir()
+            (root / "autonomy_config.json").write_text(json.dumps({
+                "enabled": True, "broker_mode": "paper", "kill_switch_path": "KILL_SWITCH",
+            }))
+            plan = self.plan
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertTrue(autotrader.emit_placing_notification_once(
+                    root / "private" / "order_notifications.jsonl", self.ref, plan, "paper"))
+            markers = [json.loads(line) for line in (root / "private" / "order_notifications.jsonl").read_text().splitlines()]
+            self.assertEqual([row["state"] for row in markers], ["prepared", "emitted"])
+            self.assertTrue(all("client_order_id" not in row for row in markers))
+            self.assertEqual(output.getvalue(), "ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
 
     def test_invalid_readback_does_not_mutate_ledger_or_journal(self):
         with tempfile.TemporaryDirectory() as td:
@@ -107,15 +113,7 @@ class OrderNotificationTests(unittest.TestCase):
             self.assertEqual(ledger.read_text(), before)
             self.assertFalse(journal.exists())
 
-    def test_filled_without_complete_fill_does_not_claim_success(self):
-        incomplete = dict(self.accepted, status="filled", filled_qty="2", filled_avg_price="162.80")
-        with tempfile.TemporaryDirectory() as td:
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.assertFalse(autotrader.emit_order_notification_once(Path(td)/"notifications.jsonl", self.ref, self.plan, incomplete, "paper"))
-        self.assertEqual(output.getvalue(), "")
-
-    def test_pending_order_recovery_notifies_without_resubmitting(self):
+    def test_pending_order_recovery_does_not_renotify(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "private").mkdir()
@@ -142,9 +140,9 @@ class OrderNotificationTests(unittest.TestCase):
                     dry_run_fixture=False, live_dry_run=False))
             self.assertEqual(code, 0)
             self.assertEqual(calls, ["reconcile"])
-            self.assertEqual(output.getvalue(), "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n")
+            self.assertEqual(output.getvalue(), "")
 
-    def test_multiple_pending_parents_each_notify_without_resubmitting(self):
+    def test_multiple_pending_parents_recover_silently(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "private").mkdir()
@@ -187,10 +185,7 @@ class OrderNotificationTests(unittest.TestCase):
                     dry_run_fixture=False, live_dry_run=False))
             self.assertEqual(code, 0)
             self.assertEqual(calls, ["reconcile", "reconcile"])
-            self.assertEqual(output.getvalue().splitlines(), [
-                "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER",
-                "ORDER new BUY 2 AAPL LIMIT 100.00 STOP 95.00 TARGET 110.00 PAPER",
-            ])
+            self.assertEqual(output.getvalue(), "")
 
 
 if __name__ == "__main__":

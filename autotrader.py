@@ -661,6 +661,34 @@ def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[
 
 
 BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "filled"}
+NOTIFICATION_STATUSES = BROKER_CONFIRMED_ORDER_STATUSES | {"placing"}
+
+
+def placing_notification_line(plan: dict[str, Any], broker_mode: str) -> str | None:
+    """Return a safe pre-submission line for a validated paper limit plan."""
+    if broker_mode != "paper" or not isinstance(plan, dict):
+        return None
+    action = str(plan.get("action") or "").upper()
+    symbol = str(plan.get("symbol") or "").upper()
+    try:
+        quantity = Decimal(str(plan.get("quantity")))
+        limit_price = Decimal(str(plan.get("limit_price")))
+        stop = Decimal(str(plan.get("stop")))
+        target = Decimal(str(plan.get("target")))
+    except Exception:
+        return None
+    if (
+        plan.get("order_type") != "limit"
+        or action not in {"BUY", "SELL"}
+        or not symbol.isalpha() or len(symbol) > 6
+        or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
+        or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))
+    ):
+        return None
+    return (
+        f"ORDER placing {action} {int(quantity)} {symbol} LIMIT {limit_price:.2f} "
+        f"STOP {stop:.2f} TARGET {target:.2f} PAPER"
+    )
 
 
 def broker_order_notification_line(
@@ -736,28 +764,27 @@ def _strict_notification_states(path: Path) -> dict[str, str] | None:
             not isinstance(key, str) or len(key) != 64
             or any(ch not in "0123456789abcdef" for ch in key)
             or state not in {"prepared", "emitted"}
-            or row.get("status") not in BROKER_CONFIRMED_ORDER_STATUSES
+            or row.get("status") not in NOTIFICATION_STATUSES
         ):
             return None
         states[key] = state
     return states
 
 
-def emit_order_notification_once(
-    marker_path: Path, ref: str, plan: dict[str, Any], broker_order: dict[str, Any], broker_mode: str,
+def emit_placing_notification_once(
+    marker_path: Path, ref: str, plan: dict[str, Any], broker_mode: str,
 ) -> bool:
-    """Emit once in normal operation; a failed write remains retryable.
+    """Emit the pre-submission notice once; a failed write remains retryable.
 
     The state file contains a one-way hash, never the private client order ID.
     A hard crash after stdout reaches the scheduler but before the final state
     append can cause a duplicate retry; avoiding both loss and duplicates would
     require a transactional acknowledgment from the external message transport.
     """
-    event = broker_order_notification_line(ref, plan, broker_order, broker_mode)
-    if event is None:
+    line = placing_notification_line(plan, broker_mode)
+    if line is None:
         return False
-    line, status = event
-    key = hashlib.sha256(f"order-notification|{ref}".encode()).hexdigest()
+    key = hashlib.sha256(f"order-placing|{ref}".encode()).hexdigest()
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = marker_path.with_suffix(marker_path.suffix + ".lock")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
@@ -770,12 +797,12 @@ def emit_order_notification_once(
         if key not in states:
             append_jsonl(marker_path, {
                 "timestamp": utcnow(), "notification_key": key,
-                "status": status, "state": "prepared",
+                "status": "placing", "state": "prepared",
             })
         print(line, flush=True)
         append_jsonl(marker_path, {
             "timestamp": utcnow(), "notification_key": key,
-            "status": status, "state": "emitted",
+            "status": "placing", "state": "emitted",
         })
     return True
 
@@ -1271,11 +1298,10 @@ def run(args: argparse.Namespace) -> int:
                 print("SYSTEM_FAILURE pending_order_reconciliation"); return 4
             if pending_updates:
                 for update in pending_updates:
-                    if not emit_order_notification_once(
-                        ROOT/"private"/"order_notifications.jsonl",
+                    if broker_order_notification_line(
                         str(update["client_order_id"]),
                         update["_plan"], update["_broker_order"], cfg.get("broker_mode"),
-                    ):
+                    ) is None:
                         print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
                 return 0
             try: exit_updates=reconcile_managed_exits(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
@@ -1373,6 +1399,10 @@ def run(args: argparse.Namespace) -> int:
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
         submission_started=True
+        if not emit_placing_notification_once(
+            ROOT/"private"/"order_notifications.jsonl", ref, plan, cfg.get("broker_mode"),
+        ):
+            print("SYSTEM_FAILURE submission_notification_failed"); return 4
         _broker_bridge("place",{"order":plan,"client_order_id":ref})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"placed"})
         reconciled=_broker_bridge("reconcile",{"client_order_id":ref})
@@ -1380,10 +1410,6 @@ def run(args: argparse.Namespace) -> int:
             print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":reconciled["status"]})
         journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled)
-        if not emit_order_notification_once(
-            ROOT/"private"/"order_notifications.jsonl", ref, plan, reconciled, cfg.get("broker_mode"),
-        ):
-            print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
         return 0
     except Exception:
         failure_status="submission_unknown" if submission_started else "failed"

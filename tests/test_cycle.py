@@ -83,6 +83,32 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(row["action"],"BUY")
         self.assertEqual(row["symbol"],"AAPL")
 
+    def test_execute_relays_placing_notice_before_submission_confirmation(self):
+        text="ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n"
+        completed=subprocess.CompletedProcess([],0,text,"")
+        with tempfile.TemporaryDirectory() as td:
+            audit=Path(td)/"decision_audit.jsonl"
+            output=__import__("io").StringIO()
+            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
+                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
+            row=json.loads(audit.read_text())
+        self.assertEqual(rc,0)
+        self.assertEqual(output.getvalue(),"Tradey Autotrader: Placing paper bracket order to Alpaca — BUY 3 ZS at limit $162.79; stop $151.24; target $184.37. This is a placement notice, not confirmation of acceptance or fill.\n")
+        self.assertEqual(row["decision"],"order_placed")
+        self.assertEqual(row["action"],"BUY")
+        self.assertEqual(row["symbol"],"ZS")
+
+    def test_execute_rejects_avg_on_placing_notice(self):
+        text="ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n"
+        completed=subprocess.CompletedProcess([],0,text,"")
+        with tempfile.TemporaryDirectory() as td:
+            audit=Path(td)/"decision_audit.jsonl"
+            output=__import__("io").StringIO()
+            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
+                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
+        self.assertEqual(rc,0)
+        self.assertEqual(output.getvalue(),"")
+
     def test_execute_notifies_on_broker_confirmed_accepted_paper_order(self):
         text="ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n"
         completed=subprocess.CompletedProcess([],0,text,"")

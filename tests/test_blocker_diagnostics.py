@@ -294,7 +294,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
                     code = autotrader.run(autotrader.argparse.Namespace(
                         dry_run_fixture=False, live_dry_run=False))
             self.assertEqual(code, 0)
-            self.assertRegex(out.getvalue(), r"^ORDER accepted BUY [1-9]\d* [A-Z]{1,6} LIMIT \d+\.\d{2} STOP \d+\.\d{2} TARGET \d+\.\d{2} PAPER\n$")
+            self.assertRegex(out.getvalue(), r"^ORDER placing BUY [1-9]\d* [A-Z]{1,6} LIMIT \d+\.\d{2} STOP \d+\.\d{2} TARGET \d+\.\d{2} PAPER\n$")
             self.assertNotIn(placed_payload.get("client_order_id", "private-reference"), out.getvalue())
             markers = [json.loads(line) for line in (root / "private" / "order_notifications.jsonl").read_text().splitlines()]
             self.assertEqual(len(markers), 2)
@@ -350,7 +350,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(autotrader.run(autotrader.argparse.Namespace(
                     dry_run_fixture=False, live_dry_run=False)), 0)
             self.assertEqual(second_calls, ["reconcile"])
-            self.assertTrue(output.getvalue().startswith("ORDER accepted "))
+            self.assertEqual(output.getvalue(), "")
 
 
 class DryRunDiagnosticsTests(unittest.TestCase):
