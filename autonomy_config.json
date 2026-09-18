@@ -7,7 +7,7 @@
   "focused_retrieval_enabled": true,
   "allow_fractional_shares": false,
   "min_price_usd": 1,
-  "min_average_volume": 600000,
+  "min_average_volume": 500000,
   "max_spread_bps": 600,
   "allowed_quote_feeds": [
     "alpaca_iex"
