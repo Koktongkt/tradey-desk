@@ -257,15 +257,22 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
                 {"proposal_hash": "MATCH", "decision": "APPROVE", "fatal_flags": [],
                  "reason_codes": [], "component_scores": {k: 4 for k in autotrader.RUBRIC_WEIGHTS["short_1_5"]}},
             ] * 2
+            placed_payload = {}
             def fake_bridge(op, payload=None):
                 if op == "snapshot":
                     return snap
                 if op == "review":
                     return snap
                 if op == "place":
-                    return {"status": "filled", "filled_qty": 5, "filled_avg_price": 100.02}
+                    placed_payload.update(payload)
+                    return {"status": "accepted"}
                 if op == "reconcile":
-                    return {"status": "filled", "filled_qty": 5, "filled_avg_price": 100.02}
+                    order = placed_payload["order"]
+                    return {
+                        "client_order_id": payload["client_order_id"], "status": "accepted",
+                        "symbol": order["symbol"], "side": order["action"].lower(),
+                        "qty": str(order["quantity"]), "type": "limit", "order_class": "bracket",
+                    }
                 raise AssertionError(op)
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=fake_bridge
@@ -287,7 +294,63 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
                     code = autotrader.run(autotrader.argparse.Namespace(
                         dry_run_fixture=False, live_dry_run=False))
             self.assertEqual(code, 0)
+            self.assertRegex(out.getvalue(), r"^ORDER accepted BUY [1-9]\d* [A-Z]{1,6} LIMIT \d+\.\d{2} STOP \d+\.\d{2} TARGET \d+\.\d{2} PAPER\n$")
+            self.assertNotIn(placed_payload.get("client_order_id", "private-reference"), out.getvalue())
+            markers = [json.loads(line) for line in (root / "private" / "order_notifications.jsonl").read_text().splitlines()]
+            self.assertEqual(len(markers), 2)
+            self.assertEqual([row["state"] for row in markers], ["prepared", "emitted"])
+            self.assertTrue(all("client_order_id" not in row for row in markers))
             self.assertFalse((root / "private" / "blocker_diagnostics.jsonl").exists())
+
+    def test_ambiguous_place_failure_is_reconciled_without_resubmission(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            _setup_root(root, snap)
+            proposal, errors = autotrader.build_canonical_proposal(
+                json.loads((root / "candidates.jsonl").read_text().splitlines()[0]),
+                autotrader.authoritative_bundle({}, snap, snap["captured_at"])["broker_snapshot"],
+                _cfg(), 0.0)
+            self.assertEqual(errors, [])
+            reviews = [{
+                "proposal_hash": proposal["proposal_hash"], "decision": "APPROVE",
+                "fatal_flags": [], "reason_codes": [],
+                "component_scores": {k: 4 for k in autotrader.RUBRIC_WEIGHTS["short_1_5"]},
+            }] * 2
+            first_calls = []
+            def first_bridge(op, payload=None):
+                first_calls.append(op)
+                if op in {"snapshot", "review"}: return snap
+                if op == "place": raise RuntimeError("ambiguous transport failure")
+                raise AssertionError(op)
+            with patch.object(autotrader, "ROOT", root), patch(
+                "autotrader._broker_bridge", side_effect=first_bridge
+            ), patch("autotrader.load_baseline_symbols", return_value=set()), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
+            ), patch("autotrader.independent_reviews", return_value=reviews), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(autotrader.run(autotrader.argparse.Namespace(
+                    dry_run_fixture=False, live_dry_run=False)), 4)
+            ledger = [json.loads(line) for line in (root / "order_ledger.jsonl").read_text().splitlines()]
+            self.assertEqual(ledger[-1]["status"], "submission_unknown")
+            ref = ledger[-1]["client_order_id"]
+            plan = json.loads((root / "private" / "order_intents.jsonl").read_text())["plan"]
+            second_calls = []
+            def second_bridge(op, payload=None):
+                second_calls.append(op)
+                self.assertEqual(op, "reconcile")
+                return {
+                    "client_order_id": ref, "status": "accepted", "symbol": plan["symbol"],
+                    "side": plan["action"].lower(), "qty": str(plan["quantity"]),
+                    "type": "limit", "order_class": "bracket",
+                }
+            output = io.StringIO()
+            with patch.object(autotrader, "ROOT", root), patch(
+                "autotrader._broker_bridge", side_effect=second_bridge
+            ), contextlib.redirect_stdout(output):
+                self.assertEqual(autotrader.run(autotrader.argparse.Namespace(
+                    dry_run_fixture=False, live_dry_run=False)), 0)
+            self.assertEqual(second_calls, ["reconcile"])
+            self.assertTrue(output.getvalue().startswith("ORDER accepted "))
 
 
 class DryRunDiagnosticsTests(unittest.TestCase):

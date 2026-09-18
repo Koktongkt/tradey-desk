@@ -1094,6 +1094,8 @@ class AlphaRadarTests(unittest.TestCase):
         with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
             alpha_radar,"fresh_verified_candidate",return_value=None
         ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+            alpha_radar,"candidate_preflight",return_value=[]
+        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
             alpha_radar,"append",side_effect=OSError("disk")
         ), contextlib.redirect_stdout(out):
             rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))

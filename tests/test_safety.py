@@ -528,7 +528,10 @@ class TradeySafetyTests(unittest.TestCase):
             ledger.write_text(json.dumps({"client_order_id": ref, "status": "new"}) + "\n")
             intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
             broker = lambda operation, payload: {
-                "status": "filled", "filled_qty": "1", "filled_avg_price": "100.01"
+                "client_order_id": ref, "status": "filled", "symbol": self.decision["symbol"],
+                "side": self.decision["action"].lower(), "qty": str(self.decision["quantity"]),
+                "type": "limit", "order_class": "bracket",
+                "filled_qty": str(self.decision["quantity"]), "filled_avg_price": "100.01",
             }
             autotrader.reconcile_pending_orders(ledger, intents, journal, broker)
             self.assertEqual(json.loads(journal.read_text())["status"], "filled")

@@ -3,8 +3,8 @@
 
 Production broker access is delegated to broker_mcp_bridge.py, which speaks MCP
 with Alpaca's official server. Decision models never receive credentials or
-execution tools. This process emits only TRADE, BLOCKER, AUTH_FAILURE, or
-SYSTEM_FAILURE lines.
+execution tools. This process emits only exact ORDER, TRADE, BLOCKER,
+AUTH_FAILURE, or SYSTEM_FAILURE lines.
 """
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ def pending_order_intents(ledger: list[dict[str, Any]], intents: list[dict[str, 
     for row in ledger:
         ref = row.get("client_order_id")
         if ref: latest[str(ref)] = str(row.get("status") or "")
-    active = {"placed", "new", "accepted", "pending_new", "partially_filled", "held"}
+    active = {"submission_started", "submission_unknown", "placed", "new", "accepted", "pending_new", "partially_filled", "held"}
     return [intent for intent in intents if latest.get(str(intent.get("client_order_id"))) in active]
 
 
@@ -660,6 +660,126 @@ def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[
     append_jsonl(path, {"timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled"})
 
 
+BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "filled"}
+
+
+def broker_order_notification_line(
+    ref: str, plan: dict[str, Any], broker_order: dict[str, Any], broker_mode: str,
+) -> tuple[str, str] | None:
+    """Return a safe line and status only for an exactly bound paper readback."""
+    if broker_mode != "paper" or not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
+        return None
+    status = str(broker_order.get("status") or "").lower()
+    action = str(plan.get("action") or "").upper()
+    symbol = str(plan.get("symbol") or "").upper()
+    try:
+        quantity = Decimal(str(plan.get("quantity")))
+        broker_quantity = Decimal(str(broker_order.get("qty")))
+        limit_price = Decimal(str(plan.get("limit_price")))
+        stop = Decimal(str(plan.get("stop")))
+        target = Decimal(str(plan.get("target")))
+    except Exception:
+        return None
+    if (
+        status not in BROKER_CONFIRMED_ORDER_STATUSES
+        or plan.get("order_type") != "limit"
+        or action not in {"BUY", "SELL"}
+        or not symbol.isalpha() or len(symbol) > 6
+        or str(broker_order.get("client_order_id") or "") != ref
+        or str(broker_order.get("symbol") or "").upper() != symbol
+        or str(broker_order.get("side") or "").lower() != action.lower()
+        or str(broker_order.get("type") or broker_order.get("order_type") or "").lower() != "limit"
+        or str(broker_order.get("order_class") or "").lower() != "bracket"
+        or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
+        or not broker_quantity.is_finite() or broker_quantity != quantity
+        or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))
+    ):
+        return None
+    average_fill = None
+    if status == "filled":
+        try:
+            filled_quantity = Decimal(str(broker_order.get("filled_qty")))
+            average_fill = Decimal(str(broker_order.get("filled_avg_price")))
+        except Exception:
+            return None
+        if (
+            not filled_quantity.is_finite() or filled_quantity != quantity
+            or not average_fill.is_finite() or average_fill <= 0
+        ):
+            return None
+    line = (
+        f"ORDER {status} {action} {int(quantity)} {symbol} LIMIT {limit_price:.2f} "
+        f"STOP {stop:.2f} TARGET {target:.2f}"
+    )
+    if average_fill is not None:
+        line += f" AVG {average_fill:.2f}"
+    return line + " PAPER", status
+
+
+def _strict_notification_states(path: Path) -> dict[str, str] | None:
+    states: dict[str, str] = {}
+    if not path.exists():
+        return states
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for raw in lines:
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(row, dict):
+            return None
+        key, state = row.get("notification_key"), row.get("state")
+        if (
+            not isinstance(key, str) or len(key) != 64
+            or any(ch not in "0123456789abcdef" for ch in key)
+            or state not in {"prepared", "emitted"}
+            or row.get("status") not in BROKER_CONFIRMED_ORDER_STATUSES
+        ):
+            return None
+        states[key] = state
+    return states
+
+
+def emit_order_notification_once(
+    marker_path: Path, ref: str, plan: dict[str, Any], broker_order: dict[str, Any], broker_mode: str,
+) -> bool:
+    """Emit once in normal operation; a failed write remains retryable.
+
+    The state file contains a one-way hash, never the private client order ID.
+    A hard crash after stdout reaches the scheduler but before the final state
+    append can cause a duplicate retry; avoiding both loss and duplicates would
+    require a transactional acknowledgment from the external message transport.
+    """
+    event = broker_order_notification_line(ref, plan, broker_order, broker_mode)
+    if event is None:
+        return False
+    line, status = event
+    key = hashlib.sha256(f"order-notification|{ref}".encode()).hexdigest()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = marker_path.with_suffix(marker_path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        states = _strict_notification_states(marker_path)
+        if states is None:
+            return False
+        if states.get(key) == "emitted":
+            return True
+        if key not in states:
+            append_jsonl(marker_path, {
+                "timestamp": utcnow(), "notification_key": key,
+                "status": status, "state": "prepared",
+            })
+        print(line, flush=True)
+        append_jsonl(marker_path, {
+            "timestamp": utcnow(), "notification_key": key,
+            "status": status, "state": "emitted",
+        })
+    return True
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
     for i, ch in enumerate(text):
@@ -979,19 +1099,29 @@ def reconcile_managed_exits(
 
 def reconcile_pending_orders(
     ledger_path: Path, intents_path: Path, journal_path: Path, broker: Any = None,
+    broker_mode: str = "paper",
 ) -> list[dict[str, Any]]:
+    """Read and validate every pending parent before mutating local state."""
     bridge = broker or _broker_bridge
-    updates = []
+    validated = []
     for intent in pending_order_intents(read_jsonl(ledger_path), read_jsonl(intents_path)):
         ref = str(intent["client_order_id"])
         plan = intent["plan"]
         order = bridge("reconcile", {"client_order_id": ref})
-        status = str(order.get("status") or "failed")
+        if broker_order_notification_line(ref, plan, order, broker_mode) is None:
+            raise RuntimeError("broker_reconciliation_invalid")
+        validated.append((ref, plan, order))
+    updates = []
+    for ref, plan, order in validated:
+        status = str(order["status"]).lower()
         row = {"timestamp": utcnow(), "client_order_id": ref, "status": status,
                "symbol": plan.get("symbol"), "action": plan.get("action")}
         append_jsonl(ledger_path, row)
         journal_confirmed_fill(journal_path, plan, order)
-        updates.append(row | {"filled_avg_price": order.get("filled_avg_price")})
+        updates.append(row | {
+            "filled_avg_price": order.get("filled_avg_price"),
+            "_plan": plan, "_broker_order": order,
+        })
     return updates
 
 
@@ -1133,14 +1263,21 @@ def run(args: argparse.Namespace) -> int:
         if blockers:
             print("BLOCKER " + ",".join(blockers)); return 2
         if not args.live_dry_run:
-            try: pending_updates=reconcile_pending_orders(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
+            try: pending_updates=reconcile_pending_orders(
+                ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl",
+                broker_mode=cfg.get("broker_mode"),
+            )
             except Exception:
                 print("SYSTEM_FAILURE pending_order_reconciliation"); return 4
-            for update in pending_updates:
-                if update["status"]=="filled":
-                    print(f"TRADE {update.get('action')} {update.get('symbol')} @ {update.get('filled_avg_price')}"); return 0
             if pending_updates:
-                print("BLOCKER order_pending_or_partial"); return 2
+                for update in pending_updates:
+                    if not emit_order_notification_once(
+                        ROOT/"private"/"order_notifications.jsonl",
+                        str(update["client_order_id"]),
+                        update["_plan"], update["_broker_order"], cfg.get("broker_mode"),
+                    ):
+                        print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
+                return 0
             try: exit_updates=reconcile_managed_exits(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
             except Exception:
                 print("SYSTEM_FAILURE managed_exit_reconciliation"); return 4
@@ -1222,6 +1359,7 @@ def run(args: argparse.Namespace) -> int:
             record_blocker_diagnostics("final_validation",plan.get("symbol"),plan.get("action"),sorted(set(errors)),final_details,dry_run=args.dry_run_fixture or args.live_dry_run)
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":reason})
         print("BLOCKER " + ",".join(reason)); return 2
+    submission_started=False
     try:
         fresh=_broker_bridge("review",{"order":plan,"earnings_event_at":candidate.get("earnings_event_at"),"planned_exit_at":candidate.get("planned_exit_at")})
         fresh_exposure,fresh_scope_errors=managed_exposure(fresh.get("positions") or [],read_jsonl(ROOT/"trade_journal.jsonl"))
@@ -1233,16 +1371,23 @@ def run(args: argparse.Namespace) -> int:
             append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":fresh_errors})
             print("BLOCKER broker_review:"+",".join(fresh_errors)); return 2
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})
-        placed=_broker_bridge("place",{"order":plan,"client_order_id":ref})
+        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
+        submission_started=True
+        _broker_bridge("place",{"order":plan,"client_order_id":ref})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"placed"})
         reconciled=_broker_bridge("reconcile",{"client_order_id":ref})
-        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":reconciled.get("status","failed")})
+        if broker_order_notification_line(ref, plan, reconciled, cfg.get("broker_mode")) is None:
+            print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
+        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":reconciled["status"]})
         journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled)
-        if reconciled.get("status") == "filled": print(f"TRADE {plan['action']} {plan['quantity']} {plan['symbol']} @ {reconciled.get('filled_avg_price')}")
-        else: print("BLOCKER order_pending_or_partial")
+        if not emit_order_notification_once(
+            ROOT/"private"/"order_notifications.jsonl", ref, plan, reconciled, cfg.get("broker_mode"),
+        ):
+            print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
         return 0
     except Exception:
-        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"failed","reason":"broker_mcp_failure"})
+        failure_status="submission_unknown" if submission_started else "failed"
+        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":failure_status,"reason":"broker_mcp_failure"})
         print("SYSTEM_FAILURE broker_mcp_failure"); return 4
 
 
