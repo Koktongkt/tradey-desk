@@ -70,7 +70,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "research_synthesis_timeout","research_synthesis_unavailable","reviewer_unavailable",
     "reviewer_veto","scheduled_task","shadow_calibration","short_sale_forbidden",
     "sizing_state_unavailable","spread_too_wide","stale_or_unverified_research","stale_quote",
-    "submission_notification_failed","technical_bars_unavailable","trading_calendar_unavailable","unknown_buying_power",
+    "technical_bars_unavailable","trading_calendar_unavailable","unknown_buying_power",
     "unknown_cash","unknown_spread","unsupported_action","unsupported_technical_setup",
     "weak_reward_to_risk","whole_share_unaffordable",
 })

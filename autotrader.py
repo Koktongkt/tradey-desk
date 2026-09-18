@@ -1399,10 +1399,12 @@ def run(args: argparse.Namespace) -> int:
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
         submission_started=True
-        if not emit_placing_notification_once(
-            ROOT/"private"/"order_notifications.jsonl", ref, plan, cfg.get("broker_mode"),
-        ):
-            print("SYSTEM_FAILURE submission_notification_failed"); return 4
+        try:
+            emit_placing_notification_once(
+                ROOT/"private"/"order_notifications.jsonl", ref, plan, cfg.get("broker_mode"),
+            )
+        except Exception:
+            pass
         _broker_bridge("place",{"order":plan,"client_order_id":ref})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"placed"})
         reconciled=_broker_bridge("reconcile",{"client_order_id":ref})

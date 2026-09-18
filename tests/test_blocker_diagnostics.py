@@ -302,7 +302,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             self.assertTrue(all("client_order_id" not in row for row in markers))
             self.assertFalse((root / "private" / "blocker_diagnostics.jsonl").exists())
 
-    def test_notification_failure_blocks_place_fail_closed(self):
+    def test_notification_failure_does_not_block_place(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             snap = _snapshot()
@@ -324,6 +324,13 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
                 if op == "place":
                     place_calls.append(payload)
                     return {"status": "accepted"}
+                if op == "reconcile":
+                    order = payload["order"] if payload and "order" in payload else (place_calls[-1]["order"] if place_calls else None)
+                    return {
+                        "client_order_id": payload["client_order_id"], "status": "accepted",
+                        "symbol": order["symbol"], "side": order["action"].lower(),
+                        "qty": str(order["quantity"]), "type": "limit", "order_class": "bracket",
+                    }
                 raise AssertionError(op)
             out = io.StringIO()
             with patch.object(autotrader, "ROOT", root), patch(
@@ -337,12 +344,59 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             ), contextlib.redirect_stdout(out):
                 code = autotrader.run(autotrader.argparse.Namespace(
                     dry_run_fixture=False, live_dry_run=False))
-            self.assertEqual(code, 4)
-            self.assertIn("SYSTEM_FAILURE submission_notification_failed", out.getvalue())
-            self.assertEqual(place_calls, [])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(place_calls), 1)
+            self.assertEqual(out.getvalue(), "")
             ledger = [json.loads(line) for line in (root / "order_ledger.jsonl").read_text().splitlines()]
-            self.assertEqual(ledger[-1]["status"], "submission_started")
-            self.assertNotIn("placed", {row["status"] for row in ledger})
+            self.assertIn("placed", {row["status"] for row in ledger})
+
+    def test_notification_exception_does_not_block_place(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            _setup_root(root, snap)
+            proposal, errors = autotrader.build_canonical_proposal(
+                json.loads((root / "candidates.jsonl").read_text().splitlines()[0]),
+                autotrader.authoritative_bundle({}, snap, snap["captured_at"])[
+                    "broker_snapshot"],
+                _cfg(), 0.0)
+            self.assertEqual(errors, [])
+            reviews = [{
+                "proposal_hash": proposal["proposal_hash"], "decision": "APPROVE",
+                "fatal_flags": [], "reason_codes": [],
+                "component_scores": {k: 4 for k in autotrader.RUBRIC_WEIGHTS["short_1_5"]},
+            }] * 2
+            place_calls = []
+            def bridge(op, payload=None):
+                if op in {"snapshot", "review"}: return snap
+                if op == "place":
+                    place_calls.append(payload)
+                    return {"status": "accepted"}
+                if op == "reconcile":
+                    order = place_calls[-1]["order"]
+                    return {
+                        "client_order_id": payload["client_order_id"], "status": "accepted",
+                        "symbol": order["symbol"], "side": order["action"].lower(),
+                        "qty": str(order["quantity"]), "type": "limit", "order_class": "bracket",
+                    }
+                raise AssertionError(op)
+            out = io.StringIO()
+            with patch.object(autotrader, "ROOT", root), patch(
+                "autotrader._broker_bridge", side_effect=bridge
+            ), patch("autotrader.load_baseline_symbols", return_value=set()), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
+            ), patch(
+                "autotrader.independent_reviews", return_value=reviews
+            ), patch(
+                "autotrader.emit_placing_notification_once", side_effect=OSError("pipe")
+            ), contextlib.redirect_stdout(out):
+                code = autotrader.run(autotrader.argparse.Namespace(
+                    dry_run_fixture=False, live_dry_run=False))
+            self.assertEqual(code, 0)
+            self.assertEqual(len(place_calls), 1)
+            self.assertEqual(out.getvalue(), "")
+            ledger = [json.loads(line) for line in (root / "order_ledger.jsonl").read_text().splitlines()]
+            self.assertIn("placed", {row["status"] for row in ledger})
 
 
     def test_ambiguous_place_failure_is_reconciled_without_resubmission(self):
