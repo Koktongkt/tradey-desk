@@ -37,6 +37,19 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(synthesis[synthesis.index("--max-turns") + 1], "1")
         self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
 
+    def test_entire_research_reasoning_plane_uses_default_model_family(self):
+        commands = [
+            alpha_radar.discovery_command(),
+            alpha_radar.synthesis_command(),
+            alpha_radar.focused_retrieval_command(),
+            alpha_radar.research_subprocess_command("web", max_turns=2, run_budget=45),
+        ]
+        for command in commands:
+            self.assertEqual(command[command.index("--provider") + 1], "openai-codex")
+            self.assertEqual(command[command.index("-m") + 1], "gpt-5.6-sol")
+        source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
+        self.assertNotIn("deepseek/deepseek-v4-flash-0731", source)
+
     def test_scout_prompt_is_discovery_only_and_allows_one_confirmed_url(self):
         prompt=alpha_radar.discovery_prompt({"min_price_usd":1,"max_position_usd":500})
         self.assertIn("$1-$500",prompt)

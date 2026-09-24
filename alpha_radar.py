@@ -11,6 +11,8 @@ from durable_jsonl import append_jsonl, DurableAppendError
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
+RESEARCH_PROVIDER="openai-codex"
+RESEARCH_MODEL="gpt-5.6-sol"
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}
 RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted","source_url_mismatch","bundle_rescue_unavailable"}
@@ -334,32 +336,33 @@ def synthesis_none_reason(candidate:dict[str,Any])->str:
     reason=candidate.get("none_reason")
     return reason if reason in SYNTHESIS_NONE_REASONS else "evidence_insufficient"
 
-def discovery_command()->list[str]:
-    return [
-        "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
-        "--provider", "nous", "-m", "deepseek/deepseek-v4-flash-0731",
-        "-t", "search", "--ignore-rules", "--max-turns", "2",
-        "--run-budget", "180", "--query-file", "-",
+
+def research_subprocess_command(
+    toolset:str,max_turns:int,run_budget:int,*,safe_mode:bool=False,
+)->list[str]:
+    """Build a pinned research-plane command using the desk's default model."""
+    command=[
+        "/opt/hermes/bin/hermes","chat","-Q","--source","tool",
+        "--provider",RESEARCH_PROVIDER,"-m",RESEARCH_MODEL,"-t",toolset,
     ]
+    if safe_mode:command.append("--safe-mode")
+    command.extend([
+        "--ignore-rules","--max-turns",str(max_turns),
+        "--run-budget",str(run_budget),"--query-file","-",
+    ])
+    return command
+
+
+def discovery_command()->list[str]:
+    return research_subprocess_command("search",max_turns=2,run_budget=180)
 
 
 def synthesis_command()->list[str]:
-    return [
-        "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
-        "--provider", "nous", "-m", "deepseek/deepseek-v4-flash-0731",
-        "-t", "", "--safe-mode", "--ignore-rules", "--max-turns", "1",
-        "--run-budget", "45", "--query-file", "-",
-    ]
+    return research_subprocess_command("",max_turns=1,run_budget=45,safe_mode=True)
 
 
 def focused_retrieval_command()->list[str]:
-    return [
-        "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
-        "--provider", "nous", "-m", "deepseek/deepseek-v4-flash-0731",
-        "-t", "web", "--ignore-rules", "--max-turns", "3",
-        "--run-budget", "120", "--query-file", "-",
-    ]
-
+    return research_subprocess_command("web",max_turns=3,run_budget=120)
 
 def focused_retrieval_prompt(candidates:list[dict[str,Any]])->str:
     targets=[{"symbol":str(c.get("symbol") or "").upper(),"catalyst":str(c.get("catalyst") or "")[:500],"event_date":str(c.get("event_date") or "")} for c in candidates[:5]]
@@ -553,9 +556,7 @@ def fetch_source_via_gateway(
     Routes through the hermes web toolset (gateway-fronted extraction), which
     reaches pages direct fetching cannot. Returns None on any failure.
     """
-    cmd=["/opt/hermes/bin/hermes","chat","-Q","--source","tool","--provider","nous",
-         "-m","deepseek/deepseek-v4-flash-0731","-t","web","--ignore-rules",
-         "--max-turns","2","--run-budget","45","--query-file","-"]
+    cmd=research_subprocess_command("web",max_turns=2,run_budget=45)
     try:
         result=subprocess.run(
             cmd,input=GATEWAY_FALLBACK_PROMPT.format(url=url),
@@ -1035,9 +1036,7 @@ def gateway_rescue_url(
     """Return one source URL from the requested independent or wire lane."""
     if role not in GATEWAY_RESCUE_PROMPTS:return None
     prompt=GATEWAY_RESCUE_PROMPTS[role].format(symbol=symbol,catalyst=str(catalyst)[:300])
-    cmd=["/opt/hermes/bin/hermes","chat","-Q","--source","tool","--provider","nous",
-         "-m","deepseek/deepseek-v4-flash-0731","-t","web","--ignore-rules",
-         "--max-turns","2","--run-budget","45","--query-file","-"]
+    cmd=research_subprocess_command("web",max_turns=2,run_budget=45)
     try:
         remaining=(deadline-monotonic()) if deadline is not None else GATEWAY_RESCUE_TIMEOUT_SECONDS
         if remaining<=0:return None
