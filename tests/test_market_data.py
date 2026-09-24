@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +54,29 @@ class _PayloadResponse(_GroupedResponse):
 
 
 class MarketDataTests(unittest.TestCase):
+    def test_configured_massive_key_uses_unmasked_hermes_config(self):
+        configured = {"MASSIVE_API_KEY": "actual-key"}
+        completed = subprocess.CompletedProcess([], 0, json.dumps(configured), "")
+        with patch("market_data.subprocess.run", return_value=completed) as run:
+            result = market_data.configured_massive_key()
+
+        self.assertEqual(result, "actual-key")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/opt/hermes/bin/hermes",
+                "config",
+                "get",
+                "--raw",
+                "--json",
+                "mcp_servers.massive.env",
+            ],
+        )
+        self.assertEqual(
+            run.call_args.kwargs,
+            {"capture_output": True, "text": True, "timeout": 30},
+        )
+
     def test_synchronized_completed_close_prices_use_one_grouped_response(self):
         with patch("market_data.configured_massive_key", return_value="secret"), patch(
             "market_data.urllib.request.urlopen", return_value=_GroupedResponse()

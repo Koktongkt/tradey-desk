@@ -19,6 +19,7 @@ def configured_massive_key() -> str:
             "/opt/hermes/bin/hermes",
             "config",
             "get",
+            "--raw",
             "--json",
             "mcp_servers.massive.env",
         ],
