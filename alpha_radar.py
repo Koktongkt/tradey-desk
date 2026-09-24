@@ -8,7 +8,7 @@ from time import monotonic
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
-from durable_jsonl import append_jsonl, DurableAppendError
+from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
@@ -1366,21 +1366,16 @@ def reusable_fresh_candidate(
     )
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
-        rows = [json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    except (OSError, json.JSONDecodeError):
+        rows = read_jsonl(candidates_path, strict=True)
+    except Exception:
         return None
     review_marks: list[str] = []
     try:
-        for line in reviews_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                mark = json.loads(line).get("timestamp")
-            except json.JSONDecodeError:
-                continue
+        for review_row in read_jsonl(reviews_path, strict=True):
+            mark = review_row.get("timestamp")
             if isinstance(mark, str):
                 review_marks.append(mark)
-    except OSError:
+    except Exception:
         pass
     latest_review = max(review_marks) if review_marks else None
     for row in reversed(rows):
@@ -1413,8 +1408,8 @@ def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_
         - EXECUTION_FRESHNESS_RESERVE_MINUTES,
     )
     try:
-        rows=[json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    except (OSError,json.JSONDecodeError):
+        rows=read_jsonl(candidates_path, strict=True)
+    except Exception:
         return None
     for row in reversed(rows):
         if not isinstance(row,dict):continue

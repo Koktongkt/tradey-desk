@@ -6,6 +6,7 @@ import statistics
 import subprocess
 from pathlib import Path
 from typing import Any
+from durable_jsonl import read_jsonl
 ROOT=Path(__file__).resolve().parent
 SAFE_LEDGER={"timestamp","status","reason","symbol","action","quantity","order_type","limit_price","evidence_id"}
 SAFE_AUDIT={"timestamp","mode","stage","decision","reason","symbol","action"}
@@ -62,12 +63,7 @@ ACTIVITY_SUMMARIES={
 }
 
 def rows(path:Path)->list[dict[str,Any]]:
-    out=[]
-    if not path.exists(): return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try: out.append(json.loads(line))
-        except json.JSONDecodeError: pass
-    return out
+    return read_jsonl(path)
 
 def sanitize_ledger_row(row:dict[str,Any])->dict[str,Any]:
     out={k:row[k] for k in SAFE_LEDGER if k in row}

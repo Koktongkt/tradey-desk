@@ -23,6 +23,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
 import managed_reconciliation
+from durable_jsonl import append_jsonl, read_jsonl
 
 ROOT = Path(__file__).resolve().parent
 PRIVATE_DIR = ROOT / "private"
@@ -51,25 +52,6 @@ def utcnow() -> str:
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def append_jsonl(path: Path, row: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            value = json.loads(line)
-            if isinstance(value, dict): rows.append(value)
-        except json.JSONDecodeError:
-            continue
-    return rows
 
 
 def load_baseline_symbols(path: Path) -> set[str]:
@@ -746,19 +728,11 @@ def broker_order_notification_line(
 
 def _strict_notification_states(path: Path) -> dict[str, str] | None:
     states: dict[str, str] = {}
-    if not path.exists():
-        return states
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        rows = read_jsonl(path, strict=True)
+    except Exception:
         return None
-    for raw in lines:
-        try:
-            row = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(row, dict):
-            return None
+    for row in rows:
         key, state = row.get("notification_key"), row.get("state")
         if (
             not isinstance(key, str) or len(key) != 64
@@ -1153,15 +1127,11 @@ def reconcile_pending_orders(
 
 
 def _daily_order_count(path: Path) -> int:
-    if not path.exists(): return 0
     today=dt.datetime.now(dt.timezone.utc).date().isoformat()
     refs=set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            r=json.loads(line)
-            if str(r.get("timestamp","")).startswith(today) and r.get("status") in {"placed","filled"}:
-                refs.add(str(r.get("client_order_id") or f"legacy-{len(refs)}"))
-        except json.JSONDecodeError: pass
+    for r in read_jsonl(path, strict=True):
+        if str(r.get("timestamp","")).startswith(today) and r.get("status") in {"placed","filled"}:
+            refs.add(str(r.get("client_order_id") or f"legacy-{len(refs)}"))
     return len(refs)
 
 
@@ -1211,15 +1181,11 @@ def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> b
     if not isinstance(expected, str):
         return False
     try:
-        lines = reviews_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        rows = read_jsonl(reviews_path, strict=True)
+    except Exception:
         return False
     completed = False
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for row in rows:
         if not isinstance(row, dict) or row.get("dossier_hash") != expected:
             continue
         reviews = row.get("reviews")
@@ -1322,12 +1288,7 @@ def run(args: argparse.Namespace) -> int:
                 update=exit_updates[0]
                 print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")
                 return 0
-        candidates=[]
-        p=ROOT/"candidates.jsonl"
-        if p.exists():
-            for line in p.read_text(encoding="utf-8").splitlines():
-                try: candidates.append(json.loads(line))
-                except json.JSONDecodeError: pass
+        candidates=read_jsonl(ROOT/"candidates.jsonl", strict=True)
         if not candidates:
             print("BLOCKER no_candidate"); return 2
         candidate=candidates[-1]

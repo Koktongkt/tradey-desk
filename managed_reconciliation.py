@@ -12,7 +12,7 @@ from pathlib import Path
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from durable_jsonl import append_jsonl
+from durable_jsonl import append_jsonl, read_jsonl
 
 
 class ReconciliationBlocked(RuntimeError):
@@ -32,14 +32,9 @@ def market_window_open(now: dt.datetime | None = None) -> bool:
 
 
 def read_rows(path):
-    if not path.exists():
-        return []
     try:
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        if any(not isinstance(row, dict) for row in rows):
-            raise ValueError
-        return rows
-    except (ValueError, UnicodeError) as error:
+        return read_jsonl(path, strict=True)
+    except Exception as error:
         raise ReconciliationBlocked('managed_state_invalid') from error
 
 

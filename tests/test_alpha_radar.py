@@ -710,7 +710,7 @@ class AlphaRadarTests(unittest.TestCase):
     def test_live_research_types_source_fetch_and_parse_failures(self):
         scout=subprocess.CompletedProcess([],0,structured_scout(),"")
         synth=subprocess.CompletedProcess([],0,"not-json","")
-        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=[
                 {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
                 {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
@@ -719,7 +719,7 @@ class AlphaRadarTests(unittest.TestCase):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_parse_failure")
-        with patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
             alpha_radar,"gather_evidence",return_value=[{"url":"https://a.example/1","text":_body("a")}]
         ), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=lambda candidate,accepted,**kwargs:accepted
@@ -849,7 +849,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://a.example/1","title":"A","text":_body("current event"),"published_at":"2026-09-08T14:57:00Z"},
             {"url":"https://b.example/2","title":"B","text":_body("current confirmation"),"published_at":"2026-09-08T15:00:00Z"},
         ]
-        with patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
             alpha_radar,"gather_evidence",return_value=pages
         ), patch.object(alpha_radar,"record_research_diagnostics",side_effect=OSError("disk")):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -863,7 +863,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://a.example/1","title":"A","text":_body("current event"),"published_at":"2026-09-08T14:57:00Z"},
             {"url":"https://b.example/2","title":"B","text":_body("current confirmation"),"published_at":"2026-09-08T15:00:00Z"},
         ]
-        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=pages
         ), patch.object(alpha_radar,"record_synthesis_none",side_effect=OSError("disk")):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -1040,7 +1040,7 @@ class AlphaRadarTests(unittest.TestCase):
     def test_live_research_types_synchronized_market_data_failure(self):
         scout=subprocess.CompletedProcess([],0,structured_scout("SNOW"),"")
         synth=subprocess.CompletedProcess([],0,json.dumps({"symbol":"SNOW","status":"ok"}),"")
-        with patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
             alpha_radar,"gather_evidence",return_value=[
                 {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
                 {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},

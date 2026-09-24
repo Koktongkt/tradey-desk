@@ -8,29 +8,18 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+from durable_jsonl import append_jsonl, read_jsonl
 
 HORIZONS = (1, 3, 5, 10, 30)
 ROOT = Path(__file__).resolve().parent
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            row = json.loads(line)
-            if isinstance(row, dict):
-                rows.append(row)
-        except json.JSONDecodeError:
-            continue
-    return rows
+    return read_jsonl(path)
 
 
 def _append(path: Path, row: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+    append_jsonl(path, row)
 
 
 def record_decision(

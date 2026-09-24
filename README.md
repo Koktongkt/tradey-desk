@@ -45,10 +45,23 @@ The post-close routine measures shadow outcomes versus SPY and writes `calibrati
 
 The configured Hermes MCP uses `${ALPACA_API_KEY}` and `${ALPACA_SECRET_KEY}` with `ALPACA_PAPER_TRADE=true`; consolidated volume uses `${MASSIVE_API_KEY}`. Decision reviews use the active Hermes Nous Portal OAuth session; no separate DeepSeek or Z.ai API keys are required. Dashboard deployment requires `VERCEL_TOKEN`. Put secrets in the active Hermes profile's secret store, never in prompts or source files.
 
+## Transactional journal storage
+
+Operational journals use `private/trading_journal.sqlite3` as the transactional read store. WAL mode, full synchronous commits, append-only sequencing, payload digests, and uniqueness constraints protect order intents, confirmed-fill closure keys, notification transitions, and replacement-protection registrations. The existing JSONL files remain durable compatibility projections for established forensic and reporting workflows; every append updates both stores under the shared ledger lock, and readers fail closed if their histories diverge. Dry-run ledgers use an isolated database under `test_artifacts/private/` and never enter operational metrics.
+
+The initial cutover is deliberately non-rolling because old JSONL-only writers do not acquire the SQLite ledger lock:
+
+1. Pause every process that can read or append an operational ledger.
+2. Run `python3 sqlite_ledger.py migrate --root /path/to/tradey-desk`.
+3. Run `python3 sqlite_ledger.py verify --root /path/to/tradey-desk` and require `"ok": true` with the expected stream and row totals.
+4. Start only code containing the SQLite compatibility layer, then resume schedules.
+
+Keep the database private. Create consistent snapshots with `python3 sqlite_ledger.py backup --root /path/to/tradey-desk --output /secure/path/trading-journal.sqlite3`; the command uses SQLite's backup API, validates the snapshot, fsyncs it, and installs it atomically. Retain snapshots off-host and periodically test restoration. The broker remains authoritative for orders and fills; migration does not weaken fresh broker reconciliation.
+
 ## Local verification
 
 ```bash
-uv run --with fastmcp python -m unittest discover -s tests -p 'test_*.py' -v
+uv run --with 'fastmcp<4' python -m unittest discover -s tests -p 'test_*.py' -v
 python3 alpha_radar.py --dry-run-fixture
 python3 autotrader.py --dry-run-fixture
 python3 candidate_outcomes.py --fixture fixtures/outcomes.json

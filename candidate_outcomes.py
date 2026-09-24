@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse,hashlib,json,subprocess
 from pathlib import Path
 from typing import Any
+from durable_jsonl import append_jsonl, read_jsonl
 ROOT=Path(__file__).resolve().parent
 H=(1,3,5,10)
 
@@ -17,15 +18,10 @@ def measure(x:dict[str,Any])->dict[str,Any]:
     return out
 
 def append(row:dict[str,Any])->None:
-    with (ROOT/"candidate_outcomes.jsonl").open("a",encoding="utf-8") as f:f.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+    append_jsonl(ROOT/"candidate_outcomes.jsonl",row)
 
 def read_rows(path:Path)->list[dict[str,Any]]:
-    out=[]
-    if not path.exists():return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:out.append(json.loads(line))
-        except json.JSONDecodeError:pass
-    return out
+    return read_jsonl(path)
 
 def main()->int:
     ap=argparse.ArgumentParser(); ap.add_argument("--fixture"); a=ap.parse_args()
