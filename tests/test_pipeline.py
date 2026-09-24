@@ -187,10 +187,11 @@ class PipelineTests(unittest.TestCase):
         normalized = alpha_radar.normalize_candidate(candidate)
         self.assertEqual(normalized, {"symbol": "AAPL", "thesis": "keep"})
 
-    def test_radar_uses_default_model_with_web_only(self):
-        cmd = alpha_radar.research_command()
-        self.assertEqual(cmd[cmd.index("--provider") + 1], "openai-codex")
-        self.assertEqual(cmd[cmd.index("-m") + 1], "gpt-5.6-sol")
+    def test_radar_uses_configured_default_model_with_web_only(self):
+        with patch.object(alpha_radar,"configured_default_model",return_value=("future-provider","future/model")):
+            cmd = alpha_radar.research_command()
+        self.assertEqual(cmd[cmd.index("--provider") + 1], "future-provider")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "future/model")
         self.assertEqual(cmd[cmd.index("-t") + 1], "search")
         self.assertNotIn("x_search", cmd)
         self.assertEqual(cmd[-2:], ["--query-file", "-"])

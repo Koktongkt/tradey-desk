@@ -30,14 +30,16 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertIn("timeout=min(120,remaining),cwd=ROOT", source)
 
     def test_scout_run_budget_bounds_discovery(self):
-        command = alpha_radar.discovery_command()
+        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
+            command = alpha_radar.discovery_command()
         budget_index = command.index("--run-budget") + 1
         self.assertEqual(command[budget_index], "180")
         self.assertEqual(command[command.index("--max-turns")+1],"2")
         self.assertEqual(command[command.index("-t")+1],"search")
 
     def test_focused_retrieval_has_bounded_tool_budget_and_timeout(self):
-        command=alpha_radar.focused_retrieval_command()
+        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
+            command=alpha_radar.focused_retrieval_command()
         self.assertEqual(command[command.index("--max-turns")+1],"3")
         self.assertEqual(command[command.index("--run-budget")+1],"120")
         source=(alpha_radar.ROOT/"alpha_radar.py").read_text()

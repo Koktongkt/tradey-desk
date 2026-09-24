@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import alpha_radar
 
@@ -26,29 +26,83 @@ def structured_scout(symbol="SNOW",urls=None):
 
 class AlphaRadarTests(unittest.TestCase):
     def test_research_is_two_stage_with_bounded_scout_and_tool_free_synthesis(self):
-        scout = alpha_radar.discovery_command()
-        synthesis = alpha_radar.synthesis_command()
+        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
+            scout = alpha_radar.discovery_command()
+            synthesis = alpha_radar.synthesis_command()
 
         self.assertEqual(scout[scout.index("-t") + 1], "search")
         self.assertEqual(scout[scout.index("--max-turns") + 1], "2")
         self.assertEqual(scout[scout.index("--run-budget") + 1], "180")
-        self.assertIn("--safe-mode", synthesis)
-        self.assertEqual(synthesis[synthesis.index("-t") + 1], "")
+        self.assertNotIn("--safe-mode", synthesis)
+        self.assertNotIn("--ignore-user-config", synthesis)
+        self.assertEqual(synthesis[synthesis.index("-t") + 1], "bot_room")
         self.assertEqual(synthesis[synthesis.index("--max-turns") + 1], "1")
         self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
 
-    def test_entire_research_reasoning_plane_uses_default_model_family(self):
-        commands = [
-            alpha_radar.discovery_command(),
-            alpha_radar.synthesis_command(),
-            alpha_radar.focused_retrieval_command(),
-            alpha_radar.research_subprocess_command("web", max_turns=2, run_budget=45),
-        ]
+    def test_hermes_bot_room_posture_resolves_to_zero_effective_tools(self):
+        probe=(
+            "import json; from model_tools import _select_tool_names; "
+            "print('EFFECTIVE_TOOLS='+json.dumps(sorted(_select_tool_names(['bot_room'],None,True))))"
+        )
+        result=subprocess.run(
+            ["/opt/hermes/.venv/bin/python","-c",probe],cwd="/opt/hermes",
+            capture_output=True,text=True,timeout=20,
+        )
+        self.assertEqual(result.returncode,0,result.stderr)
+        marker=[line for line in result.stdout.splitlines() if line.startswith("EFFECTIVE_TOOLS=")]
+        self.assertEqual(marker,["EFFECTIVE_TOOLS=[]"])
+
+    def test_entire_research_reasoning_plane_follows_configured_default(self):
+        with patch.object(alpha_radar,"configured_default_model",return_value=("future-provider","future/model")):
+            commands = [
+                alpha_radar.discovery_command(),
+                alpha_radar.synthesis_command(),
+                alpha_radar.focused_retrieval_command(),
+                alpha_radar.research_subprocess_command("web", max_turns=2, run_budget=45),
+            ]
         for command in commands:
-            self.assertEqual(command[command.index("--provider") + 1], "openai-codex")
-            self.assertEqual(command[command.index("-m") + 1], "gpt-5.6-sol")
+            self.assertEqual(command[command.index("--provider") + 1], "future-provider")
+            self.assertEqual(command[command.index("-m") + 1], "future/model")
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertNotIn("deepseek/deepseek-v4-flash-0731", source)
+        self.assertNotIn('RESEARCH_MODEL="gpt-5.6-sol"',source)
+        self.assertNotIn('RESEARCH_PROVIDER="openai-codex"',source)
+
+    def test_configured_default_model_is_read_through_hermes_cli(self):
+        run=Mock(return_value=subprocess.CompletedProcess(
+            [],0,json.dumps({"provider":"future-provider","default":"future/model"})+"\n","",
+        ))
+        self.assertEqual(alpha_radar.load_configured_default_model(run=run),("future-provider","future/model"))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][-3:],["get","model","--json"])
+
+    def test_configured_default_model_is_cached_once_per_radar_process(self):
+        alpha_radar.configured_default_model.cache_clear()
+        try:
+            with patch.object(alpha_radar,"load_configured_default_model",side_effect=[
+                ("first-provider","first/model"),("second-provider","second/model"),
+            ]) as load:
+                self.assertEqual(alpha_radar.configured_default_model(),("first-provider","first/model"))
+                self.assertEqual(alpha_radar.configured_default_model(),("first-provider","first/model"))
+                self.assertEqual(load.call_count,1)
+                alpha_radar.configured_default_model.cache_clear()
+                self.assertEqual(alpha_radar.configured_default_model(),("second-provider","second/model"))
+                self.assertEqual(load.call_count,2)
+        finally:
+            alpha_radar.configured_default_model.cache_clear()
+
+    def test_configured_default_model_lookup_fails_closed(self):
+        failures=(
+            Mock(return_value=subprocess.CompletedProcess([],1,"","unavailable")),
+            Mock(return_value=subprocess.CompletedProcess([],0,"not-json","")),
+            Mock(return_value=subprocess.CompletedProcess([],0,json.dumps({"provider":"openai-codex"}),"")),
+            Mock(side_effect=OSError("missing")),
+            Mock(side_effect=subprocess.TimeoutExpired(["hermes"],10)),
+        )
+        for run in failures:
+            with self.subTest(run=run):
+                with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                    alpha_radar.load_configured_default_model(run=run)
+                self.assertEqual(ctx.exception.code,"research_model_configuration_unavailable")
 
     def test_scout_prompt_is_discovery_only_and_allows_one_confirmed_url(self):
         prompt=alpha_radar.discovery_prompt({"min_price_usd":1,"max_position_usd":500})

@@ -2,6 +2,7 @@
 """Live research radar. Writes qualified candidate dossiers; never orders."""
 from __future__ import annotations
 import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.error, urllib.parse, urllib.request
+from functools import lru_cache
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
@@ -11,8 +12,8 @@ from durable_jsonl import append_jsonl, DurableAppendError
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
-RESEARCH_PROVIDER="openai-codex"
-RESEARCH_MODEL="gpt-5.6-sol"
+HERMES_BIN="/opt/hermes/bin/hermes"
+_run_config_command=subprocess.run
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}
 RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted","source_url_mismatch","bundle_rescue_unavailable"}
@@ -337,15 +338,45 @@ def synthesis_none_reason(candidate:dict[str,Any])->str:
     return reason if reason in SYNTHESIS_NONE_REASONS else "evidence_insufficient"
 
 
+def load_configured_default_model(run:Callable[...,Any]=_run_config_command)->tuple[str,str]:
+    """Resolve the active Hermes default provider/model and fail closed."""
+    try:
+        result=run(
+            [HERMES_BIN,"config","get","model","--json"],capture_output=True,text=True,
+            timeout=10,cwd=ROOT,
+        )
+        config=json.loads(result.stdout) if result.returncode==0 else None
+    except (OSError,subprocess.TimeoutExpired,json.JSONDecodeError) as error:
+        raise ResearchFailure("research_model_configuration_unavailable") from error
+    if not isinstance(config,dict):
+        raise ResearchFailure("research_model_configuration_unavailable")
+    provider=config.get("provider")
+    model=config.get("default")
+    if (
+        not isinstance(provider,str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}",provider) is None
+        or not isinstance(model,str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}",model) is None
+    ):
+        raise ResearchFailure("research_model_configuration_unavailable")
+    return provider,model
+
+
+@lru_cache(maxsize=1)
+def configured_default_model()->tuple[str,str]:
+    """Pin one default identity per radar process; the next run reloads it."""
+    return load_configured_default_model()
+
+
 def research_subprocess_command(
-    toolset:str,max_turns:int,run_budget:int,*,safe_mode:bool=False,
+    toolset:str,max_turns:int,run_budget:int,
 )->list[str]:
-    """Build a pinned research-plane command using the desk's default model."""
+    """Build a command pinned to the default identity resolved for this run."""
+    provider,model=configured_default_model()
     command=[
-        "/opt/hermes/bin/hermes","chat","-Q","--source","tool",
-        "--provider",RESEARCH_PROVIDER,"-m",RESEARCH_MODEL,"-t",toolset,
+        HERMES_BIN,"chat","-Q","--source","tool",
+        "--provider",provider,"-m",model,"-t",toolset,
     ]
-    if safe_mode:command.append("--safe-mode")
     command.extend([
         "--ignore-rules","--max-turns",str(max_turns),
         "--run-budget",str(run_budget),"--query-file","-",
@@ -358,7 +389,9 @@ def discovery_command()->list[str]:
 
 
 def synthesis_command()->list[str]:
-    return research_subprocess_command("",max_turns=1,run_budget=45,safe_mode=True)
+    # Hermes treats an empty -t value as "use defaults". bot_room is the
+    # built-in text-only, zero-tool posture and preserves provider config.
+    return research_subprocess_command("bot_room",max_turns=1,run_budget=45)
 
 
 def focused_retrieval_command()->list[str]:
