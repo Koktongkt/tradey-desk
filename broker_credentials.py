@@ -12,6 +12,7 @@ def configured_alpaca_env() -> dict[str, str]:
             "/opt/hermes/bin/hermes",
             "config",
             "get",
+            "--raw",
             "--json",
             "mcp_servers.alpaca.env",
         ],

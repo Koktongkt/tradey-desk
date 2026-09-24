@@ -18,7 +18,21 @@ class BrokerCredentialTests(unittest.TestCase):
             result = broker_credentials.configured_alpaca_env()
         self.assertEqual(result["ALPACA_API_KEY"], "new-api")
         self.assertEqual(result["ALPACA_SECRET_KEY"], "new-secret")
-        self.assertEqual(run.call_args.args[0][-2:], ["--json", "mcp_servers.alpaca.env"])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/opt/hermes/bin/hermes",
+                "config",
+                "get",
+                "--raw",
+                "--json",
+                "mcp_servers.alpaca.env",
+            ],
+        )
+        self.assertEqual(
+            run.call_args.kwargs,
+            {"capture_output": True, "text": True, "timeout": 30},
+        )
 
     def test_configured_alpaca_env_fails_closed_when_paper_flag_is_not_true(self):
         configured = {
