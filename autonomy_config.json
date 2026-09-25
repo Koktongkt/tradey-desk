@@ -35,8 +35,8 @@
   "kill_switch_path": "KILL_SWITCH",
   "research_model": {
     "provider": "nous",
-    "model": "deepseek/deepseek-v4-flash-0731",
-    "checkpoint": "DeepSeek-V4-Flash-0731"
+    "model": "deepseek/deepseek-v4.1-flash",
+    "checkpoint": "DeepSeek-V4.1-Flash"
   },
   "review_model": {
     "provider": "nous",

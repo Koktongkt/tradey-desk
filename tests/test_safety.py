@@ -820,14 +820,14 @@ class TradeySafetyTests(unittest.TestCase):
             result = autotrader._review_via_hermes(
                 {"proposal": proposal, "rubric_weights": autotrader.RUBRIC_WEIGHTS["short_1_5"]},
                 "nous",
-                "deepseek/deepseek-v4-flash-0731",
+                "deepseek/deepseek-v4.1-flash",
             )
         self.assertEqual(result["decision"], "HOLD")
         self.assertEqual(result["proposal_hash"], "abc")
         cmd = run.call_args.args[0]
         self.assertIn("--provider", cmd)
         self.assertEqual(cmd[cmd.index("--provider") + 1], "nous")
-        self.assertEqual(cmd[cmd.index("-m") + 1], "deepseek/deepseek-v4-flash-0731")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "deepseek/deepseek-v4.1-flash")
         self.assertEqual(cmd[cmd.index("-t") + 1], "")
         self.assertIn("--safe-mode", cmd)
         prompt = run.call_args.kwargs["input"]
@@ -900,7 +900,7 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertEqual(cfg["min_approval_confidence"], 0.55)
         self.assertEqual(
             cfg["research_model"],
-            {"provider": "nous", "model": "deepseek/deepseek-v4-flash-0731", "checkpoint": "DeepSeek-V4-Flash-0731"},
+            {"provider": "nous", "model": "deepseek/deepseek-v4.1-flash", "checkpoint": "DeepSeek-V4.1-Flash"},
         )
         self.assertEqual(
             cfg["review_model"],
@@ -909,7 +909,7 @@ class TradeySafetyTests(unittest.TestCase):
 
     def test_independent_reviews_dispatch_both_configured_models(self):
         cfg = {
-            "research_model": {"provider": "nous", "model": "deepseek/deepseek-v4-flash-0731"},
+            "research_model": {"provider": "nous", "model": "deepseek/deepseek-v4.1-flash"},
             "review_model": {"provider": "nous", "model": "z-ai/glm-5.3-flash"},
             "max_position_usd": 500,
             "allow_fractional_shares": False,
@@ -935,7 +935,7 @@ class TradeySafetyTests(unittest.TestCase):
             )
         calls = {(call.args[1], call.args[2]) for call in review.call_args_list}
         self.assertEqual(calls, {
-            ("nous", "deepseek/deepseek-v4-flash-0731"),
+            ("nous", "deepseek/deepseek-v4.1-flash"),
             ("nous", "z-ai/glm-5.3-flash"),
         })
 
