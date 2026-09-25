@@ -60,8 +60,32 @@ Keep the database private. Create consistent snapshots with `python3 sqlite_ledg
 
 ## Local verification
 
+Tests are explicitly classified in `tests/test_manifest.json`; the runner fails when a test module is unclassified, duplicated across tiers, or missing. It also snapshots operational ledgers and every file under `private/`, failing if a test changes their content or metadata.
+
+Use the smallest sufficient tier while editing:
+
 ```bash
+# Safety, durability, broker/data contracts, and test-architecture checks.
+uv run --with 'fastmcp<4' python tests/run_tests.py fast
+
+# Isolated vertical workflows across research, review, execution, reconciliation,
+# notifications, diagnostics, and dashboard projection.
+uv run --with 'fastmcp<4' python tests/run_tests.py scenario
+
+# Required before release: fast + scenario + deep research-path coverage.
+uv run --with 'fastmcp<4' python tests/run_tests.py full
+
+# Raw-discovery cross-check; must report the same test count as `full`.
 uv run --with 'fastmcp<4' python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+The normal tiers are deterministic and must not call live providers, brokers, or deployment services. External production-path smoke checks are separate, explicit, non-persisting release gates; a real paper-order canary is never part of the normal suite.
+
+For behavior changes, first run the new focused regression test and observe the expected failure, then make it pass. During development run the affected module plus `fast` or `scenario`; before resuming automation run `full`, the raw-discovery cross-check, and any exact non-persisting external smoke required by the changed boundary.
+
+Additional fixture checks remain available:
+
+```bash
 python3 alpha_radar.py --dry-run-fixture
 python3 autotrader.py --dry-run-fixture
 python3 candidate_outcomes.py --fixture fixtures/outcomes.json

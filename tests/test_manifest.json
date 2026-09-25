@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "layers": {
+    "fast": [
+      "test_broker_bridge",
+      "test_broker_credentials",
+      "test_broker_mcp_bridge",
+      "test_broker_normalization",
+      "test_cycle",
+      "test_durable_jsonl",
+      "test_earnings_calendar",
+      "test_execution_policy",
+      "test_managed_reconciliation",
+      "test_market_data",
+      "test_radar_notifications",
+      "test_repair_nul_jsonl",
+      "test_research_budget",
+      "test_research_timestamp",
+      "test_safety",
+      "test_shadow",
+      "test_sqlite_ledger",
+      "test_test_architecture"
+    ],
+    "scenario": [
+      "test_autotrader_reconciliation",
+      "test_blocker_diagnostics",
+      "test_bridge_and_reuse",
+      "test_candidate_alternatives",
+      "test_order_notifications",
+      "test_pipeline",
+      "test_reconciliation_cli",
+      "test_w2_w4"
+    ],
+    "full_only": [
+      "test_alpha_radar"
+    ]
+  }
+}

@@ -255,3 +255,5 @@ See `references/public-dashboard-activity-and-release.md` for a tested full-hist
 See `references/canonical-proposal-review-workflow.md` for a validated pre-review proposal-hashing pattern, deterministic horizon/risk sizing, reviewer rubric aggregation, and rollout verification checklist.
 
 See `references/scale-to-zero-cron-readiness.md` for diagnosing in-process cron on suspended hosts, separating wakeability from job-body failures, and verifying unattended cadence before enabling execution.
+
+See `references/layered-deterministic-test-workflow.md` for the manifest-driven fast/scenario/full test architecture, operational-file isolation guard, deterministic stuck-worker pattern, consolidation rules, and pause–RED–review–release sequence.

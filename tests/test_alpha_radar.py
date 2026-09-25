@@ -5,7 +5,7 @@ import io
 import json
 import subprocess
 import tempfile
-import time
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -557,21 +557,26 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_gather_evidence_types_still_alive_workers_and_is_deterministic(self):
         diagnostics = []
+        release_hung_worker = threading.Event()
 
         def fetch(url, _timeout):
             if "hung.example" in url:
-                time.sleep(95)
+                release_hung_worker.wait(timeout=1)
                 return {"url": url, "title": "Late", "text": _body("late body"), "published_at": None}
             return {"url": url, "title": "Current", "text": _body("usable evidence"), "published_at": None}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
-            alpha_radar, "fetch_source_via_gateway", return_value=None
-        ):
-            pages = alpha_radar.gather_evidence(
-                ["https://hung.example/a", "https://ok.example/b"],
-                per_source_timeout=1,
-                diagnostics=diagnostics,
-            )
+        try:
+            with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+                alpha_radar, "fetch_source_via_gateway", return_value=None
+            ):
+                pages = alpha_radar.gather_evidence(
+                    ["https://hung.example/a", "https://ok.example/b"],
+                    per_source_timeout=1,
+                    diagnostics=diagnostics,
+                    collection_budget_seconds=0.05,
+                )
+        finally:
+            release_hung_worker.set()
 
         self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
         self.assertEqual(pages[0]["text"], _body("usable evidence"))
@@ -1178,12 +1183,18 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(rc, 3)
 
     def test_main_does_not_append_to_candidates_on_failure(self):
-        alpha_radar.ROOT.joinpath("candidates.jsonl").touch(exist_ok=True)
-        before = (alpha_radar.ROOT / "candidates.jsonl").read_text()
-        with patch.object(alpha_radar, "fresh_verified_candidate", return_value=None):
-            with patch.object(alpha_radar, "live_research", side_effect=RuntimeError("research_synthesis_timeout")):
-                alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual((alpha_radar.ROOT / "candidates.jsonl").read_text(), before)
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)):
+            source_config = Path(__file__).resolve().parents[1] / "autonomy_config.json"
+            (alpha_radar.ROOT / "autonomy_config.json").write_text(
+                source_config.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            candidates = alpha_radar.ROOT / "candidates.jsonl"
+            candidates.write_text("", encoding="utf-8")
+            before = candidates.read_text(encoding="utf-8")
+            with patch.object(alpha_radar, "fresh_verified_candidate", return_value=None):
+                with patch.object(alpha_radar, "live_research", side_effect=RuntimeError("research_synthesis_timeout")):
+                    alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+            self.assertEqual(candidates.read_text(encoding="utf-8"), before)
 
     def test_main_reuses_fresh_verified_candidate_instead_of_failing(self):
         reused = {
@@ -1212,19 +1223,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("attempts=1", source)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class BundleRescueTests(unittest.TestCase):
-    def test_extract_scout_candidates_keeps_single_url_candidate(self):
-        payload=json.dumps({"candidates":[
-            {"symbol":"SYRE","catalyst":"phase 2 topline","event_date":"2026-09-08",
-             "urls":["https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm"]},
-        ]})
-        candidates=alpha_radar.extract_scout_candidates(payload)
-        self.assertEqual([c["symbol"] for c in candidates],["SYRE"])
-        self.assertEqual(len(candidates[0]["urls"]),1)
-
     def test_rescue_primary_lane_uses_exact_cik_submissions(self):
         tickers={"0":{"cik_str":1636282,"ticker":"SYRE","title":"Spyre Therapeutics"}}
         submissions={"filings":{"recent":{
@@ -1796,3 +1795,7 @@ class RetrievalHardeningTests(unittest.TestCase):
             {"url":"https://d.example/4","published_at":"2026-09-14T00:00:00Z"},
         ]
         self.assertLess(alpha_radar._evidence_rank_score(mixed,now),alpha_radar._evidence_rank_score(fresh,now))
+
+
+if __name__ == "__main__":
+    unittest.main()

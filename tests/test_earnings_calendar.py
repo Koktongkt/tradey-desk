@@ -294,5 +294,176 @@ class EarningsCalendarTests(unittest.TestCase):
         })
 
 
+    def test_extract_release_date_accepts_date_following_reported_header(self):
+        text=(
+            "Date of Report (Date of earliest event reported): August 26, 2026. "
+            "Item 2.02 Results of Operations and Financial Condition. "
+            "The press release is attached as Exhibit 99.1."
+        )
+        self.assertEqual(earnings_calendar.extract_release_date(text),"2026-08-26")
+
+    def test_nasdaq_scan_tolerates_null_data_on_holidays(self):
+        def get_json(url):
+            if "2026-12-25" in url:
+                return {"data": None}
+            if "2026-12-24" in url:
+                return {"data": {"rows": [{"symbol": "AAPL", "name": "Apple"}]}}
+            return {"data": {"asOf": "x", "headers": None, "rows": None}}
+
+        self.assertEqual(
+            earnings_calendar.nasdaq_earnings_date(
+                "AAPL", dt.date(2026, 12, 24), dt.date(2026, 12, 26),
+                get_json=get_json, sleep=lambda _s: None,
+            ),
+            ("2026-12-24", "https://api.nasdaq.com/api/calendar/earnings?date=2026-12-24"),
+        )
+
+    def test_past_trusted_date_feeds_next_window_estimation(self):
+        resolved = earnings_calendar.resolve_candidate_earnings(
+            {"symbol": "NVDA", "earnings_event_at": "2026-08-26"},
+            trusted_date_loader=lambda _s: ("2026-08-26", "https://stockanalysis.com/stocks/nvda/"),
+            history_loader=lambda _s: [
+                {"date": "2026-05-28", "source_url": "https://sec/b"},
+            ],
+            now=dt.datetime(2026, 9, 12, 3, 0, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(resolved["previous_earnings_date"], "2026-08-26")
+        self.assertEqual(resolved["earnings_date_status"], "estimated")
+        self.assertEqual(resolved["earnings_history_count"], 2)
+        self.assertEqual(resolved["estimated_next_earnings_window"], {
+            "earliest": "2026-11-10", "latest": "2026-12-08",
+        })
+        self.assertEqual(resolved["earnings_event_at"], "2026-11-10")
+
+    def test_estimate_window_uses_only_latest_two_dates(self):
+        result = earnings_calendar.estimate_next_window([
+            "2026-09-08",
+            "2026-06-03",
+            "2015-01-20",
+        ])
+
+        self.assertEqual(result, {
+            "earliest": "2026-11-30",
+            "latest": "2026-12-28",
+            "history_count": 2,
+        })
+
+    def test_stockanalysis_page_provides_earnings_date(self):
+        page = '<div>Apple</div><script>{"earningsDate":"Oct 29, 2026"}</script>'
+
+        self.assertEqual(
+            earnings_calendar.stockanalysis_earnings_date(
+                "AAPL", get_text=lambda _url: page,
+            ),
+            ("2026-10-29", "https://stockanalysis.com/stocks/aapl/"),
+        )
+
+    def test_stockanalysis_page_without_date_returns_none(self):
+        self.assertIsNone(earnings_calendar.stockanalysis_earnings_date(
+            "AAPL", get_text=lambda _url: "<html>no date here</html>",
+        ))
+
+    def test_nasdaq_calendar_scan_finds_symbol_in_horizon(self):
+        def get_json(url):
+            if "2026-10-29" in url:
+                return {"data": {"rows": [{
+                    "symbol": "AAPL", "name": "Apple Inc.",
+                    "fiscalQuarterEnding": "Sep/2026",
+                }]}}
+            return {"data": {"rows": []}}
+
+        self.assertEqual(
+            earnings_calendar.nasdaq_earnings_date(
+                "AAPL", dt.date(2026, 10, 27), dt.date(2026, 10, 30),
+                get_json=get_json, sleep=lambda _s: None,
+            ),
+            ("2026-10-29", "https://api.nasdaq.com/api/calendar/earnings?date=2026-10-29"),
+        )
+
+    def test_nasdaq_calendar_scan_ignores_other_symbols(self):
+        def get_json(url):
+            return {"data": {"rows": [{"symbol": "MSFT", "name": "Microsoft"}]}}
+
+        self.assertIsNone(earnings_calendar.nasdaq_earnings_date(
+            "AAPL", dt.date(2026, 10, 27), dt.date(2026, 10, 28),
+            get_json=get_json, sleep=lambda _s: None,
+        ))
+
+    def test_resolver_confirms_from_stockanalysis_when_evidence_lacks_date(self):
+        candidate = {
+            "symbol": "AAPL", "earnings_event_at": "2026-10-29",
+            "planned_exit_at": "2026-10-20T20:00:00Z",
+        }
+        resolved = earnings_calendar.resolve_candidate_earnings(
+            candidate,
+            history_loader=lambda _symbol: [],
+            trusted_date_loader=lambda symbol: ("2026-10-29", "https://stockanalysis.com/stocks/aapl/"),
+            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(resolved["earnings_event_at"], "2026-10-29")
+        self.assertEqual(resolved["earnings_date_status"], "confirmed")
+        self.assertEqual(
+            resolved["earnings_confirmation_url"],
+            "https://stockanalysis.com/stocks/aapl/",
+        )
+
+    def test_resolver_confirms_from_trusted_source_with_different_date(self):
+        resolved = earnings_calendar.resolve_candidate_earnings(
+            {"symbol": "AAPL", "earnings_event_at": "2026-12-01"},
+            history_loader=lambda _symbol: [],
+            trusted_date_loader=lambda symbol: ("2026-10-29", "https://api.nasdaq.com/calendar"),
+            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(resolved["earnings_event_at"], "2026-10-29")
+        self.assertEqual(resolved["earnings_date_status"], "confirmed")
+
+    def test_resolver_confirms_past_trusted_date_as_previous(self):
+        resolved = earnings_calendar.resolve_candidate_earnings(
+            {"symbol": "AAPL"},
+            history_loader=lambda _symbol: [],
+            trusted_date_loader=lambda symbol: ("2026-08-01", "https://stockanalysis.com/stocks/aapl/"),
+            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(resolved["previous_earnings_date"], "2026-08-01")
+        self.assertNotIn("earnings_event_at", resolved)
+        self.assertEqual(resolved["earnings_date_status"], "unknown")
+
+    def test_resolver_falls_back_to_estimate_when_trusted_source_misses(self):
+        resolved = earnings_calendar.resolve_candidate_earnings(
+            {"symbol": "XYZ", "earnings_event_at": "2026-09-08"},
+            history_loader=lambda _symbol: [
+                {"date": "2026-09-08", "source_url": "https://sec/a"},
+                {"date": "2026-06-03", "source_url": "https://sec/b"},
+            ],
+            trusted_date_loader=lambda symbol: None,
+            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+        )
+
+        self.assertEqual(resolved["earnings_event_at"], "2026-11-30")
+        self.assertEqual(resolved["earnings_date_status"], "estimated")
+
+    def test_default_trusted_loader_uses_network_sources(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            earnings_calendar, "stockanalysis_earnings_date", return_value=None
+        ) as sa, patch.object(
+            earnings_calendar, "nasdaq_earnings_date", return_value=None
+        ) as nd:
+            earnings_calendar.default_trusted_date_loader(
+                "AAPL",
+                dt.date(2026, 9, 12), dt.date(2026, 9, 25),
+                cache_path=Path(td) / "cache.json",
+            )
+
+        sa.assert_called_once()
+        nd.assert_called_once()
+        args, kwargs = nd.call_args
+        self.assertEqual(args[0], "AAPL")
+        self.assertEqual(args[1], dt.date(2026, 9, 12))
+        self.assertEqual(args[2], dt.date(2026, 9, 25))
+
 if __name__ == "__main__":
     unittest.main()
