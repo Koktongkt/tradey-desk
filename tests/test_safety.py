@@ -507,6 +507,25 @@ class TradeySafetyTests(unittest.TestCase):
         ]
         self.assertEqual(autotrader.pending_order_intents(ledger, intents), [intents[0]])
 
+    def test_shared_numeric_precision_rejects_bool_nonfinite_and_excess_digits(self):
+        self.assertTrue(autotrader._valid_positive_decimal(1.234, 3))
+        self.assertFalse(autotrader._valid_positive_decimal(True, 3))
+        self.assertFalse(autotrader._valid_positive_decimal(float("inf"), 3))
+        self.assertFalse(autotrader._valid_positive_decimal(1.2345, 3))
+        self.assertFalse(autotrader._valid_positive_decimal(0, 3))
+
+    def test_shared_latest_order_statuses_preserve_missing_and_empty_references(self):
+        ledger = [
+            {"client_order_id": "open", "status": "placed"},
+            {"client_order_id": "open", "status": "filled"},
+            {"client_order_id": "empty", "status": None},
+            {"client_order_id": None, "status": "placed"},
+        ]
+        self.assertEqual(
+            autotrader._latest_order_statuses(ledger),
+            {"open": "filled", "empty": ""},
+        )
+
     def test_daily_order_count_deduplicates_order_lifecycle_rows(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "ledger.jsonl"

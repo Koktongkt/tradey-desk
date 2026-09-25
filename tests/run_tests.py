@@ -19,24 +19,10 @@ ROOT = TEST_DIR.parent
 MANIFEST_PATH = TEST_DIR / "test_manifest.json"
 LAYERS = ("fast", "scenario", "full_only")
 TIERS = ("fast", "scenario", "full")
-OPERATIONAL_ROOT_FILES = (
-    "candidates.jsonl",
-    "candidate_outcomes.jsonl",
-    "decision_audit.jsonl",
-    "order_ledger.jsonl",
-    "trade_journal.jsonl",
-    "private/blocker_diagnostics.jsonl",
-    "private/bridge_diagnostics.jsonl",
-    "private/order_intents.jsonl",
-    "private/order_notifications.jsonl",
-    "private/protection_orders.jsonl",
-    "private/research_diagnostics.jsonl",
-    "private/reviews.jsonl",
-    "public/disagreements.jsonl",
-)
-
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from sqlite_ledger import DEFAULT_STREAMS as OPERATIONAL_ROOT_FILES  # noqa: E402 - ROOT must be on sys.path
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:

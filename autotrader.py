@@ -18,7 +18,6 @@ import json
 import math
 from pathlib import Path
 import subprocess
-import sys
 from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
@@ -98,11 +97,15 @@ def managed_exposure(positions: list[dict[str, Any]], journal: list[dict[str, An
     return sum(broker_values.get(symbol, 0.0) for symbol in open_symbols), sorted(set(errors))
 
 
-def pending_order_intents(ledger: list[dict[str, Any]], intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _latest_order_statuses(ledger: list[dict[str, Any]]) -> dict[str, str]:
     latest: dict[str, str] = {}
     for row in ledger:
         ref = row.get("client_order_id")
         if ref: latest[str(ref)] = str(row.get("status") or "")
+    return latest
+
+def pending_order_intents(ledger: list[dict[str, Any]], intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest = _latest_order_statuses(ledger)
     active = {"submission_started", "submission_unknown", "placed", "new", "accepted", "pending_new", "partially_filled", "held"}
     return [intent for intent in intents if latest.get(str(intent.get("client_order_id"))) in active]
 
@@ -125,18 +128,19 @@ def authoritative_bundle(candidate: dict[str, Any], snapshot: dict[str, Any], sn
     return {"candidate": normalized_candidate, "broker_snapshot": broker_snapshot, "snapshot_at": snapshot_at}
 
 
-def _valid_quantity(value: Any) -> bool:
+def _valid_positive_decimal(value: Any, places: int) -> bool:
     valid = not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0
     if isinstance(value, float):
         valid = valid and math.isfinite(value)
-    return valid and Decimal(str(value)).as_tuple().exponent >= -9
+    return valid and Decimal(str(value)).as_tuple().exponent >= -places
+
+
+def _valid_quantity(value: Any) -> bool:
+    return _valid_positive_decimal(value, 9)
 
 
 def _valid_price(value: Any) -> bool:
-    valid = not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0
-    if isinstance(value, float):
-        valid = valid and math.isfinite(value)
-    return valid and Decimal(str(value)).as_tuple().exponent >= -2
+    return _valid_positive_decimal(value, 2)
 
 
 def _valid_decision(value: Any, threshold: float) -> bool:
@@ -941,11 +945,7 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
 
 def managed_entry_intents(ledger: list[dict[str, Any]], intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return managed BUY intents whose parent bracket filled and is not closed."""
-    latest: dict[str, str] = {}
-    for row in ledger:
-        ref = row.get("client_order_id")
-        if ref:
-            latest[str(ref)] = str(row.get("status") or "")
+    latest = _latest_order_statuses(ledger)
     return [
         intent for intent in intents
         if isinstance(intent, dict)

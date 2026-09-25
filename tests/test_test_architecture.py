@@ -72,6 +72,7 @@ class TestArchitectureTests(unittest.TestCase):
     def test_operational_guard_matches_canonical_sqlite_streams(self):
         runner = load_runner()
 
+        self.assertIs(runner.OPERATIONAL_ROOT_FILES, sqlite_ledger.DEFAULT_STREAMS)
         self.assertEqual(
             set(runner.OPERATIONAL_ROOT_FILES),
             set(sqlite_ledger.DEFAULT_STREAMS),

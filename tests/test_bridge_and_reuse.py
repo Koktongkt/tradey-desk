@@ -122,6 +122,30 @@ class BridgeRetryTests(unittest.TestCase):
 
 
 class RadarReuseFirstTests(unittest.TestCase):
+    def test_fallback_may_reuse_reviewed_candidate_when_research_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
+            candidate = {"symbol": "DELL", "sources_verified_at": "2026-09-05T14:29:00Z"}
+            candidates = root / "candidates.jsonl"
+            candidates.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+            (root / "autonomy_config.json").write_text("{}", encoding="utf-8")
+            reviews = root / "private" / "reviews.jsonl"
+            reviews.parent.mkdir()
+            reviews.write_text('{"timestamp":"2026-09-05T14:30:00Z"}\n', encoding="utf-8")
+            with patch.object(alpha_radar, "ROOT", root), patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
+                self.assertIsNone(alpha_radar.reusable_fresh_candidate(candidates, reviews, now=now))
+                self.assertEqual(alpha_radar.fresh_verified_candidate(candidates, now=now), candidate)
+
+    def test_shared_fresh_selection_keeps_review_gate_optional(self):
+        now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
+        row = {"sources_verified_at": "2026-09-05T14:29:00Z"}
+        with patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
+            self.assertIsNone(alpha_radar._select_fresh_candidate(
+                [row], {}, now, 60, latest_review="2026-09-05T14:29:00Z",
+            ))
+            self.assertIs(alpha_radar._select_fresh_candidate([row], {}, now, 60), row)
+
     def test_live_research_path_reuses_fresh_unreviewed_candidate_without_model_calls(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

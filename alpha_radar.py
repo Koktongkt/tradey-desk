@@ -973,7 +973,7 @@ def synthesis_prompt(
     policy=cfg or json.loads((ROOT/"autonomy_config.json").read_text())
     cap=f"{float(policy['max_position_usd']):g}"
     risk_cap=f"{float(policy.get('max_planned_risk_per_trade_usd',25)):g}"
-    blackout=int(policy.get("earnings_blackout_sessions",2))
+    blackout=int(policy.get("earnings_blackout_sessions",2))  # noqa: F841 - validate policy as before
     evidence=str(evidence_text or "")
     if sources:
         lines=[]
@@ -1345,6 +1345,26 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
     return candidate
 
 
+def _select_fresh_candidate(
+    rows:list[dict[str,Any]],cfg:dict[str,Any],now:dt.datetime,
+    max_age_minutes:int,latest_review:str|None=None,
+)->dict[str,Any]|None:
+    reuse_age_minutes=max(
+        0,min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
+        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
+    )
+    for row in reversed(rows):
+        if not isinstance(row,dict):continue
+        verified=row.get("sources_verified_at")
+        if not isinstance(verified,str) or not verified:continue
+        try:verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
+        except ValueError:continue
+        if (now-verified_at).total_seconds()>reuse_age_minutes*60:continue
+        if latest_review is not None and latest_review>=verified:continue
+        if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):continue
+        return row
+    return None
+
 def reusable_fresh_candidate(
     candidates_path: Path,
     reviews_path: Path,
@@ -1359,11 +1379,6 @@ def reusable_fresh_candidate(
     fresh research runs instead.
     """
     cfg = json.loads((candidates_path.parent / "autonomy_config.json").read_text())
-    reuse_age_minutes = max(
-        0,
-        min(max_age_minutes, int(cfg.get("max_research_age_minutes", max_age_minutes)))
-        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
-    )
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
         rows = read_jsonl(candidates_path, strict=True)
@@ -1378,50 +1393,18 @@ def reusable_fresh_candidate(
     except Exception:
         pass
     latest_review = max(review_marks) if review_marks else None
-    for row in reversed(rows):
-        if not isinstance(row, dict):
-            continue
-        verified = row.get("sources_verified_at")
-        if not isinstance(verified, str) or not verified:
-            continue
-        try:
-            verified_at = dt.datetime.fromisoformat(verified.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if (now - verified_at).total_seconds() > reuse_age_minutes * 60:
-            continue
-        if latest_review is not None and latest_review >= verified:
-            continue
-        if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):
-            continue
-        return row
-    return None
+    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,latest_review)
 
 
 def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_age_minutes:int=60)->dict[str,Any]|None:
     """Newest candidate whose sources were verified within max_age_minutes."""
     cfg=json.loads((ROOT/"autonomy_config.json").read_text())
     now=now or dt.datetime.now(dt.timezone.utc)
-    reuse_age_minutes=max(
-        0,
-        min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
-        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
-    )
     try:
         rows=read_jsonl(candidates_path, strict=True)
     except Exception:
         return None
-    for row in reversed(rows):
-        if not isinstance(row,dict):continue
-        verified=row.get("sources_verified_at")
-        if not isinstance(verified,str) or not verified:continue
-        try:
-            verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
-        except ValueError:continue
-        if (now-verified_at).total_seconds()>reuse_age_minutes*60:continue
-        if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):continue
-        return row
-    return None
+    return _select_fresh_candidate(rows,cfg,now,max_age_minutes)
 
 
 def ensure_researched_at(candidate:dict[str,Any],now:str|None=None)->dict[str,Any]:
