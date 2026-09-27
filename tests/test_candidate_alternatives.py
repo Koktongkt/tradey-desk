@@ -59,6 +59,19 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(fetch.call_count,1)
             self.assertEqual(market.call_count,1)
 
+    def test_shared_enrichment_deadline_stops_next_candidate_before_network(self):
+        with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,_,market):
+            clock=[0.0]
+            def reject_first(candidate,cfg):
+                clock[0]=46.0
+                raise radar.CandidateRejection('candidate_failed_qualification')
+            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=reject_first):
+                with self.assertRaises(radar.ResearchFailure) as caught:
+                    radar.live_research(cfg)
+            self.assertEqual(caught.exception.code,'research_enrichment_timeout')
+            self.assertEqual(market.call_count,1)
+            self.assertFalse((root/'candidates.jsonl').exists())
+
     def test_preflight_rejection_advances_to_qualified_alternative(self):
         with self.research_fixture([self.candidate('AAA',earnings_event_at=None),self.candidate()]) as (_,root,calls,_,market):
             output=io.StringIO()
@@ -78,15 +91,15 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual([p.split('SELECTED SYMBOL: ')[1].split('.')[0] for p in prompts],['AAA','BBB','CCC'])
             fetch.assert_called_once()
 
-    def test_alternatives_share_one_monotonic_120_second_budget(self):
+    def test_alternatives_share_one_monotonic_60_second_budget(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[0,100,100,145,190]):
+        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda: {1:0,2:30,3:55}.get(calls.call_count,0)):
             radar.live_research(cfg)
-            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[120,75,30])
+            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[60,30,5])
 
     def test_exhausted_budget_never_starts_another_subprocess(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',create=True,side_effect=[0,100,100,220]):
+        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda:61 if calls.call_count>=2 else 0):
             with self.assertRaises(radar.ResearchFailure) as caught:
                 radar.live_research(cfg)
             self.assertEqual(caught.exception.code,'research_synthesis_timeout')
@@ -153,6 +166,14 @@ class CandidateAlternativesTests(unittest.TestCase):
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_market_data_unavailable'))
                 self.assertEqual(calls.call_count,2)
                 self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_trickling_market_response_deadline_is_typed_and_cannot_append(self):
+        from research_budget import ResearchDeadlineExceeded
+        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market):
+            market.side_effect=ResearchDeadlineExceeded('stream deadline')
+            self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_enrichment_timeout'))
+            self.assertEqual(calls.call_count,2)
+            self.assertFalse((root/'candidates.jsonl').exists())
 
     def test_earnings_persistence_fault_stops_without_fallback(self):
         with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market), patch.object(radar,'resolve_candidate_earnings',side_effect=radar.DurableAppendError('private')):

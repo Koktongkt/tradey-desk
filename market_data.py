@@ -8,25 +8,30 @@ import re
 import subprocess
 import urllib.parse
 import urllib.request
+from research_budget import remaining, read_http_response, raise_if_expired_timeout
 from zoneinfo import ZoneInfo
 
 from broker_normalization import average_volume, massive_daily_bars
 
 
 def configured_massive_key() -> str:
-    completed = subprocess.run(
-        [
-            "/opt/hermes/bin/hermes",
-            "config",
-            "get",
-            "--raw",
-            "--json",
-            "mcp_servers.massive.env",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "/opt/hermes/bin/hermes",
+                "config",
+                "get",
+                "--raw",
+                "--json",
+                "mcp_servers.massive.env",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=remaining(30),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise_if_expired_timeout(error)
+        raise
     if completed.returncode != 0:
         raise RuntimeError("massive_mcp_config_unavailable")
     value = json.loads(completed.stdout)
@@ -61,8 +66,12 @@ def synchronized_completed_close_prices(symbol: str, now_ms: int | None = None) 
             url,
             headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read())
+        try:
+            with urllib.request.urlopen(request, timeout=remaining(30)) as response:
+                payload = json.loads(read_http_response(response))
+        except OSError as error:
+            raise_if_expired_timeout(error)
+            raise
         rows = {
             row.get("T"): row
             for row in payload.get("results", [])
@@ -110,8 +119,12 @@ def consolidated_daily_bars(symbol: str, now_ms: int | None = None) -> list[dict
         url,
         headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=remaining(30)) as response:
+            payload = json.loads(read_http_response(response))
+    except OSError as error:
+        raise_if_expired_timeout(error)
+        raise
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     current_complete = market_now.weekday() < 5 and (market_now.hour, market_now.minute) >= (16, 15)
     completed = []

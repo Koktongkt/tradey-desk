@@ -337,11 +337,11 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(run_cycle.main(),0)
         window.assert_not_called();execute.assert_not_called();audit.assert_not_called()
 
-    def test_radar_research_runs_under_a_1110_second_budget(self):
+    def test_radar_research_runs_under_a_540_second_budget(self):
         with patch.object(sys,"argv",["run_cycle.py","radar"]), \
              patch("run_cycle.scheduled_slot",return_value=True), \
              patch("run_cycle.in_window",return_value=True), \
              patch.object(run_cycle,"execute",return_value=0) as call:
             run_cycle.main()
-        self.assertEqual(call.call_args.kwargs["timeout_seconds"],1110)
+        self.assertEqual(call.call_args.kwargs["timeout_seconds"],540)
 if __name__=="__main__":unittest.main()

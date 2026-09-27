@@ -3,11 +3,14 @@
 from __future__ import annotations
 import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.error, urllib.parse, urllib.request
 from functools import lru_cache
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
+from research_budget import ResearchDeadlineExceeded, active_deadline, remaining as budget_remaining
 from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
@@ -19,8 +22,47 @@ SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evi
 RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","source_http_forbidden","source_rate_limited","source_upstream_error","source_connection_failed","source_deadline_exhausted","source_url_mismatch","bundle_rescue_unavailable"}
 SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source","article_body_missing","source_freshness_unknown"}
 MIN_EVIDENCE_BODY_CHARS=80
-GATEWAY_RESCUE_TIMEOUT_SECONDS=60
-EVIDENCE_PIPELINE_BUDGET_SECONDS=260
+GATEWAY_RESCUE_TIMEOUT_SECONDS=30
+RESEARCH_ACTIVE_BUDGET_SECONDS=510
+DISCOVERY_TIMEOUT_SECONDS=165
+FOCUSED_RETRIEVAL_TIMEOUT_SECONDS=120
+EVIDENCE_PIPELINE_BUDGET_SECONDS=120
+SYNTHESIS_BUDGET_SECONDS=60
+ENRICHMENT_BUDGET_SECONDS=45
+_timing_enabled:ContextVar[bool]=ContextVar("radar_timing_enabled",default=False)
+
+@contextmanager
+def enable_timing():
+    token=_timing_enabled.set(True)
+    try:yield
+    finally:_timing_enabled.reset(token)
+
+@contextmanager
+def timed_research_stage(stage:str):
+    """Best-effort, private latency data; never changes qualification or failure handling."""
+    if not _timing_enabled.get():
+        yield
+        return
+    start=perf_counter()
+    outcome="completed"
+    try:
+        yield
+    except BaseException:
+        outcome="failed"
+        raise
+    finally:
+        try:
+            path=ROOT/"private"/"research_timings.jsonl"
+            path.parent.mkdir(parents=True,exist_ok=True)
+            row={
+                "timestamp":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
+                "stage":stage,"outcome":outcome,
+                "elapsed_seconds":round(max(0.0,perf_counter()-start),3),
+            }
+            with path.open("a",encoding="utf-8") as handle:
+                handle.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+        except Exception:
+            pass
 MAX_CANDIDATE_URLS_AFTER_RESCUE=8
 SEC_TICKERS_ENDPOINT="https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_BASE="https://data.sec.gov/submissions"
@@ -385,7 +427,7 @@ def research_subprocess_command(
 
 
 def discovery_command()->list[str]:
-    return research_subprocess_command("search",max_turns=2,run_budget=180)
+    return research_subprocess_command("search",max_turns=2,run_budget=130)
 
 
 def synthesis_command()->list[str]:
@@ -395,7 +437,7 @@ def synthesis_command()->list[str]:
 
 
 def focused_retrieval_command()->list[str]:
-    return research_subprocess_command("web",max_turns=3,run_budget=120)
+    return research_subprocess_command("web",max_turns=3,run_budget=90)
 
 def focused_retrieval_prompt(candidates:list[dict[str,Any]])->str:
     targets=[{"symbol":str(c.get("symbol") or "").upper(),"catalyst":str(c.get("catalyst") or "")[:500],"event_date":str(c.get("event_date") or "")} for c in candidates[:5]]
@@ -425,11 +467,14 @@ def merge_candidate_urls(scout_urls:list[str],focused_urls:list[str],limit:int=3
     return extract_candidate_urls("\n".join(list(scout_urls)+list(focused_urls)),limit=limit)
 
 
-def focused_retrieval(candidates:list[dict[str,Any]])->dict[str,list[str]]:
+def focused_retrieval(candidates:list[dict[str,Any]],deadline:float|None=None)->dict[str,list[str]]:
     """Search primary, independent and wire lanes once for all scout candidates."""
     if not candidates:return {}
     try:
-        result=subprocess.run(focused_retrieval_command(),input=focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=240,cwd=ROOT)
+        with timed_research_stage("focused_retrieval"):
+            remaining_time=FOCUSED_RETRIEVAL_TIMEOUT_SECONDS if deadline is None else min(FOCUSED_RETRIEVAL_TIMEOUT_SECONDS,deadline-monotonic())
+            if remaining_time<=0:raise ResearchFailure("research_focused_retrieval_timeout")
+            result=subprocess.run(focused_retrieval_command(),input=focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=remaining_time,cwd=ROOT)
     except DurableAppendError:raise
     except subprocess.TimeoutExpired as error:raise ResearchFailure("research_focused_retrieval_timeout") from error
     except OSError as error:raise ResearchFailure("research_focused_retrieval_unavailable") from error
@@ -575,7 +620,7 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     return {"url":url,"title":title,"text":text[:6000],"published_at":extract_published_at(body)}
 
 
-GATEWAY_FALLBACK_TIMEOUT_SECONDS=60
+GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
 GATEWAY_FALLBACK_PROMPT=(
     "Call web_extract exactly once on the URL below. Reply with only the extracted "
     "page text starting with its publication date if present; no commentary.\nURL: {url}"
@@ -1203,8 +1248,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     The CLI injects the same intake to track completion without validating twice.
     """
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg)
+    overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     try:
-        scout=subprocess.run(discovery_command(),input=discovery_prompt(cfg),capture_output=True,text=True,timeout=360,cwd=ROOT)
+        with timed_research_stage("discovery"):
+            scout=subprocess.run(discovery_command(),input=discovery_prompt(cfg),capture_output=True,text=True,timeout=min(DISCOVERY_TIMEOUT_SECONDS,overall_deadline-monotonic()),cwd=ROOT)
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_scout_timeout")
     if scout.returncode: raise ResearchFailure("research_scout_unavailable")
@@ -1216,7 +1263,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         if scout_diagnostic["reason"]=="invalid_json":raise ResearchFailure("research_scout_parse_failure")
         raise ResearchFailure("research_scout_schema_rejected")
     if cfg.get("focused_retrieval_enabled",False):
-        focused=focused_retrieval(scout_candidates)
+        focused=focused_retrieval(scout_candidates,deadline=overall_deadline)
         for scout_candidate in scout_candidates:
             symbol=str(scout_candidate.get("symbol") or "").upper()
             scout_candidate["urls"]=merge_candidate_urls(list(scout_candidate.get("urls",[])),list(focused.get(symbol,[])),limit=3)
@@ -1226,33 +1273,35 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             if url not in seen_urls:
                 seen_urls.add(url);urls.append(url)
     source_diagnostics:list[dict[str,str]]=[]
-    evidence_deadline=monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS
+    evidence_deadline=min(overall_deadline,monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS)
     if not urls:
         raise ResearchFailure("research_source_retrieval_failed" if scout_candidates else "research_evidence_insufficient")
-    fetched_evidence=gather_evidence(
-        urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
-        collection_deadline=evidence_deadline,
-    )
+    with timed_research_stage("evidence_fetch"):
+        fetched_evidence=gather_evidence(
+            urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
+            collection_deadline=evidence_deadline,
+        )
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     source_diagnostics.extend(initial_quality)
     rescued_candidates=0
-    for scout_candidate in scout_candidates:
-        candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
-        accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
-        if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
-        if rescued_candidates>=3 or monotonic()>=evidence_deadline:break
-        rescued_candidates+=1
-        rescued_pages=post_fetch_rescue_candidate(
-            scout_candidate,accepted,diagnostics=source_diagnostics,deadline=evidence_deadline,
-        )
-        for page in rescued_pages:
-            url=page.get("url")
-            if url and (url not in accepted_urls if isinstance(url,str)
-                        else all(existing.get("url")!=url for existing in filtered_evidence)):
-                if isinstance(url,str):accepted_urls.add(url)
-                filtered_evidence.append(page)
+    with timed_research_stage("evidence_rescue"):
+        for scout_candidate in scout_candidates:
+            candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
+            accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
+            if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
+            if rescued_candidates>=3 or monotonic()>=evidence_deadline:break
+            rescued_candidates+=1
+            rescued_pages=post_fetch_rescue_candidate(
+                scout_candidate,accepted,diagnostics=source_diagnostics,deadline=evidence_deadline,
+            )
+            for page in rescued_pages:
+                url=page.get("url")
+                if url and (url not in accepted_urls if isinstance(url,str)
+                            else all(existing.get("url")!=url for existing in filtered_evidence)):
+                    if isinstance(url,str):accepted_urls.add(url)
+                    filtered_evidence.append(page)
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
     source_diagnostics.extend({
@@ -1269,7 +1318,8 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             candidate_urls=blocker_urls,
             fetched_urls=[str(page.get("url") or "") for page in filtered_evidence],
         ))
-    synthesis_deadline=monotonic()+120
+    synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_BUDGET_SECONDS)
+    enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"deadline":None}
     last_rejection=None
     attempted_symbols=set()
     for selected,evidence in ranked:
@@ -1278,7 +1328,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         if len(attempted_symbols)>=3:break
         attempted_symbols.add(symbol)
         try:
-            candidate=synthesize_candidate(cfg,selected,evidence,synthesis_deadline)
+            if enrichment_budget["deadline"] is not None and monotonic()>=enrichment_budget["deadline"]:
+                raise ResearchFailure("research_enrichment_timeout")
+            candidate=synthesize_candidate(cfg,selected,evidence,synthesis_deadline,enrichment_budget=enrichment_budget)
             if candidate.get("status")=="none":
                 last_rejection=None
                 continue
@@ -1288,12 +1340,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     return candidate
 
 
-def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,Any],evidence:list[dict[str,Any]],deadline:float)->dict[str,Any]:
+def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,Any],evidence:list[dict[str,Any]],deadline:float,enrichment_budget:dict[str,float|None]|None=None)->dict[str,Any]:
     synthesis_prompt_text=synthesis_prompt("",evidence,cfg,candidate_hint=_selected_scout_candidate)
     remaining=deadline-monotonic()
     if remaining<=0:raise ResearchFailure("research_synthesis_timeout")
     try:
-        synth=subprocess.run(synthesis_command(),input=synthesis_prompt_text,capture_output=True,text=True,timeout=min(120,remaining),cwd=ROOT)
+        with timed_research_stage("synthesis"):
+            synth=subprocess.run(synthesis_command(),input=synthesis_prompt_text,capture_output=True,text=True,timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT)
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_synthesis_timeout")
     if synth.returncode: raise ResearchFailure("research_synthesis_unavailable")
@@ -1334,20 +1387,30 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
                 horizon_end=max(horizon_end,parsed_exit.astimezone(dt.timezone.utc).date())
         except ValueError:
             pass
-    candidate=resolve_candidate_earnings(
-        candidate,
-        trusted_date_loader=lambda sym:default_trusted_date_loader(sym,dt.date.today(),horizon_end),
-    )
-    candidate.pop("price",None)
-    candidate.pop("spy_price",None)
-    try:candidate.update(synchronized_completed_close_prices(symbol))
-    except DurableAppendError:raise
-    except ValueError as error:
-        # Only this exact adapter contract proves a candidate-local failure.
-        # Missing synchronized stock/SPY data is ambiguous: do not retry it.
-        if error.args==("invalid_symbol",):raise CandidateRejection("research_market_data_unavailable") from error
-        raise ResearchFailure("research_market_data_unavailable") from error
-    except Exception as error:raise ResearchFailure("research_market_data_unavailable") from error
+    if enrichment_budget is None:enrichment_budget={"overall":monotonic()+ENRICHMENT_BUDGET_SECONDS,"deadline":None}
+    if enrichment_budget["deadline"] is None:
+        enrichment_budget["deadline"]=min(float(enrichment_budget["overall"] or 0.0),monotonic()+ENRICHMENT_BUDGET_SECONDS)
+    try:
+        with timed_research_stage("enrichment"), active_deadline(float(enrichment_budget["deadline"])):
+            budget_remaining(ENRICHMENT_BUDGET_SECONDS)
+            candidate=resolve_candidate_earnings(
+                candidate,
+                trusted_date_loader=lambda sym:default_trusted_date_loader(sym,dt.date.today(),horizon_end),
+            )
+            budget_remaining(ENRICHMENT_BUDGET_SECONDS)
+            candidate.pop("price",None)
+            candidate.pop("spy_price",None)
+            try:candidate.update(synchronized_completed_close_prices(symbol))
+            except DurableAppendError:raise
+            except ValueError as error:
+                # Only this exact adapter contract proves a candidate-local failure.
+                # Missing synchronized stock/SPY data is ambiguous: do not retry it.
+                if error.args==("invalid_symbol",):raise CandidateRejection("research_market_data_unavailable") from error
+                raise ResearchFailure("research_market_data_unavailable") from error
+            except Exception as error:raise ResearchFailure("research_market_data_unavailable") from error
+            budget_remaining(ENRICHMENT_BUDGET_SECONDS)
+    except ResearchDeadlineExceeded as error:
+        raise ResearchFailure("research_enrichment_timeout") from error
     return candidate
 
 
@@ -1486,4 +1549,5 @@ def main_with_args(a:argparse.Namespace)->int:
         print("SYSTEM_FAILURE alpha_radar"); return 3
 if __name__=="__main__":
     ap=argparse.ArgumentParser(); ap.add_argument("--dry-run-fixture",action="store_true"); _a=ap.parse_args()
-    raise SystemExit(main_with_args(_a))
+    with enable_timing():
+        raise SystemExit(main_with_args(_a))

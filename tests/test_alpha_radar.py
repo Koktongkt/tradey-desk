@@ -32,7 +32,7 @@ class AlphaRadarTests(unittest.TestCase):
 
         self.assertEqual(scout[scout.index("-t") + 1], "search")
         self.assertEqual(scout[scout.index("--max-turns") + 1], "2")
-        self.assertEqual(scout[scout.index("--run-budget") + 1], "180")
+        self.assertEqual(scout[scout.index("--run-budget") + 1], "130")
         self.assertNotIn("--safe-mode", synthesis)
         self.assertNotIn("--ignore-user-config", synthesis)
         self.assertEqual(synthesis[synthesis.index("-t") + 1], "bot_room")
@@ -1219,7 +1219,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=1110", source)
+        self.assertIn("timeout_seconds=540", source)
         self.assertIn("attempts=1", source)
 
 

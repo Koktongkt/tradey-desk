@@ -9,6 +9,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from research_budget import remaining, read_http_response, raise_if_expired_timeout
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -59,8 +60,12 @@ def extract_release_date(text: str) -> str | None:
 
 def _get_text(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": SEC_USER_AGENT, "Accept": "application/json,text/html"})
-    with urllib.request.urlopen(request, timeout=SEC_REQUEST_TIMEOUT_SECONDS) as response:
-        return response.read(2_000_000).decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(request, timeout=remaining(SEC_REQUEST_TIMEOUT_SECONDS)) as response:
+            return read_http_response(response, max_bytes=2_000_000).decode("utf-8", "replace")
+    except OSError as error:
+        raise_if_expired_timeout(error)
+        raise
 
 
 def _get_json(url: str) -> Any:
@@ -81,6 +86,7 @@ def sec_release_history(
     """Return explicitly dated SEC earnings releases, newest first."""
     deadline = time.monotonic() + SEC_LOOKUP_BUDGET_SECONDS
     normalized = str(symbol or "").upper()
+    remaining(SEC_LOOKUP_BUDGET_SECONDS)
     tickers = get_json("https://www.sec.gov/files/company_tickers.json")
     company = next(
         (row for row in tickers.values() if isinstance(row, dict) and str(row.get("ticker", "")).upper() == normalized),
@@ -89,6 +95,7 @@ def sec_release_history(
     if not company:
         return []
     cik = int(company["cik_str"])
+    remaining(SEC_LOOKUP_BUDGET_SECONDS)
     submissions = get_json(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
     recent = submissions.get("filings", {}).get("recent", {}) if isinstance(submissions, dict) else {}
     forms = recent.get("form", [])
@@ -98,6 +105,7 @@ def sec_release_history(
     raw_items = recent.get("items")
     item_values: list[Any] = raw_items if isinstance(raw_items, list) else []
     for index, form in enumerate(forms if isinstance(forms, list) else []):
+        remaining(SEC_LOOKUP_BUDGET_SECONDS)
         if time.monotonic() >= deadline:
             break
         items = str(item_values[index] if index < len(item_values) else "")
@@ -124,6 +132,7 @@ def sec_release_history(
                     and re.search(r"(?i)(?:ex(?:hibit)?[-_]?99|earnings|release)", str(item.get("name", "")))
                 ][:6]
                 for name in likely_names:
+                    remaining(SEC_LOOKUP_BUDGET_SECONDS)
                     if time.monotonic() >= deadline:
                         break
                     exhibit_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_path}/{name}"
@@ -255,6 +264,7 @@ def nasdaq_earnings_date(
         return None
     day = horizon_start
     while day <= horizon_end:
+        remaining(TRUSTED_SOURCE_TIMEOUT_SECONDS)
         if day.weekday() < 5:
             url = f"https://api.nasdaq.com/api/calendar/earnings?date={day.isoformat()}"
             try:
@@ -266,7 +276,7 @@ def nasdaq_earnings_date(
             for row in rows:
                 if isinstance(row, dict) and str(row.get("symbol", "")).upper() == normalized:
                     return day.isoformat(), url
-            sleep(NASDAQ_CALENDAR_REQUEST_DELAY_SECONDS)
+            sleep(remaining(NASDAQ_CALENDAR_REQUEST_DELAY_SECONDS))
         day += dt.timedelta(days=1)
     return None
 

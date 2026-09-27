@@ -1,11 +1,9 @@
-"""Guard tests pinning research subprocess timeouts, the outer cycle budget,
-and scout-reliability hardening.
+"""Guard tests for the 540-second radar envelope and stage deadlines.
 
-Timeouts must be calibrated against OBSERVED provider latency, and the outer cycle
-budget must cover the serialized worst case of every research stage:
-
-    model scout 360 + focused retrieval 240 + shared evidence pipeline 260
-    + synthesis 120 + deterministic earnings SEC lookup 45 + 85-second margin
+The 510-second active allocation is discovery 165 + focused retrieval 120
++ shared evidence/rescue 120 + shared synthesis 60 + shared enrichment 45;
+the outer cycle reserves 30 seconds for intake/persistence/scheduling overhead.
+Calibration requires observing real provider latency and qualified-candidate rates.
 """
 import json
 import subprocess
@@ -18,22 +16,140 @@ from unittest.mock import patch
 
 import alpha_radar
 import earnings_calendar
+import market_data
+import research_budget
+import run_cycle
+
+
+class DeadlineContextTests(unittest.TestCase):
+    def test_stage_telemetry_is_private_and_cannot_block_research(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar,"perf_counter",side_effect=[100,107]), alpha_radar.enable_timing():
+            with alpha_radar.timed_research_stage("discovery"):
+                pass
+            row=json.loads((Path(td)/"private"/"research_timings.jsonl").read_text().strip())
+            self.assertEqual((row["stage"],row["outcome"],row["elapsed_seconds"]),("discovery","completed",7))
+        with patch.object(Path,"open",side_effect=OSError("telemetry unavailable")), alpha_radar.enable_timing():
+            with alpha_radar.timed_research_stage("discovery"):
+                pass
+
+    def test_active_deadline_clamps_individual_network_timeout(self):
+        with patch.object(research_budget, "monotonic", return_value=100):
+            with research_budget.active_deadline(108):
+                self.assertEqual(research_budget.remaining(30), 8)
+            self.assertEqual(research_budget.remaining(30), 30)
+
+    def test_expired_deadline_raises_non_suppressible_timeout(self):
+        with patch.object(research_budget, "monotonic", return_value=100):
+            with research_budget.active_deadline(100):
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    research_budget.remaining(30)
+    def test_enrichment_http_refuses_to_start_after_deadline(self):
+        with patch.object(research_budget, "monotonic", return_value=100), research_budget.active_deadline(100):
+            with patch.object(earnings_calendar.urllib.request, "urlopen") as fetch:
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    earnings_calendar._get_text("https://example.com/")
+                fetch.assert_not_called()
+            with patch.object(market_data.urllib.request, "urlopen") as fetch:
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    market_data.synchronized_completed_close_prices("AAPL")
+                fetch.assert_not_called()
+            with patch.object(market_data.subprocess,"run") as config:
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    market_data.configured_massive_key()
+                config.assert_not_called()
+
+    def test_trickling_http_body_is_interrupted_by_wall_clock_deadline(self):
+        clock=[100.0]
+        class FakeSocket:
+            def __init__(self):self.timeouts=[]
+            def settimeout(self,seconds):self.timeouts.append(seconds)
+        class FakeResponse:
+            def __init__(self):
+                self.fp=type('Fp',(),{'raw':type('Raw',(),{'_sock':FakeSocket()})()})()
+                self.reads=0
+            def read1(self,n):
+                self.reads+=1
+                clock[0]+=5
+                return b'x'
+        response=FakeResponse()
+        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
+            with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                research_budget.read_http_response(response,max_bytes=50)
+        self.assertEqual(response.reads,2)
+        self.assertEqual(response.fp.raw._sock.timeouts,[8,3])
+
+    def test_socket_timeout_at_deadline_is_typed_as_enrichment_exhaustion(self):
+        clock=[100.0]
+        class TimedOutResponse:
+            fp=type('Fp',(),{'raw':type('Raw',(),{'_sock':type('Sock',(),{'settimeout':lambda self,seconds:None})()})()})()
+            def read1(self,n):
+                clock[0]=108.0
+                raise TimeoutError('socket deadline')
+        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
+            with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                research_budget.read_http_response(TimedOutResponse())
+        with patch.object(research_budget,"monotonic",return_value=108), research_budget.active_deadline(108):
+            with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                research_budget.raise_if_expired_timeout(TimeoutError('connect deadline'))
+
+    def test_connect_timeout_at_deadline_keeps_typed_enrichment_reason(self):
+        clock=[100.0]
+        def timed_out(*args,**kwargs):
+            clock[0]=108.0
+            raise TimeoutError('connect deadline')
+        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
+            with patch.object(market_data,"configured_massive_key",return_value="fixture"), patch.object(market_data.urllib.request,"urlopen",side_effect=timed_out):
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    market_data.synchronized_completed_close_prices("AAPL")
+        clock[0]=100.0
+        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
+            with patch.object(earnings_calendar.urllib.request,"urlopen",side_effect=timed_out):
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    earnings_calendar._get_text("https://example.com/")
+
+    def test_wrapped_connect_timeout_at_deadline_is_not_treated_as_source_outage(self):
+        clock=[100.0]
+        def wrapped_timeout(*args,**kwargs):
+            clock[0]=108.0
+            raise urllib.error.URLError(TimeoutError('socket deadline'))
+        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
+            with patch.object(market_data,"configured_massive_key",return_value="fixture"), patch.object(market_data.urllib.request,"urlopen",side_effect=wrapped_timeout):
+                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                    market_data.synchronized_completed_close_prices("AAPL")
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
+    def test_focused_stage_obeys_remaining_global_budget(self):
+        with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["hermes"]), patch.object(alpha_radar.subprocess,"run",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
+            alpha_radar.focused_retrieval([{"symbol":"AAA","catalyst":"dated","event_date":"2026-09-27"}],deadline=109)
+            self.assertEqual(run.call_args.kwargs["timeout"],9)
+            with self.assertRaises(alpha_radar.ResearchFailure) as caught:
+                alpha_radar.focused_retrieval([{"symbol":"AAA","catalyst":"dated","event_date":"2026-09-27"}],deadline=100)
+            self.assertEqual(caught.exception.code,"research_focused_retrieval_timeout")
+            run.assert_called_once()
+
     def test_scout_timeout_covers_bounded_discovery_call(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=360", source)
+        self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=", source)
         self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
-        # synthesis timeout is unchanged
-        self.assertIn("synthesis_deadline=monotonic()+120", source)
-        self.assertIn("timeout=min(120,remaining),cwd=ROOT", source)
+        self.assertIn("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_BUDGET_SECONDS)", source)
+        self.assertIn("timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT", source)
+
+    def test_nine_minute_budget_covers_all_stage_caps_and_reserve(self):
+        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 510)
+        self.assertEqual(alpha_radar.DISCOVERY_TIMEOUT_SECONDS, 165)
+        self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 120)
+        self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS, 120)
+        self.assertEqual(alpha_radar.SYNTHESIS_BUDGET_SECONDS, 60)
+        self.assertEqual(alpha_radar.ENRICHMENT_BUDGET_SECONDS, 45)
+        self.assertEqual(sum((165, 120, 120, 60, 45, 30)), 540)
+        self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
 
     def test_scout_run_budget_bounds_discovery(self):
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
             command = alpha_radar.discovery_command()
         budget_index = command.index("--run-budget") + 1
-        self.assertEqual(command[budget_index], "180")
+        self.assertEqual(command[budget_index], "130")
         self.assertEqual(command[command.index("--max-turns")+1],"2")
         self.assertEqual(command[command.index("-t")+1],"search")
 
@@ -41,23 +157,22 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
             command=alpha_radar.focused_retrieval_command()
         self.assertEqual(command[command.index("--max-turns")+1],"3")
-        self.assertEqual(command[command.index("--run-budget")+1],"120")
+        self.assertEqual(command[command.index("--run-budget")+1],"90")
         source=(alpha_radar.ROOT/"alpha_radar.py").read_text()
-        self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=240",source)
+        self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",source)
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # 360 scout + 240 focused retrieval + 260 shared rescue/fetch pipeline
-        # + 120 synthesis + 45 earnings SEC lookup = 1025;
-        # outer 1110 leaves 85 seconds.
+        # 165 scout + 120 focused retrieval + 120 shared rescue/fetch
+        # + 60 synthesis + 45 shared enrichment + 30 reserve = 540.
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
-        self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS,260)
+        self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS,120)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
         self.assertIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=540',
             source,
         )
         self.assertNotIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=960',
+            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110',
             source,
         )
 

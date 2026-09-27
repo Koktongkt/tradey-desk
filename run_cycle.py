@@ -62,7 +62,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "research_catalyst_stale","research_earnings_blackout",
     "research_earnings_timestamp_unverified","research_evidence_insufficient",
     "research_focused_retrieval_timeout","research_focused_retrieval_unavailable",
-    "research_market_data_unavailable","research_parse_failure","research_persistence_failure",
+    "research_enrichment_timeout","research_market_data_unavailable","research_parse_failure","research_persistence_failure",
     "research_policy_constraints_unmet","research_rescue_unavailable",
     "research_scout_parse_failure","research_scout_schema_rejected","research_scout_timeout",
     "research_scout_unavailable","research_source_freshness_insufficient",
@@ -215,7 +215,7 @@ def main()->int:
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
     daily=a.mode in {"premarket","postclose"}
     if daily and completed_today(a.mode):audit_result(a.mode,"schedule",0,"DECISION skipped already_completed");return 0
-    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110,attempts=1,audit_mode=a.mode,audit_stage="research")
+    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=540,attempts=1,audit_mode=a.mode,audit_stage="research")
     elif a.mode=="autotrader":rc=execute([sys.executable,str(ROOT/"autotrader.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="execution")
     elif a.mode=="postclose":
         rc=execute([sys.executable,str(ROOT/"candidate_outcomes.py")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="outcome_measurement")
