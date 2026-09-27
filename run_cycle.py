@@ -202,9 +202,9 @@ def scheduled_slot(mode:str,now:dt.datetime|None=None)->bool:
     """Return whether this fire matches the NY-time producer/consumer cadence."""
     n=(now or dt.datetime.now(NY)).astimezone(NY)
     if mode=="premarket":return n.hour==9 and n.minute==0
-    if mode=="radar":return 10<=n.hour<=15 and n.minute in {0,30}
+    if mode=="radar":return 10<=n.hour<=15 and n.minute in {0,20,40}
     if mode=="autotrader":
-        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {20,50})
+        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {10,30,50})
     return True
 
 

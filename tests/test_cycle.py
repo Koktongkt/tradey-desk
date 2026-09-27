@@ -313,13 +313,21 @@ class CycleTests(unittest.TestCase):
         at=lambda h,m:dt.datetime.combine(day,dt.time(h,m),tzinfo=ny)
         self.assertTrue(run_cycle.scheduled_slot("premarket",at(9,0)))
         self.assertFalse(run_cycle.scheduled_slot("premarket",at(8,30)))
-        for h,m in [(10,0),(10,30),(15,0),(15,30)]:
+        for h,m in [(10,0),(10,20),(10,40),(15,0),(15,20),(15,40)]:
             self.assertTrue(run_cycle.scheduled_slot("radar",at(h,m)))
-        for h,m in [(9,30),(9,40),(16,0)]:
+        for h,m in [(9,30),(9,40),(16,0),(10,10),(10,30),(10,50)]:
             self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
-        for h,m in [(9,40),(10,20),(10,50),(15,20),(15,50)]:
+        for h,m in [(9,40),(10,10),(10,30),(15,10),(15,30)]:
             self.assertTrue(run_cycle.scheduled_slot("autotrader",at(h,m)))
-        for h,m in [(9,30),(9,45),(10,0),(16,20)]:
+        for h,m in [(9,30),(9,45),(10,0),(10,20),(10,40),(16,20)]:
+            self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
+
+    def test_market_open_and_close_fire_windows_exclude_edge_slots(self):
+        ny=ZoneInfo("America/New_York")
+        day=dt.date(2026,9,15)
+        at=lambda h,m:dt.datetime.combine(day,dt.time(h,m),tzinfo=ny)
+        for h,m in [(9,0),(9,20),(16,0),(16,20),(16,40)]:
+            self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
             self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
 
     def test_slot_classification_is_dst_safe(self):
