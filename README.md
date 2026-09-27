@@ -58,6 +58,12 @@ The initial cutover is deliberately non-rolling because old JSONL-only writers d
 
 Keep the database private. Create consistent snapshots with `python3 sqlite_ledger.py backup --root /path/to/tradey-desk --output /secure/path/trading-journal.sqlite3`; the command uses SQLite's backup API, validates the snapshot, fsyncs it, and installs it atomically. Retain snapshots off-host and periodically test restoration. The broker remains authoritative for orders and fills; migration does not weaken fresh broker reconciliation.
 
+## One-tree development and release
+
+`/opt/data/projects/tradey-desk` is both the operational directory and the Git checkout. Edit, test, review, commit, and push from this directory; do not maintain a second source mirror. `origin` points to the public GitHub repository. The scheduled `cron/*.sh` wrappers also invoke this directory.
+
+Only reviewed source/configuration/documentation should be staged by explicit path (avoid `git add .`). `.gitignore` excludes the private SQLite database and research/review files, root operational JSONL ledgers, state, generated dashboard output, and test artifacts. Existing tracked fixture and test-helper files under `test_artifacts/` are source-controlled exceptions; never put live operational records there. Review `git diff --cached --name-only` and `git diff --cached` for sensitive data before committing; verify `git ls-remote origin refs/heads/main` matches the pushed `HEAD` afterward. A Git push publishes code, whereas `deploy_dashboard.sh` separately builds and deploys sanitized dashboard output to Vercel.
+
 ## Local verification
 
 Tests are explicitly classified in `tests/test_manifest.json`; the runner fails when a test module is unclassified, duplicated across tiers, or missing. It also snapshots operational ledgers and every file under `private/`, failing if a test changes their content or metadata.

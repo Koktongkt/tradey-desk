@@ -1,12 +1,23 @@
+# Operational records and credentials must never be published.
+/private/
+/state/
+/public/
+/test_artifacts/
+/*.jsonl
+/*.sqlite*
+/*.lock
+/KILL_SWITCH
+/test_*.py
+/.env
+/.env.*
+*.pem
+*.key
+
+# Local build and editor artifacts.
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 .venv/
-private/
-public/disagreements.jsonl
-state/
-KILL_SWITCH
-test_artifacts/shadow/
-test_artifacts/dry_run_*
-test_artifacts/archived_*
-test_artifacts/dry_run_result.json
-candidates.jsonl
+*.log
+.DS_Store
