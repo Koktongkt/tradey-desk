@@ -40,6 +40,19 @@ def first_dict(x:Any)->dict[str,Any]:
     if isinstance(x,list) and x and isinstance(x[0],dict):return x[0]
     return {}
 
+def normalize_readback(raw:Any)->dict[str,Any]:
+    return find_mapping_with_keys(raw,{"status"}) or first_dict(raw)
+
+async def readback_order(a:Alpaca,ref:str)->dict[str,Any]:
+    raw=await a.call("get_order_by_client_id",{"client_order_id":ref})
+    return normalize_readback(raw)
+
+async def readback_orders(a:Alpaca,refs:list[str])->list[dict[str,Any]]:
+    raw_orders=await asyncio.gather(*(
+        a.call("get_order_by_client_id",{"client_order_id":ref}) for ref in refs
+    ))
+    return [normalize_readback(raw) for raw in raw_orders]
+
 def listish(x:Any)->list[Any]:
     if isinstance(x,list):return x
     if isinstance(x,dict):
@@ -240,13 +253,9 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             or any(not isinstance(ref,str) or not ref or len(ref)>128 for ref in refs)
         ):
             raise RuntimeError("client_order_ids required")
-        raw_orders=await asyncio.gather(*(
-            a.call("get_order_by_client_id",{"client_order_id":ref}) for ref in refs
-        ))
-        return {"orders":[find_mapping_with_keys(raw,{"status"}) or first_dict(raw) for raw in raw_orders]}
+        return {"orders":await readback_orders(a,refs)}
     if op=="reconcile":
-        raw=await a.call("get_order_by_client_id",{"client_order_id":p["client_order_id"]})
-        return find_mapping_with_keys(raw,{"status"}) or first_dict(raw)
+        return await readback_order(a,p["client_order_id"])
     if op=="reconciliation_snapshot":
         refs=p.get("client_order_ids")
         if (
@@ -258,14 +267,12 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             a.call("get_all_positions"),
             a.call("get_orders",{"status":"open","nested":True,"limit":500}),
         )
-        raw_orders=await asyncio.gather(*(
-            a.call("get_order_by_client_id",{"client_order_id":ref}) for ref in refs
-        ))
+        orders=await readback_orders(a,refs)
         return {
             "captured_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
             "positions":listish(positions),
             "open_orders":listish(opened),
-            "orders":[find_mapping_with_keys(raw,{"status"}) or first_dict(raw) for raw in raw_orders],
+            "orders":orders,
         }
     if op=="outcomes":
         out=[]; now=datetime.now(timezone.utc).isoformat()

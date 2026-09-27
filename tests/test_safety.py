@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -840,6 +841,27 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIn("must not treat their absence as a fatal evidence gap", prompt)
         self.assertNotIn("choose a whole-share quantity", prompt)
 
+    def test_reviewer_request_seam_preserves_command_and_immutable_bundle(self):
+        bundle = {"proposal": {"proposal_hash": "abc"}, "evidence": {"z": 1, "a": 2}}
+        cmd, prompt = autotrader._review_request(bundle, "nous", "model-pin")
+        self.assertEqual(cmd, [
+            "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
+            "--provider", "nous", "-m", "model-pin", "-t", "", "--safe-mode",
+            "--max-turns", "1", "--run-budget", "120", "--query-file", "-",
+        ])
+        self.assertTrue(prompt.endswith("Evidence:\n" + json.dumps(bundle, sort_keys=True, separators=(",", ":"))))
+        self.assertIn("Raw bar arrays are intentionally excluded", prompt)
+        # Golden digest of the entire HEAD reviewer prompt for this fixed evidence bundle.
+        self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(),
+                         "73188f6c104c3fdb94f848b0843e997ef3868d930a88bb04934a838a225d68c6")
+
+    def test_reviewer_process_seam_passes_exact_input_and_timeout(self):
+        completed = subprocess.CompletedProcess([], 0, '{"decision":"HOLD"}', "")
+        with patch("autotrader.subprocess.run", return_value=completed) as launch:
+            self.assertIs(autotrader._run_reviewer_process(["review"], "prompt", 19), completed)
+        launch.assert_called_once_with(["review"], input="prompt", capture_output=True,
+                                       text=True, timeout=19, cwd=autotrader.ROOT)
+
     def test_reviewer_retries_once_only_to_reformat_unparseable_output(self):
         malformed = subprocess.CompletedProcess(args=[], returncode=0, stdout="APPROVE; scores catalyst five", stderr="")
         repaired = subprocess.CompletedProcess(
@@ -856,6 +878,8 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIn("formatting repair only", repair_prompt.lower())
         self.assertIn("Do not reconsider", repair_prompt)
         self.assertIn("APPROVE; scores catalyst five", repair_prompt)
+        self.assertEqual(hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                         "14f4b9a02cd18a0681c958e9d06dca19296424dcb8a515700cac365d697d7398")
 
     def test_reviewer_does_not_retry_model_or_process_failure(self):
         failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="failure")

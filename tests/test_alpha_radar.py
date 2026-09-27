@@ -1679,6 +1679,59 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         parsed=alpha_radar.parse_focused_retrieval(raw,{"AAA","BBB"},max_urls=9)
         self.assertEqual(parsed,{"AAA":["https://www.sec.gov/a","https://www.reuters.com/c"]})
 
+    def test_live_research_deduplicates_urls_in_first_seen_order_without_quadratic_comparisons(self):
+        class CountedURL(str):
+            comparisons=0
+            __hash__=str.__hash__
+
+            def __eq__(self,other):
+                type(self).comparisons+=1
+                return str.__eq__(self,other)
+
+        urls=[CountedURL(f"https://d{i}.example/story") for i in range(24)]
+        candidates=[{"symbol":"AAA","urls":urls[:16]},
+                    {"symbol":"BBB","urls":urls[8:]+[urls[0],urls[8]]}]
+        gathered=[]
+        def gather(requested,**_kwargs):
+            gathered.extend(requested)
+            return []
+
+        scout=subprocess.CompletedProcess([],0,"{}","")
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",return_value=scout
+        ), patch.object(alpha_radar,"scout_parse_result",return_value=(candidates,{"reason":"ok"})), patch.object(
+            alpha_radar,"gather_evidence",side_effect=gather
+        ), patch.object(alpha_radar,"post_fetch_rescue_candidate",return_value=[]):
+            with self.assertRaises(alpha_radar.ResearchFailure):
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual(gathered,urls)
+        self.assertLess(CountedURL.comparisons,80)
+
+    def test_research_handles_unhashable_malformed_page_url_without_new_type_error(self):
+        candidate = {"symbol": "AAA", "urls": ["https://www.sec.gov/a"]}
+        malformed = {"url": ["invalid"], "text": "A" * 300,
+                     "published_at": "2026-09-27T12:00:00Z"}
+        scout = subprocess.CompletedProcess([], 0, "{}", "")
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)), patch.object(
+            alpha_radar.subprocess, "run", return_value=scout
+        ), patch.object(alpha_radar, "scout_parse_result", return_value=([candidate], {"reason": "ok"})), patch.object(
+            alpha_radar, "gather_evidence", return_value=[malformed]
+        ), patch.object(alpha_radar, "post_fetch_rescue_candidate", return_value=[]):
+            with self.assertRaises(alpha_radar.ResearchFailure):
+                alpha_radar.live_research({"max_position_usd": 500})
+
+    def test_evidence_score_profiles_each_page_once_without_changing_score(self):
+        import datetime as dt
+        now=dt.datetime(2026,9,14,12,tzinfo=dt.timezone.utc)
+        pages=[{"url":url,"published_at":"2026-09-14T12:00:00Z"} for url in (
+            "https://www.sec.gov/a","https://www.reuters.com/b")]
+        profile=alpha_radar.source_profile
+        with patch.object(alpha_radar,"source_profile",wraps=profile) as lookup:
+            score=alpha_radar._evidence_rank_score(pages,now)
+        self.assertEqual(score,56.25)
+        self.assertEqual([call.args[0] for call in lookup.call_args_list],
+                         [page["url"] for page in pages])
+
     def test_rerank_prefers_stronger_verified_bundle_over_scout_order(self):
         now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
         candidates=[

@@ -187,6 +187,21 @@ def _run_in_root(root, snapshot, live_dry_run=False, review_snapshot=None):
 
 
 class RunPrecheckDiagnosticsTests(unittest.TestCase):
+    def test_validation_stage_seams_preserve_precheck_and_scope_order(self):
+        proposal = {"symbol": "DELL", "confidence": 0.2}
+        plan = {"symbol": "DELL", "confidence": 0.8}
+        snapshot, cfg, baseline = {"quote": {}}, {"enabled": False}, {"DELL"}
+        with patch("autotrader.validate_order_with_details", return_value=(["cash"], {"cash": {"measured": 1}})) as validate:
+            pre = autotrader.pre_review_validation(proposal, snapshot, cfg, 1, 20.0, baseline)
+            self.assertEqual(pre, (["cash"], {"cash": {"measured": 1}}))
+            self.assertEqual(validate.call_args.args, ({**proposal, "confidence": 1.0}, snapshot, cfg, 1, 20.0, baseline))
+            post = autotrader.post_review_validation(plan, snapshot, cfg, 2, 21.0, baseline, ["scope"])
+            self.assertEqual(post, (["scope", "cash"], {"cash": {"measured": 1}}))
+            self.assertEqual(validate.call_args.args, (plan, snapshot, cfg, 2, 21.0, baseline))
+            fresh = autotrader.broker_review_validation(plan, snapshot, cfg, 2, 22.0, baseline, ["fresh_scope"])
+            self.assertEqual(fresh, (["fresh_scope", "cash"], {"cash": {"measured": 1}}))
+            self.assertEqual(validate.call_args.args, (plan, snapshot, cfg, 2, 22.0, baseline))
+
     def test_precheck_block_writes_private_diagnostics_rows(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

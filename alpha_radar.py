@@ -842,9 +842,10 @@ def select_candidate_evidence(
 
 def _evidence_rank_score(pages:list[dict[str,Any]],now:dt.datetime)->float:
     """Score objective post-retrieval evidence; catalyst prose detail is not a gate."""
-    ranks=[source_profile(str(page.get("url") or ""))["rank"] for page in pages]
+    profiles=[source_profile(str(page.get("url") or "")) for page in pages]
+    ranks=[profile["rank"] for profile in profiles]
     provenance=(sum(ranks)/max(1,len(ranks)))/100*25
-    roles={source_profile(str(page.get("url") or ""))["role"] for page in pages}
+    roles={profile["role"] for profile in profiles}
     corroboration=10 if "independent" in roles else 0
     primary=5 if "primary" in roles else 0
     completeness=min(5,len(pages)/4*5)
@@ -1219,10 +1220,11 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         for scout_candidate in scout_candidates:
             symbol=str(scout_candidate.get("symbol") or "").upper()
             scout_candidate["urls"]=merge_candidate_urls(list(scout_candidate.get("urls",[])),list(focused.get(symbol,[])),limit=3)
-    urls=[]
+    urls=[];seen_urls=set()
     for scout_candidate in scout_candidates:
         for url in scout_candidate.get("urls",[]):
-            if url not in urls:urls.append(url)
+            if url not in seen_urls:
+                seen_urls.add(url);urls.append(url)
     source_diagnostics:list[dict[str,str]]=[]
     evidence_deadline=monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS
     if not urls:
@@ -1233,6 +1235,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     )
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
+    accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     source_diagnostics.extend(initial_quality)
     rescued_candidates=0
     for scout_candidate in scout_candidates:
@@ -1245,7 +1248,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             scout_candidate,accepted,diagnostics=source_diagnostics,deadline=evidence_deadline,
         )
         for page in rescued_pages:
-            if page.get("url") and all(existing.get("url")!=page.get("url") for existing in filtered_evidence):
+            url=page.get("url")
+            if url and (url not in accepted_urls if isinstance(url,str)
+                        else all(existing.get("url")!=url for existing in filtered_evidence)):
+                if isinstance(url,str):accepted_urls.add(url)
                 filtered_evidence.append(page)
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
