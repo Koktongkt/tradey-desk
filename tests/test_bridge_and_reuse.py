@@ -140,6 +140,24 @@ class RadarReuseFirstTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertEqual(output.getvalue().strip(), "SYSTEM_FAILURE research_source_retrieval_failed")
 
+    def test_approved_but_pre_submission_blocked_dossier_is_reusable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            now = dt.datetime.now(dt.timezone.utc)
+            candidate = {"symbol": "METC", "dossier_hash": "dossier-a", "sources_verified_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z")}
+            candidates = root / "candidates.jsonl"
+            candidates.write_text(json.dumps(candidate) + "\n")
+            (root / "autonomy_config.json").write_text("{}")
+            reviews = root / "private" / "reviews.jsonl"
+            reviews.parent.mkdir()
+            reviews.write_text("".join(json.dumps(row) + "\n" for row in [
+                {"timestamp": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"), "dossier_hash": "dossier-a", "evidence_id": "evidence-a", "reviews": [{"decision": "APPROVE"}, {"decision": "APPROVE"}]},
+                {"timestamp": now.isoformat().replace("+00:00", "Z"), "dossier_hash": "dossier-a", "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+            ]))
+            (root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]}) + "\n")
+            with patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
+                self.assertEqual(alpha_radar.reusable_fresh_candidate(candidates, reviews, now=now), candidate)
+
     def test_shared_fresh_selection_keeps_review_gate_optional(self):
         now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
         row = {"sources_verified_at": "2026-09-05T14:29:00Z"}

@@ -41,11 +41,11 @@ class NarrowRetrySemanticsTests(unittest.TestCase):
         return {"timestamp": "2026-09-16T12:00:00Z", "dossier_hash": self.h,
                 "reviews": [{"decision": decision}, {"decision": decision}]}
 
-    def test_latest_row_governs_retry(self):
+    def test_completed_review_survives_later_reconciliation_marker(self):
         for rows, expected in (
             ([], False),
             ([self.completed()], True),
-            ([self.completed(), self.blocked()], False),
+            ([self.completed(), self.blocked()], True),
             ([self.blocked(), self.completed()], True),
             ([self.blocked()], False),
             ([{"timestamp": "t", "dossier_hash": self.h, "reviews": [None, None]}], False),
@@ -53,6 +53,118 @@ class NarrowRetrySemanticsTests(unittest.TestCase):
             with self.subTest(rows=len(rows), expected=expected):
                 self.write_reviews(rows)
                 self.assertEqual(autotrader.dossier_already_reviewed(self.candidate, self.reviews), expected)
+
+    def test_pre_submission_block_after_approval_allows_retry(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]}) + "\n")
+        self.assertFalse(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_prior_hold_remains_spent_even_after_later_approval_marker(self):
+        self.write_reviews([
+            {**self.completed("HOLD"), "evidence_id": "old"},
+            self.blocked(),
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]}) + "\n")
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_disagreement_reason_cannot_authorize_execution_retry(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": "model_disagreement"}) + "\n")
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_reviewed_hold_stays_spent_after_reconciliation_marker(self):
+        self.write_reviews([self.completed("HOLD"), self.blocked()])
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_fatal_flagged_approval_cannot_be_reenabled(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "old", "reviews": [
+                {"decision": "APPROVE", "fatal_flags": ["risk"]},
+                {"decision": "APPROVE", "fatal_flags": []}]},
+            self.blocked(),
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]}) + "\n")
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_broker_failure_is_not_pre_submission_validation_proof(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["broker_mcp_failure"]}) + "\n")
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_prior_low_confidence_approval_cannot_be_reenabled(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "old"},
+            self.blocked(),
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
+            {"evidence_id": "old", "status": "rejected", "reason": "low_confidence"},
+            {"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]},
+        ]))
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_non_market_broker_blockers_do_not_authorize_reuse(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        for reason in ("active_broker_order", "positions_unknown"):
+            with self.subTest(reason=reason):
+                (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": [reason]}) + "\n")
+                self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_retry_marker_without_proof_remains_spent(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_submitted_order_cannot_reuse_retry_marker(self):
+        self.write_reviews([
+            {**self.completed("APPROVE"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        ledger = self.root / "order_ledger.jsonl"
+        for status in ("submission_started", "placed", "submission_unknown"):
+            with self.subTest(status=status):
+                ledger.write_text("".join(json.dumps(r) + "\n" for r in [
+                    {"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]},
+                    {"evidence_id": "evidence-a", "status": status},
+                ]))
+                self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+
+    def test_hold_cannot_be_reenabled_by_retry_marker(self):
+        self.write_reviews([
+            {**self.completed("HOLD"), "evidence_id": "evidence-a"},
+            {"timestamp": "2026-09-16T12:01:00Z", "dossier_hash": self.h,
+             "evidence_id": "evidence-a", "reviews": [{"decision": "execution_retryable"}]},
+        ])
+        (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": ["spread_too_wide"]}) + "\n")
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
 
     def test_block_row_mixed_with_real_decisions_still_counts_completed(self):
         self.write_reviews([{"timestamp": "t", "dossier_hash": self.h,
@@ -118,7 +230,7 @@ class RunIntegrationTests(unittest.TestCase):
             code = autotrader.run(self.ns())
         return code, captured.getvalue()
 
-    def test_reconciliation_blocker_stops_cycle_and_allows_narrow_retry(self):
+    def test_reconciliation_blocker_does_not_erase_completed_hold(self):
         self.reviews.write_text(json.dumps({
             "timestamp": "t", "dossier_hash": self.candidate["dossier_hash"],
             "reviews": [{"decision": "HOLD"}, {"decision": "HOLD"}]}) + "\n")
@@ -133,7 +245,7 @@ class RunIntegrationTests(unittest.TestCase):
         self.assertIn("BLOCKER managed_reconciliation:managed_position_reconciliation_failed", out)
         rows = [json.loads(line) for line in self.reviews.read_text().splitlines()]
         self.assertEqual(rows[-1]["reviews"][0]["decision"], "reconciliation_blocked")
-        self.assertFalse(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
+        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
 
     def test_recovered_replacement_exit_is_reported_and_cycle_ends(self):
         update = {"quantity": 3, "symbol": "ZS", "entry": 184.44}

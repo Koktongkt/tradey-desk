@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
 from research_budget import ResearchDeadlineExceeded, active_deadline, remaining as budget_remaining
 from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
+from candidate_retry import pre_submission_retryable
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
@@ -1497,6 +1498,7 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
 def _select_fresh_candidate(
     rows:list[dict[str,Any]],cfg:dict[str,Any],now:dt.datetime,
     max_age_minutes:int,latest_review:str|None=None,
+    retryable_hashes:set[str]|None=None,
 )->dict[str,Any]|None:
     reuse_age_minutes=max(
         0,min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
@@ -1509,7 +1511,7 @@ def _select_fresh_candidate(
         try:verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
         except ValueError:continue
         if (now-verified_at).total_seconds()>reuse_age_minutes*60:continue
-        if latest_review is not None and latest_review>=verified:continue
+        if latest_review is not None and latest_review>=verified and row.get("dossier_hash") not in (retryable_hashes or set()):continue
         if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):continue
         return row
     return None
@@ -1522,10 +1524,8 @@ def reusable_fresh_candidate(
 ) -> dict[str, Any] | None:
     """Newest verified, still-fresh candidate that has not yet reached review.
 
-    A candidate whose dossier has already been through the autotrader's review
-    stage (any review row exists at/after its sources_verified_at) is spent:
-    reusing it would re-run reviews on identical evidence, so it is skipped and
-    fresh research runs instead.
+    Completed reviews spend the dossier, except an explicitly approved plan
+    rejected before broker submission and proved safe by its order ledger.
     """
     cfg = json.loads((candidates_path.parent / "autonomy_config.json").read_text())
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -1534,15 +1534,22 @@ def reusable_fresh_candidate(
     except Exception:
         return None
     review_marks: list[str] = []
+    review_rows: list[dict[str,Any]] = []
     try:
-        for review_row in read_jsonl(reviews_path, strict=True):
+        review_rows = read_jsonl(reviews_path, strict=True)
+        for review_row in review_rows:
             mark = review_row.get("timestamp")
             if isinstance(mark, str):
                 review_marks.append(mark)
     except Exception:
         pass
     latest_review = max(review_marks) if review_marks else None
-    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,latest_review)
+    retryable_hashes = {
+        row["dossier_hash"] for row in rows
+        if isinstance(row,dict) and isinstance(row.get("dossier_hash"),str)
+        and pre_submission_retryable(row["dossier_hash"],review_rows,candidates_path.parent/"order_ledger.jsonl")
+    }
+    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,latest_review,retryable_hashes)
 
 
 def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_age_minutes:int=60)->dict[str,Any]|None:

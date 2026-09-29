@@ -1171,15 +1171,12 @@ REVIEWED_SKIP_GRACE_MINUTES = 10
 
 
 def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> bool:
-    """True when this dossier hash's LATEST review row is a completed outcome.
+    """True when this dossier has a completed review without a proven safe retry.
 
-    A row counts as completed only when at least one reviewer returned actual
-    content other than a reconciliation-blocked marker. Rows whose reviewer
-    entries are all None/missing are subprocess failures (reviewer_unavailable)
-    and must retry. When the latest row for the hash is a reconciliation-blocked
-    marker, the dossier is retried: that candidate was never evaluated, so it
-    must not be permanently marked already_reviewed. Fresh reviews appended on
-    the retry supersede the marker (narrow retry: latest same-dossier row only).
+    A completed outcome cannot be erased by a later reconciliation marker.
+    Only dual approval followed by a ledger-proven, pre-submission market/quote/
+    cash rejection permits retry. All other completed reviews remain spent.
+    Rows with no reviewer content can retry if no earlier review completed.
     """
     expected = candidate.get("dossier_hash")
     if not isinstance(expected, str):
@@ -1188,20 +1185,39 @@ def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> b
         rows = read_jsonl(reviews_path, strict=True)
     except Exception:
         return False
+    from candidate_retry import pre_submission_retryable
+    if pre_submission_retryable(expected, rows, reviews_path.parent.parent / "order_ledger.jsonl"):
+        return False
     completed = False
     for row in rows:
         if not isinstance(row, dict) or row.get("dossier_hash") != expected:
             continue
         reviews = row.get("reviews")
-        completed = (
+        completed = completed or (
             isinstance(reviews, list)
             and any(
                 isinstance(r, dict) and r.get("decision")
-                and r.get("decision") != "reconciliation_blocked"
+                and r.get("decision") not in {"reconciliation_blocked", "execution_retryable"}
                 for r in reviews
             )
         )
+    # Only a ledger-proven retry above can undo a completed review.
+    # Reconciliation markers never erase an earlier completed outcome.
+    if any(isinstance(row, dict) and row.get("dossier_hash") == expected
+           and row.get("reviews") == [{"decision": "execution_retryable"}] for row in rows):
+        return True  # orphan or unproven retry marker: fail closed
     return completed
+
+
+def note_pre_submission_retryable(reviews_path: Path, candidate: dict[str, Any], evidence_id: str) -> None:
+    """Best-effort retry marker only after a recorded deterministic rejection."""
+    try:
+        append_jsonl(reviews_path, {
+            "timestamp": utcnow(), "dossier_hash": candidate.get("dossier_hash"),
+            "evidence_id": evidence_id, "reviews": [{"decision": "execution_retryable"}],
+        })
+    except Exception:
+        pass  # Without the marker, the previous approval remains spent.
 
 
 def note_reconciliation_blocked(reviews_path: Path) -> None:
@@ -1366,6 +1382,10 @@ def run(args: argparse.Namespace) -> int:
         if errors:
             record_blocker_diagnostics("final_validation",plan.get("symbol"),plan.get("action"),sorted(set(errors)),final_details,dry_run=args.dry_run_fixture or args.live_dry_run)
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":reason})
+        from candidate_retry import RETRYABLE_EXECUTION_REASONS
+        if (errors and set(errors) <= RETRYABLE_EXECUTION_REASONS and not blockers
+                and not args.dry_run_fixture and not args.live_dry_run):
+            note_pre_submission_retryable(reviews_path,candidate,private_id)
         print("BLOCKER " + ",".join(reason)); return 2
     submission_started=False
     try:
@@ -1376,6 +1396,9 @@ def run(args: argparse.Namespace) -> int:
             fresh_errors=sorted(set(fresh_errors))
             record_blocker_diagnostics("broker_review",plan.get("symbol"),plan.get("action"),fresh_errors,fresh_details)
             append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":fresh_errors})
+            from candidate_retry import RETRYABLE_EXECUTION_REASONS
+            if set(fresh_errors) <= RETRYABLE_EXECUTION_REASONS:
+                note_pre_submission_retryable(reviews_path,candidate,private_id)
             print("BLOCKER broker_review:"+",".join(fresh_errors)); return 2
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
