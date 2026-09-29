@@ -364,6 +364,7 @@ class AlphaRadarTests(unittest.TestCase):
             status = 200
             def __enter__(self): return self
             def __exit__(self, *_): return False
+            def geturl(self): return "https://issuer.example/release"
             def read(self, _limit): return html
 
         with patch.object(alpha_radar, "safe_urlopen", return_value=Response()):
@@ -379,6 +380,7 @@ class AlphaRadarTests(unittest.TestCase):
         class Response:
             def __enter__(self): return self
             def __exit__(self, *_): return False
+            def geturl(self): return "https://issuer.example/release"
             def read(self, _limit): return html
 
         with patch.object(alpha_radar, "safe_urlopen", return_value=Response()):
@@ -1560,7 +1562,7 @@ class BundleRescueTests(unittest.TestCase):
         self.assertEqual(result["none_reason"],"no_fresh_setup")
         rescue.assert_called_once()
 
-    def test_live_research_continues_to_sourceable_candidate_after_rescue_outage(self):
+    def test_live_research_uses_sourceable_candidate_without_rescue_outage(self):
         scout_payload=json.dumps({"candidates":[
             {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-08","urls":["https://one.example/a"]},
             {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-08","urls":["https://two.example/b","https://three.example/b"]},
@@ -1578,12 +1580,174 @@ class BundleRescueTests(unittest.TestCase):
             alpha_radar,"sec_edgar_filing_url",return_value=None
         ), patch.object(
             alpha_radar,"gateway_rescue_url",side_effect=alpha_radar.ResearchFailure("research_rescue_unavailable")
-        ):
-            result=alpha_radar.live_research({"max_position_usd":500})
+        ), patch.object(alpha_radar,"synthesize_candidate",return_value={"symbol":"BBB"}) as synthesized:
+            result=alpha_radar.live_research({"max_position_usd":500},intake=lambda c:c)
             diagnostics=[json.loads(line) for line in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
-        self.assertEqual(result["none_reason"],"no_fresh_setup")
-        self.assertIn("SELECTED SYMBOL: BBB",runs.call_args_list[-1].kwargs["input"])
-        self.assertTrue(any(row["reason"]=="bundle_rescue_unavailable" for row in diagnostics))
+        self.assertEqual(result["symbol"],"BBB")
+        self.assertEqual(synthesized.call_args.args[1]["symbol"],"BBB")
+        self.assertFalse(any(row["reason"]=="bundle_rescue_unavailable" for row in diagnostics))
+
+    def test_live_research_prioritizes_already_sourceable_alternate_before_rescue(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:]},
+        ]}),"")
+        pages=[{"url":url,"title":"News","text":_body("material event"),"published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",side_effect=[scout,synth]
+        ) as runs, patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+            alpha_radar,"post_fetch_rescue_candidate"
+        ) as rescue, patch.object(alpha_radar,"synthesize_candidate",return_value={"symbol":"BBB"}) as synthesized:
+            alpha_radar.live_research({"max_position_usd":500},intake=lambda c:c)
+        rescue.assert_not_called()
+        self.assertEqual(synthesized.call_args.args[1]["symbol"],"BBB")
+
+    def test_live_research_rescues_thin_candidate_after_sourceable_synthesis_none(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
+              "https://www.reuters.com/a"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
+        ]}),"")
+        pages=[{"url":url,"title":"News","text":_body("material event"),
+                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        calls=[]
+        def synth(_cfg,selected,evidence,_deadline,**_kwargs):
+            calls.append(selected["symbol"])
+            return {"status":"none","none_reason":"no_fresh_setup"} if selected["symbol"]=="BBB" else {"symbol":"AAA"}
+        def rescue(candidate,accepted,**kwargs):
+            self.assertEqual(candidate["symbol"],"AAA")
+            self.assertGreater(kwargs["deadline"],alpha_radar.monotonic())
+            candidate["urls"].append(urls[3]);return accepted+[pages[3]]
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",return_value=scout
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
+            alpha_radar,"synthesize_candidate",side_effect=synth
+        ), patch.object(alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue) as rescued:
+            result=alpha_radar.live_research({},intake=lambda c:c)
+        self.assertEqual(result["symbol"],"AAA")
+        self.assertEqual(calls,["BBB","AAA"])
+        rescued.assert_called_once()
+
+    def test_live_research_skips_deferred_rescue_when_synthesis_budget_is_spent(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:]},
+        ]}),"")
+        pages=[{"url":url,"title":"News","text":_body("material event"),
+                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        for remaining in (0,0.1,2,29.9,30):
+            with self.subTest(remaining=remaining):
+                clock=[100.0]
+                calls=[]
+                def synth(_cfg,selected,_evidence,deadline,**_kwargs):
+                    calls.append(selected["symbol"])
+                    if len(calls)>1 and clock[0]>=deadline:
+                        raise alpha_radar.ResearchFailure("research_synthesis_timeout")
+                    clock[0]=deadline-remaining
+                    return {"status":"none","none_reason":"no_fresh_setup"}
+                def rescue(candidate,accepted,**kwargs):
+                    self.assertLessEqual(kwargs["deadline"],130.0)
+                    clock[0]+=3
+                    candidate["urls"].append("https://www.reuters.com/a")
+                    return accepted+[dict(pages[2],url="https://www.reuters.com/a")]
+                with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+                    alpha_radar,"monotonic",side_effect=lambda:clock[0]
+                ), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+                    alpha_radar,"gather_evidence",return_value=pages
+                ), patch.object(alpha_radar,"synthesize_candidate",side_effect=synth), patch.object(
+                    alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue) as rescued:
+                    result=alpha_radar.live_research({},intake=lambda c:c)
+                self.assertEqual(result["none_reason"],"no_fresh_setup")
+                self.assertEqual(calls,["BBB"])
+                rescued.assert_not_called()
+
+    def test_live_research_fast_deferred_rescue_uses_original_synthesis_deadline(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
+              "https://www.reuters.com/a"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
+        ]}),"")
+        pages=[{"url":url,"title":"News","text":_body("material event"),
+                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        clock=[100.0];synth_deadlines=[];rescue_deadlines=[]
+        def synth(_cfg,selected,_evidence,deadline,**_kwargs):
+            synth_deadlines.append(deadline)
+            if selected["symbol"]=="BBB":
+                clock[0]=deadline-32
+                return {"status":"none","none_reason":"no_fresh_setup"}
+            self.assertLess(clock[0],deadline)
+            return {"symbol":"AAA"}
+        def rescue(candidate,accepted,**kwargs):
+            rescue_deadlines.append(kwargs["deadline"])
+            self.assertEqual(kwargs["deadline"],synth_deadlines[0]-30)
+            clock[0]+=2
+            candidate["urls"].append(urls[3])
+            return accepted+[pages[3]]
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar,"monotonic",side_effect=lambda:clock[0]
+        ), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+            alpha_radar,"gather_evidence",return_value=pages[:3]
+        ), patch.object(alpha_radar,"synthesize_candidate",side_effect=synth), patch.object(
+            alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue):
+            result=alpha_radar.live_research({},intake=lambda c:c)
+        self.assertEqual(result["symbol"],"AAA")
+        self.assertEqual(synth_deadlines,[160.0,160.0])
+        self.assertEqual(rescue_deadlines,[130.0])
+
+    def test_live_research_rescues_after_intake_rejection_without_resetting_deadline(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
+              "https://www.reuters.com/a"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
+        ]}),"")
+        pages=[{"url":url,"title":"News","text":_body("event"),
+                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        deadlines=[];calls=[]
+        def synth(_cfg,selected,_evidence,_deadline,**_kwargs):
+            calls.append(selected["symbol"]);return {"symbol":selected["symbol"]}
+        def intake(candidate):
+            if candidate["symbol"]=="BBB":raise alpha_radar.CandidateRejection("test_rejected")
+            return candidate
+        def rescue(candidate,accepted,**kwargs):
+            deadlines.append(kwargs["deadline"])
+            candidate["urls"].append(urls[3]);return accepted+[pages[3]]
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",return_value=scout
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
+            alpha_radar,"synthesize_candidate",side_effect=synth
+        ), patch.object(alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue):
+            result=alpha_radar.live_research({},intake=intake)
+        self.assertEqual(result["symbol"],"AAA")
+        self.assertEqual(calls,["BBB","AAA"])
+        self.assertEqual(len(deadlines),1)
+
+    def test_live_research_rescue_orders_alternate_publisher_mix_before_single_source(self):
+        urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
+        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
+            {"symbol":"BBB","catalyst":"alternate","event_date":"2026-09-08","urls":urls[1:]},
+        ]}),"")
+        pages=[{"url":urls[0],"title":"News","text":_body("event"),"published_at":"2026-09-08T12:00:00Z"},
+               {"url":urls[1],"title":"Filing","text":_body("event"),"published_at":"2026-09-08T12:00:00Z"}]
+        order=[]
+        def rescue(candidate,accepted,**kwargs):
+            order.append((candidate["symbol"],kwargs["deadline"]))
+            return accepted
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
+            alpha_radar.subprocess,"run",return_value=scout
+        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+            alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue
+        ):
+            with self.assertRaises(alpha_radar.ResearchFailure):
+                alpha_radar.live_research({"max_position_usd":500})
+        self.assertEqual([symbol for symbol,_ in order],["BBB","AAA"])
+        self.assertEqual(order[0][1],order[1][1])
 
     def test_live_research_reports_retrieval_blocker_when_rescue_cannot_complete_bundle(self):
         scout_payload=json.dumps({"candidates":[
@@ -1808,6 +1972,41 @@ class RetrievalHardeningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             handler.redirect_request(None,None,302,"Found",{},"http://localhost/private")
 
+    def test_safe_redirect_handler_rejects_cross_registered_domain_hop(self):
+        public=lambda host,port,*a,**k:[(2,1,6,"",("93.184.216.34",port))]
+        handler=alpha_radar.SafeRedirectHandler(resolver=public)
+        req=__import__('urllib.request',fromlist=['Request']).Request("https://www.reuters.com/story")
+        with self.assertRaises(alpha_radar.UnsafeURLTarget):
+            handler.redirect_request(req,None,302,"Found",{},"https://www.businesswire.com/story")
+
+    def test_direct_fetch_rejects_cross_publisher_redirect_without_gateway_laundering(self):
+        requested="https://www.reuters.com/story"
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*_args):return False
+            def geturl(self):return "https://www.businesswire.com/redirected"
+            def read(self,_limit):return b"<title>Misattributed</title><article>"+b"evidence "*100+b"</article>"
+        with patch.object(alpha_radar,"safe_urlopen",return_value=Response()), patch.object(
+            alpha_radar,"fetch_source_via_gateway"
+        ) as fallback:
+            diagnostics=[]
+            pages=alpha_radar.gather_evidence([requested],diagnostics=diagnostics)
+        self.assertEqual(pages,[])
+        self.assertEqual(diagnostics[0]["reason"],"source_fetch_failed")
+        fallback.assert_not_called()
+
+    def test_direct_fetch_accepts_same_registered_domain_redirect(self):
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*_args):return False
+            def geturl(self):return "https://www.reuters.com/story"
+            def read(self,_limit):return b"<title>Story</title><article>"+b"evidence "*100+b"</article>"
+        with patch.object(alpha_radar,"safe_urlopen",return_value=Response()), patch.object(
+            alpha_radar,"is_safe_public_url",return_value=True
+        ):
+            page=alpha_radar.fetch_source("https://reuters.com/story")
+        self.assertEqual(page["url"],"https://reuters.com/story")
+
     def test_filter_evidence_rejects_tiny_and_future_dated_bodies(self):
         now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
         accepted,diag=alpha_radar.filter_evidence([
@@ -1824,8 +2023,17 @@ class RetrievalHardeningTests(unittest.TestCase):
             {"symbol":"BBB","urls":["https://e.example/5","https://f.example/6"]},
         ]})
         parsed=alpha_radar.parse_focused_retrieval(raw,{"AAA","BBB"},max_urls=9)
-        self.assertEqual(len(parsed["AAA"]),3)
+        self.assertEqual(len(parsed["AAA"]),4)
         self.assertEqual(len(parsed["BBB"]),2)
+
+    def test_focused_parser_retains_fourth_source_for_ranked_initial_selection(self):
+        raw=json.dumps({"candidates":[
+            {"symbol":"AAA","urls":["https://wire.example/1","https://www.businesswire.com/2","https://www.reuters.com/3"]},
+            {"symbol":"AAA","urls":["https://www.sec.gov/4"]},
+        ]})
+        focused=alpha_radar.parse_focused_retrieval(raw,{"AAA"},max_urls=15)
+        merged=alpha_radar.merge_candidate_urls(["https://scout.example/0"],focused["AAA"],limit=3)
+        self.assertEqual(merged,["https://scout.example/0","https://www.sec.gov/4","https://www.reuters.com/3"])
 
     def test_merge_focused_urls_preserves_verified_scout_domains(self):
         merged=alpha_radar.merge_candidate_urls(
@@ -1836,6 +2044,75 @@ class RetrievalHardeningTests(unittest.TestCase):
         self.assertIn("https://www.sec.gov/a",merged)
         self.assertIn("https://www.reuters.com/b",merged)
         self.assertEqual(len(merged),4)
+
+    def test_merge_initial_three_keeps_scout_and_prioritizes_accessible_diverse_roles(self):
+        scout="https://issuer.example/disclosure"
+        wire="https://www.businesswire.com/news/home/1"
+        independent="https://www.reuters.com/markets/company-report"
+        primary="https://www.sec.gov/Archives/edgar/data/123/filing.htm"
+        merged=alpha_radar.merge_candidate_urls(
+            [scout],[wire,"https://news.businesswire.com/duplicate",independent,primary],limit=3,
+        )
+        self.assertEqual(merged,[scout,primary,independent])
+        self.assertEqual(len({alpha_radar.publisher_domain(url) for url in merged}),3)
+
+    def test_merge_initial_three_does_not_invent_or_drop_unknown_scout(self):
+        scout="https://localpublisher.example/story"
+        urls=["https://wire.example/story","https://www.reuters.com/article/one"]
+        merged=alpha_radar.merge_candidate_urls([scout],urls,limit=3)
+        self.assertEqual(set(merged),set([scout]+urls))
+
+    def test_merge_never_exceeds_cap_when_scout_already_fills_it(self):
+        scout=["https://a.example/1","https://b.example/2","https://c.example/3"]
+        self.assertEqual(alpha_radar.merge_candidate_urls(scout,["https://www.sec.gov/4"],limit=3),scout)
+
+    def test_merge_demotes_repeated_recent_failed_primary_without_excluding_it(self):
+        now=__import__('datetime').datetime(2026,9,29,12,tzinfo=__import__('datetime').timezone.utc)
+        primary="https://www.sec.gov/Archives/edgar/data/1/a.htm"
+        independent="https://www.reuters.com/story"
+        wire="https://www.businesswire.com/story"
+        rows=[{"timestamp":stamp,"stage":"source_fetch","domain":"www.sec.gov","reason":"source_fetch_failed"}
+              for stamp in ("2026-09-29T10:30:00Z","2026-09-29T11:30:00Z")]
+        scout=["https://issuer.example/release"]
+        self.assertEqual(alpha_radar.merge_candidate_urls(scout,[primary,wire,independent],limit=3,diagnostics=rows,now=now),
+                         scout+[independent,wire])
+        self.assertEqual(alpha_radar.merge_candidate_urls(scout,[primary,independent],limit=3,diagnostics=rows,now=now),
+                         scout+[independent,primary])
+
+    def test_merge_one_failed_batch_remains_neutral_and_fetched_restores_rank(self):
+        now=__import__('datetime').datetime(2026,9,29,12,tzinfo=__import__('datetime').timezone.utc)
+        primary="https://www.sec.gov/a";independent="https://www.reuters.com/a"
+        failure={"timestamp":"2026-09-29T11:00:00Z","stage":"source_fetch","domain":"sec.gov","reason":"source_fetch_failed"}
+        scout=["https://issuer.example/a"]
+        self.assertEqual(alpha_radar.merge_candidate_urls(scout,[independent,primary],diagnostics=[failure,failure],now=now),
+                         scout+[primary,independent])
+        earlier={**failure,"timestamp":"2026-09-29T10:30:00Z"}
+        fetched={**failure,"timestamp":"2026-09-29T11:40:00Z","reason":"fetched"}
+        self.assertEqual(alpha_radar.merge_candidate_urls(scout,[independent,primary],diagnostics=[earlier,failure,fetched],now=now),
+                         scout+[primary,independent])
+
+    def test_live_research_reads_health_once_for_initial_focused_selection(self):
+        now=__import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+        rows=[{"timestamp":(now-__import__('datetime').timedelta(minutes=offset)).isoformat(),
+               "stage":"source_fetch","domain":"sec.gov","reason":"source_fetch_failed"}
+              for offset in (30,60)]
+        scout="https://issuer.example/a";primary="https://www.sec.gov/a"
+        independent="https://www.reuters.com/a";wire="https://www.businesswire.com/a"
+        payload=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
+            {"symbol":"AAA","catalyst":"event","event_date":"2026-09-29","urls":[scout]},
+            {"symbol":"BBB","catalyst":"event","event_date":"2026-09-29","urls":["https://other.example/b"]},
+        ]}),"")
+        with patch.object(alpha_radar.subprocess,"run",return_value=payload), patch.object(
+            alpha_radar,"focused_retrieval",return_value={"AAA":[primary,independent,wire]}
+        ), patch.object(alpha_radar,"read_jsonl",return_value=rows) as history, patch.object(
+            alpha_radar,"record_scout_diagnostic"
+        ), patch.object(alpha_radar,"record_research_diagnostics"), patch.object(
+            alpha_radar,"gather_evidence",return_value=[]
+        ) as gathered, patch.object(alpha_radar,"post_fetch_rescue_candidate",return_value=[]):
+            with self.assertRaises(alpha_radar.ResearchFailure):
+                alpha_radar.live_research({"focused_retrieval_enabled":True})
+        history.assert_called_once()
+        self.assertEqual(gathered.call_args.args[0][:3],[scout,independent,wire])
 
     def test_evidence_freshness_uses_bundle_average_not_freshest_page(self):
         now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)

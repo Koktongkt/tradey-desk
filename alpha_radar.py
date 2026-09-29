@@ -143,6 +143,8 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         super().__init__();self.resolver=resolver
     def redirect_request(self,req,fp,code,msg,headers,newurl):
         if not is_safe_public_url(newurl,resolver=self.resolver):raise UnsafeURLTarget("unsafe_redirect_target")
+        if req is None or publisher_domain(req.full_url)!=publisher_domain(newurl):
+            raise UnsafeURLTarget("cross_publisher_redirect")
         return super().redirect_request(req,fp,code,msg,headers,newurl)
 
 
@@ -456,15 +458,55 @@ def parse_focused_retrieval(text:str,allowed_symbols:set[str],max_urls:int=15)->
         if symbol not in allowed_symbols or not isinstance(urls,list):continue
         valid=[u for u in urls if isinstance(u,str) and not any(ch.isspace() for ch in u)]
         prior=out.get(symbol,[])
-        kept=extract_candidate_urls("\n".join(prior+valid),limit=3)
+        per_symbol_cap=min(5,max(1,max_urls//max(1,len(allowed_symbols))))
+        kept=extract_candidate_urls("\n".join(prior+valid),limit=min(per_symbol_cap,remaining+len(prior)))
         added=max(0,len(kept)-len(prior))
         if kept:out[symbol]=kept;remaining-=added
     return out
 
 
-def merge_candidate_urls(scout_urls:list[str],focused_urls:list[str],limit:int=3)->list[str]:
-    """Preserve discovered evidence while adding focused lane coverage."""
-    return extract_candidate_urls("\n".join(list(scout_urls)+list(focused_urls)),limit=limit)
+def recently_unreachable_domains(diagnostics:list[dict[str,Any]],now:dt.datetime)->set[str]:
+    """Demote only repeated recent fetch failures with no recent successful fetch."""
+    failures:dict[str,set[dt.datetime]]={};fetched:set[str]=set()
+    for row in diagnostics:
+        if not isinstance(row,dict) or row.get("stage")!="source_fetch":continue
+        reason=row.get("reason")
+        if reason not in RETRIEVAL_DIAGNOSTIC_REASONS and reason!="fetched":continue
+        try:
+            timestamp=dt.datetime.fromisoformat(str(row.get("timestamp") or "").replace("Z","+00:00"))
+            age=now-timestamp
+            if timestamp.tzinfo is None or not dt.timedelta(0)<=age<=dt.timedelta(hours=2):continue
+        except (ValueError,TypeError):continue
+        domain=str(row.get("domain") or "").lower()
+        if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain) or domain=="unknown":continue
+        publisher=publisher_domain("https://"+domain)
+        if reason=="fetched":fetched.add(publisher)
+        else:failures.setdefault(publisher,set()).add(timestamp)
+    return {domain for domain,batches in failures.items() if len(batches)>=2 and domain not in fetched}
+
+
+def merge_candidate_urls(
+    scout_urls:list[str],focused_urls:list[str],limit:int=3,
+    diagnostics:list[dict[str,Any]]|None=None,now:dt.datetime|None=None,
+    unhealthy_domains:set[str]|None=None,
+)->list[str]:
+    """Preserve scout evidence; rank distinct focused publishers by health then provenance."""
+    scout=extract_candidate_urls("\n".join(scout_urls),limit=limit)
+    if len(scout)>=limit:return scout
+    focused=extract_candidate_urls("\n".join(focused_urls),limit=max(len(focused_urls),limit))
+    seen={publisher_domain(url) for url in scout}
+    unhealthy=unhealthy_domains if unhealthy_domains is not None else recently_unreachable_domains(
+        diagnostics or [],now or dt.datetime.now(dt.timezone.utc),
+    )
+    ranked=sorted(enumerate(focused),key=lambda item:(
+        publisher_domain(item[1]) in unhealthy,-source_profile(item[1])["rank"],item[0],
+    ))
+    for _,url in ranked:
+        domain=publisher_domain(url)
+        if domain in seen:continue
+        scout.append(url);seen.add(domain)
+        if len(scout)>=limit:break
+    return scout
 
 
 def focused_retrieval(candidates:list[dict[str,Any]],deadline:float|None=None)->dict[str,list[str]]:
@@ -612,6 +654,9 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     """Fetch one evidence page, truncating to a bounded character budget."""
     req=urllib.request.Request(url,headers={"User-Agent":"TradeyDesk/1.0"})
     with safe_urlopen(req,timeout=timeout_seconds) as r:
+        final_url=r.geturl()
+        if publisher_domain(final_url)!=publisher_domain(url) or (final_url!=url and not is_safe_public_url(final_url)):
+            raise UnsafeURLTarget("cross_publisher_redirect")
         body=r.read(2_000_000).decode("utf-8",errors="replace")
     title=""
     m=re.search(r"<title[^>]*>(.*?)</title>",body,re.IGNORECASE|re.DOTALL)
@@ -696,6 +741,7 @@ def gather_evidence(
     strict_gateway_provider:bool=False,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
+    urls=list(dict.fromkeys(urls))  # one in-flight fetch and one result per exact URL
     budget=(per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10 if collection_budget_seconds is None else max(0,collection_budget_seconds)
     deadline=collection_deadline if collection_deadline is not None else monotonic()+budget
     results:list[dict[str,Any]]=[{} for _ in urls]
@@ -731,6 +777,10 @@ def gather_evidence(
                 remaining=deadline-monotonic()
                 if remaining<=0:raise TimeoutError("collection deadline exhausted")
                 page=fetch_source(u,min(per_source_timeout,remaining))
+                if not isinstance(page,dict) or page.get("url")!=u:
+                    with lock:
+                        if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
+                    return
                 with lock:
                     if not collected[0]:results[i]=page
                 return
@@ -746,7 +796,7 @@ def gather_evidence(
                 connection_error=isinstance(error,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError)) or isinstance(reason_error,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError))
                 transient=timed_out or connection_error or http_code==429 or (isinstance(http_code,int) and 500<=http_code<=599)
                 businesswire=host=="businesswire.com" or host.endswith(".businesswire.com")
-                if transient and attempt==0 and not (businesswire and http_code in {401,403}):
+                if transient and not timed_out and attempt==0 and not (businesswire and http_code in {401,403}):
                     continue
                 remaining=deadline-monotonic()
                 try:
@@ -767,6 +817,10 @@ def gather_evidence(
                         fatal_failures[i]=fatal
                     return
                 if page is not None:
+                    if not isinstance(page,dict) or page.get("url")!=u:
+                        with lock:
+                            if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
+                        return
                     with lock:
                         if not collected[0]:results[i]=page
                     return
@@ -1264,9 +1318,12 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         raise ResearchFailure("research_scout_schema_rejected")
     if cfg.get("focused_retrieval_enabled",False):
         focused=focused_retrieval(scout_candidates,deadline=overall_deadline)
+        try:source_history=read_jsonl(ROOT/"private"/"research_diagnostics.jsonl")
+        except (OSError,ValueError):source_history=[]  # optional hint, never a qualification gate
+        unhealthy=recently_unreachable_domains(source_history,dt.datetime.now(dt.timezone.utc))
         for scout_candidate in scout_candidates:
             symbol=str(scout_candidate.get("symbol") or "").upper()
-            scout_candidate["urls"]=merge_candidate_urls(list(scout_candidate.get("urls",[])),list(focused.get(symbol,[])),limit=3)
+            scout_candidate["urls"]=merge_candidate_urls(list(scout_candidate.get("urls",[])),list(focused.get(symbol,[])),limit=3,unhealthy_domains=unhealthy)
     urls=[];seen_urls=set()
     for scout_candidate in scout_candidates:
         for url in scout_candidate.get("urls",[]):
@@ -1286,22 +1343,31 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     source_diagnostics.extend(initial_quality)
     rescued_candidates=0
-    with timed_research_stage("evidence_rescue"):
-        for scout_candidate in scout_candidates:
-            candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
-            accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
-            if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
-            if rescued_candidates>=3 or monotonic()>=evidence_deadline:break
-            rescued_candidates+=1
-            rescued_pages=post_fetch_rescue_candidate(
-                scout_candidate,accepted,diagnostics=source_diagnostics,deadline=evidence_deadline,
-            )
-            for page in rescued_pages:
-                url=page.get("url")
-                if url and (url not in accepted_urls if isinstance(url,str)
-                            else all(existing.get("url")!=url for existing in filtered_evidence)):
-                    if isinstance(url,str):accepted_urls.add(url)
-                    filtered_evidence.append(page)
+    initially_ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
+    def rescue_priority(candidate:dict[str,Any])->tuple[int,int,int]:
+        urls=set(str(url) for url in candidate.get("urls",[]))
+        accepted=[page for page in filtered_evidence if str(page.get("url") or "") in urls]
+        discovered={publisher_domain(url) for url in urls}
+        return (-len({publisher_domain(str(page.get("url") or "")) for page in accepted}),-len(discovered),scout_candidates.index(candidate))
+    def rescue_thin_candidates(deadline:float)->None:
+        nonlocal rescued_candidates
+        with timed_research_stage("evidence_rescue"):
+            for scout_candidate in sorted(scout_candidates,key=rescue_priority):
+                candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
+                accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
+                if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
+                if rescued_candidates>=3 or monotonic()>=deadline:break
+                rescued_candidates+=1
+                rescued_pages=post_fetch_rescue_candidate(
+                    scout_candidate,accepted,diagnostics=source_diagnostics,deadline=deadline,
+                )
+                for page in rescued_pages:
+                    url=page.get("url")
+                    if url and (url not in accepted_urls if isinstance(url,str)
+                                else all(existing.get("url")!=url for existing in filtered_evidence)):
+                        if isinstance(url,str):accepted_urls.add(url)
+                        filtered_evidence.append(page)
+    if not initially_ranked:rescue_thin_candidates(evidence_deadline)
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
     source_diagnostics.extend({
@@ -1310,7 +1376,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     } for page in filtered_evidence)
     try:record_research_diagnostics(source_diagnostics)
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
-    ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
+    ranked=initially_ranked if initially_ranked else ranked_candidate_evidence(scout_candidates,filtered_evidence)
     if not ranked:
         blocker_urls=list(scout_candidates[0].get("urls",[])) if scout_candidates else []
         raise ResearchFailure(evidence_failure_code(
@@ -1322,20 +1388,34 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"deadline":None}
     last_rejection=None
     attempted_symbols=set()
-    for selected,evidence in ranked:
-        symbol=str(selected.get("symbol") or "").upper()
-        if symbol in attempted_symbols:continue
-        if len(attempted_symbols)>=3:break
-        attempted_symbols.add(symbol)
-        try:
-            if enrichment_budget["deadline"] is not None and monotonic()>=enrichment_budget["deadline"]:
-                raise ResearchFailure("research_enrichment_timeout")
-            candidate=synthesize_candidate(cfg,selected,evidence,synthesis_deadline,enrichment_budget=enrichment_budget)
-            if candidate.get("status")=="none":
-                last_rejection=None
-                continue
-            return intake(candidate)
-        except CandidateRejection as error:last_rejection=error
+    # Reserve a viable synthesis window after deferred rescue within the original deadline.
+    deferred_synthesis_reserve=30
+    deferred_rescue_deadline=min(evidence_deadline,synthesis_deadline-deferred_synthesis_reserve)
+    for batch in range(2):
+        for selected,evidence in ranked:
+            symbol=str(selected.get("symbol") or "").upper()
+            if symbol in attempted_symbols:continue
+            if len(attempted_symbols)>=3 or (batch and monotonic()>=synthesis_deadline):break
+            attempted_symbols.add(symbol)
+            try:
+                if enrichment_budget["deadline"] is not None and monotonic()>=enrichment_budget["deadline"]:
+                    raise ResearchFailure("research_enrichment_timeout")
+                candidate=synthesize_candidate(cfg,selected,evidence,synthesis_deadline,enrichment_budget=enrichment_budget)
+                if candidate.get("status")=="none":
+                    last_rejection=None
+                    continue
+                return intake(candidate)
+            except CandidateRejection as error:last_rejection=error
+        if batch or not initially_ranked or len(attempted_symbols)>=3 or monotonic()>=deferred_rescue_deadline:break
+        diagnostics_before=len(source_diagnostics)
+        urls_before=set(accepted_urls)
+        rescue_thin_candidates(deferred_rescue_deadline)
+        newly_fetched=[{
+            "domain":urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower(),"reason":"fetched",
+        } for page in filtered_evidence if page.get("url") not in urls_before]
+        try:record_research_diagnostics(source_diagnostics[diagnostics_before:]+newly_fetched)
+        except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+        ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
     if last_rejection is not None:raise last_rejection
     return candidate
 

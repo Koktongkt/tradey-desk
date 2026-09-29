@@ -212,7 +212,7 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
         self.assertIn("scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)", source)
 
-    def test_gather_evidence_retries_timeouts_once(self):
+    def test_gather_evidence_timeout_goes_to_gateway_without_second_direct_attempt(self):
         attempts = {"n": 0}
 
         def fetch(url, _timeout):
@@ -221,11 +221,58 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
                 raise TimeoutError("read timed out")
             return {"url": url, "title": "Recovered", "text": "usable evidence", "published_at": "2026-09-08T15:00:00Z"}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+            alpha_radar,"fetch_source_via_gateway",return_value={"url":"https://flaky.example/a","title":"Gateway","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
+        ) as gateway:
             pages = alpha_radar.gather_evidence(["https://flaky.example/a"])
 
-        self.assertEqual(attempts["n"], 2)
-        self.assertEqual([page["title"] for page in pages], ["Recovered"])
+        self.assertEqual(attempts["n"], 1)
+        gateway.assert_called_once()
+        self.assertEqual([page["title"] for page in pages], ["Gateway"])
+
+    def test_gather_evidence_identical_urls_fetch_once_and_bind_result(self):
+        url="https://shared.example/article"
+        page={"url":url,"title":"Shared","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
+        with patch.object(alpha_radar,"fetch_source",return_value=page) as direct:
+            pages=alpha_radar.gather_evidence([url,url,url])
+        direct.assert_called_once()
+        self.assertEqual(pages,[page])
+
+    def test_duplicate_cache_hit_does_not_extend_ttl_or_fetch(self):
+        url="https://cached.example/one"
+        page={"url":url,"title":"Cached","text":"body","published_at":"2026-09-08"}
+        stamp=alpha_radar.dt.datetime.now(alpha_radar.dt.timezone.utc).isoformat().replace("+00:00","Z")
+        with tempfile.TemporaryDirectory() as td:
+            cache=Path(td)/"cache.json"
+            cache.write_text(json.dumps({url:{"page":page,"checked_at":stamp}}))
+            with patch.object(alpha_radar,"fetch_source") as direct:
+                pages=alpha_radar.gather_evidence([url,url],cache_path=cache)
+            self.assertEqual(json.loads(cache.read_text())[url]["checked_at"],stamp)
+        direct.assert_not_called()
+        self.assertEqual(pages,[page])
+
+    def test_direct_page_for_different_url_cannot_enter_cache_or_evidence(self):
+        url="https://requested.example/a"
+        wrong={"url":"https://other.example/a","title":"Other","text":"body","published_at":"2026-09-08"}
+        with tempfile.TemporaryDirectory() as td:
+            cache=Path(td)/"cache.json"
+            with patch.object(alpha_radar,"fetch_source",return_value=wrong), patch.object(alpha_radar,"fetch_source_via_gateway",return_value=None):
+                pages=alpha_radar.gather_evidence([url,url],cache_path=cache)
+            self.assertEqual(pages,[])
+            self.assertNotIn(wrong["url"],json.loads(cache.read_text()))
+
+    def test_clear_timeout_preserves_remaining_deadline_for_gateway(self):
+        url="https://timed.example/a"
+        deadline=alpha_radar.monotonic()+0.3
+        seen=[]
+        def gateway(_url,timeout_seconds=None):
+            seen.append(timeout_seconds)
+            return {"url":url,"text":"body"}
+        with patch.object(alpha_radar,"fetch_source",side_effect=TimeoutError("timed out")) as direct, patch.object(alpha_radar,"fetch_source_via_gateway",side_effect=gateway):
+            pages=alpha_radar.gather_evidence([url],collection_deadline=deadline)
+        self.assertEqual(pages[0]["url"],url)
+        direct.assert_called_once()
+        self.assertTrue(0<seen[0]<=min(alpha_radar.GATEWAY_FALLBACK_TIMEOUT_SECONDS,0.3))
 
     def test_gather_evidence_records_single_timeout_after_retry_exhausted(self):
         diagnostics = []
@@ -339,7 +386,7 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         ):
             pages = alpha_radar.gather_evidence(["https://walled.example/a"])
 
-        self.assertEqual(calls, ["direct", "direct", "fallback"])
+        self.assertEqual(calls, ["direct", "fallback"])
         self.assertEqual(len(pages), 1)
         self.assertEqual(pages[0]["url"], "https://walled.example/a")
         self.assertIn("37 percent", pages[0]["text"])
