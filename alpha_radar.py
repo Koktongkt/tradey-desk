@@ -1619,7 +1619,7 @@ def main_with_args(a:argparse.Namespace)->int:
             print("SYSTEM_FAILURE research_persistence_failure"); return 3
         if a.dry_run_fixture:
             print("SYSTEM_FAILURE alpha_radar"); return 3
-        reused=fresh_verified_candidate(ROOT/"candidates.jsonl")
+        reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
         if reused is not None:
             print("DECISION reused_fresh_candidate "+str(reused.get("symbol","")).upper()); return 0
         if isinstance(e,ResearchFailure):

@@ -122,20 +122,23 @@ class BridgeRetryTests(unittest.TestCase):
 
 
 class RadarReuseFirstTests(unittest.TestCase):
-    def test_fallback_may_reuse_reviewed_candidate_when_research_fails(self):
+    def test_research_failure_does_not_reuse_reviewed_candidate(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
-            candidate = {"symbol": "DELL", "sources_verified_at": "2026-09-05T14:29:00Z"}
-            candidates = root / "candidates.jsonl"
-            candidates.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+            now = dt.datetime.now(dt.timezone.utc)
+            candidate = {"symbol": "METC", "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z")}
+            (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n", encoding="utf-8")
             (root / "autonomy_config.json").write_text("{}", encoding="utf-8")
             reviews = root / "private" / "reviews.jsonl"
             reviews.parent.mkdir()
-            reviews.write_text('{"timestamp":"2026-09-05T14:30:00Z"}\n', encoding="utf-8")
-            with patch.object(alpha_radar, "ROOT", root), patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
-                self.assertIsNone(alpha_radar.reusable_fresh_candidate(candidates, reviews, now=now))
-                self.assertEqual(alpha_radar.fresh_verified_candidate(candidates, now=now), candidate)
+            reviews.write_text(json.dumps({"timestamp": now.isoformat().replace("+00:00", "Z"), "reviews": [{"decision": "HOLD"}]}) + "\n", encoding="utf-8")
+            import contextlib
+            import io
+            output = io.StringIO()
+            with patch.object(alpha_radar, "ROOT", root), patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True), patch.object(alpha_radar, "live_research", side_effect=alpha_radar.ResearchFailure("research_source_retrieval_failed")), contextlib.redirect_stdout(output):
+                code = alpha_radar.main_with_args(alpha_radar.argparse.Namespace(dry_run_fixture=False))
+            self.assertEqual(code, 3)
+            self.assertEqual(output.getvalue().strip(), "SYSTEM_FAILURE research_source_retrieval_failed")
 
     def test_shared_fresh_selection_keeps_review_gate_optional(self):
         now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
