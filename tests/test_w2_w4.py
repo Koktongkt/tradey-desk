@@ -25,7 +25,8 @@ import autotrader
 def _proposal():
     immutable, cfg, _ = ReviewBundleStripTests()._build(_snapshot_with_bars(), _candidate())
     proposal, errors = autotrader.build_canonical_proposal(_candidate(), immutable["broker_snapshot"], cfg, 0.0)
-    assert errors == [] and proposal is not None
+    if errors or proposal is None:
+        raise AssertionError(f"canonical proposal from full snapshot failed: {errors}")
     return proposal
 
 
@@ -133,15 +134,6 @@ class ReviewBundleStripTests(unittest.TestCase):
             self.assertNotIn(field, reviewer_candidate)
         self.assertEqual(set(reviewer_candidate["sources"][0]), {"url", "title"})
         self.assertEqual(bundle["proposal"]["limit_price"], _snapshot_with_bars()["quote"]["ask"])
-
-    def test_build_canonical_proposal_still_needs_full_snapshot(self):
-        # The full snapshot (with bars) must still produce a proposal: strip
-        # applies only to the reviewer bundle, not the deterministic path.
-        immutable, cfg, _ = self._build(_snapshot_with_bars(), _candidate())
-        proposal, errors = autotrader.build_canonical_proposal(
-            _candidate(), immutable["broker_snapshot"], cfg, 0.0)
-        self.assertEqual(errors, [])
-        self.assertIsNotNone(proposal)
 
     def test_stripped_bundle_is_smaller_than_full(self):
         full = autotrader.authoritative_bundle(_candidate(), _snapshot_with_bars(), "2026-09-05T14:00:00Z")

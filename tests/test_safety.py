@@ -61,17 +61,18 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertTrue(result["approved"])
         self.assertEqual(result["order"]["quantity"], 0.5)
 
-    def test_non_finite_fractional_quantity_is_rejected(self):
-        invalid = dict(self.decision, quantity=float("inf"))
-        result = autotrader.consensus(invalid, invalid, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "malformed_or_low_confidence")
-
-    def test_fractional_quantity_over_alpaca_precision_limit_is_rejected(self):
-        invalid = dict(self.decision, quantity=0.1234567891)
-        result = autotrader.consensus(invalid, invalid, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "malformed_or_low_confidence")
+    def test_malformed_consensus_numbers_fail_closed(self):
+        for field, value, reason in (
+            ("quantity", float("inf"), "malformed_or_low_confidence"),
+            ("quantity", 0.1234567891, "malformed_or_low_confidence"),
+            ("limit_price", float("nan"), "malformed_or_low_confidence"),
+            ("stop", float("nan"), "level_disagreement"),
+        ):
+            with self.subTest(field=field, value=value):
+                invalid = dict(self.decision, **{field: value})
+                result = autotrader.consensus(invalid, invalid, self.cfg)
+                self.assertFalse(result["approved"])
+                self.assertEqual(result["reason"], reason)
 
     def test_oversized_integer_quantity_fails_closed_without_crashing(self):
         invalid = dict(self.decision, quantity=10**1000)
@@ -79,18 +80,6 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertTrue(result["approved"])
         errors = autotrader.validate_order(invalid, self.snapshot, self.cfg, daily_orders=0)
         self.assertIn("position_size_exceeded", errors)
-
-    def test_non_finite_trade_price_is_rejected(self):
-        invalid = dict(self.decision, limit_price=float("nan"))
-        result = autotrader.consensus(invalid, invalid, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "malformed_or_low_confidence")
-
-    def test_non_finite_stop_is_rejected(self):
-        invalid = dict(self.decision, stop=float("nan"))
-        result = autotrader.consensus(invalid, invalid, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "level_disagreement")
 
     def test_low_confidence_dual_hold_is_classified_as_consensus_hold(self):
         hold = dict(self.decision, action="HOLD", confidence=0.1)

@@ -29,17 +29,11 @@ def _fail_process(stderr="boom"):
 
 
 class BridgeCommandTests(unittest.TestCase):
-    def test_bridge_command_pins_fastmcp_below_4(self):
+    def test_bridge_command_pins_runtime_and_targets_canonical_script(self):
         cmd = autotrader.bridge_command("snapshot")
         index = cmd.index("--with")
         self.assertEqual(cmd[index + 1], "fastmcp<4")
-
-    def test_bridge_command_uses_absolute_uv_path(self):
-        cmd = autotrader.bridge_command("snapshot")
         self.assertTrue(cmd[0].startswith("/"), cmd[0])
-
-    def test_bridge_command_targets_repo_bridge_script(self):
-        cmd = autotrader.bridge_command("snapshot")
         self.assertIn("broker_mcp_bridge.py", cmd[-2])
         self.assertEqual(cmd[-1], "snapshot")
 
@@ -104,21 +98,16 @@ class BridgeRetryTests(unittest.TestCase):
         self.assertEqual(result, {"cash": 1})
         self.assertEqual(run.call_count, 2)
 
-    def test_place_operation_is_never_retried(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch(
-            "autotrader.subprocess.run", side_effect=[_fail_process("transient"), _ok_process("{}")]
-        ) as run:
-            with self.assertRaises(RuntimeError):
-                autotrader._broker_bridge("place", {"order": {}})
-        self.assertEqual(run.call_count, 1)
-
-    def test_protect_operation_is_never_retried(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch(
-            "autotrader.subprocess.run", side_effect=[_fail_process("transient"), _ok_process("{}")]
-        ) as run:
-            with self.assertRaises(RuntimeError):
-                autotrader._broker_bridge("protect", {"symbol": "ZS"})
-        self.assertEqual(run.call_count, 1)
+    def test_mutating_operations_are_never_retried(self):
+        for operation, payload in (("place", {"order": {}}), ("protect", {"symbol": "ZS"})):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as td, patch.object(
+                autotrader, "PRIVATE_DIR", Path(td)
+            ), patch(
+                "autotrader.subprocess.run", side_effect=[_fail_process("transient"), _ok_process("{}")]
+            ) as run:
+                with self.assertRaises(RuntimeError):
+                    autotrader._broker_bridge(operation, payload)
+                self.assertEqual(run.call_count, 1)
 
 
 class RadarReuseFirstTests(unittest.TestCase):

@@ -10,22 +10,19 @@ from zoneinfo import ZoneInfo
 import run_cycle
 
 class CycleTests(unittest.TestCase):
-    def test_market_window_accepts_weekday_open(self):
-        now=dt.datetime(2026,8,31,10,0,tzinfo=ZoneInfo("America/New_York"))
-        self.assertTrue(run_cycle.in_window("market",now))
-    def test_market_window_rejects_weekend(self):
-        now=dt.datetime(2026,8,29,10,0,tzinfo=ZoneInfo("America/New_York"))
-        self.assertFalse(run_cycle.in_window("market",now))
-    def test_postclose_is_narrow(self):
-        ok=dt.datetime(2026,8,31,16,30,tzinfo=ZoneInfo("America/New_York"))
-        late=dt.datetime(2026,8,31,18,30,tzinfo=ZoneInfo("America/New_York"))
-        self.assertTrue(run_cycle.in_window("postclose",ok)); self.assertFalse(run_cycle.in_window("postclose",late))
-
-    def test_dashboard_window_supports_intraday_live_refreshes(self):
-        market=dt.datetime(2026,8,31,10,0,tzinfo=ZoneInfo("America/New_York"))
-        after_close=dt.datetime(2026,8,31,17,30,tzinfo=ZoneInfo("America/New_York"))
-        self.assertTrue(run_cycle.in_window("dashboard",market))
-        self.assertTrue(run_cycle.in_window("dashboard",after_close))
+    def test_market_postclose_and_dashboard_windows(self):
+        eastern = ZoneInfo("America/New_York")
+        cases = (
+            ("market weekday", "market", dt.datetime(2026, 8, 31, 10, 0, tzinfo=eastern), True),
+            ("market weekend", "market", dt.datetime(2026, 8, 29, 10, 0, tzinfo=eastern), False),
+            ("postclose", "postclose", dt.datetime(2026, 8, 31, 16, 30, tzinfo=eastern), True),
+            ("postclose late", "postclose", dt.datetime(2026, 8, 31, 18, 30, tzinfo=eastern), False),
+            ("dashboard intraday", "dashboard", dt.datetime(2026, 8, 31, 10, 0, tzinfo=eastern), True),
+            ("dashboard after close", "dashboard", dt.datetime(2026, 8, 31, 17, 30, tzinfo=eastern), True),
+        )
+        for label, window, now, expected in cases:
+            with self.subTest(case=label):
+                self.assertIs(run_cycle.in_window(window, now), expected)
 
     def test_execute_retries_safe_task_and_uses_explicit_timeout(self):
         failed=subprocess.CompletedProcess([],3,"","temporary")

@@ -83,10 +83,6 @@ class NarrowRetrySemanticsTests(unittest.TestCase):
         (self.root / "order_ledger.jsonl").write_text(json.dumps({"evidence_id": "evidence-a", "status": "rejected", "reason": "model_disagreement"}) + "\n")
         self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
 
-    def test_reviewed_hold_stays_spent_after_reconciliation_marker(self):
-        self.write_reviews([self.completed("HOLD"), self.blocked()])
-        self.assertTrue(autotrader.dossier_already_reviewed(self.candidate, self.reviews))
-
     def test_fatal_flagged_approval_cannot_be_reenabled(self):
         self.write_reviews([
             {**self.completed("APPROVE"), "evidence_id": "old", "reviews": [

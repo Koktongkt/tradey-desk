@@ -9,38 +9,24 @@ import earnings_calendar
 
 
 class EarningsCalendarTests(unittest.TestCase):
-    def test_extract_release_date_requires_explicit_results_action(self):
-        text = (
-            "Date of Report: September 9, 2026. Quarter ended June 30, 2026. "
-            "On September 8, 2026, the Company issued a press release announcing "
-            "its financial results for the quarter."
+    def test_extract_release_date_distinguishes_results_from_report_and_preliminary_dates(self):
+        cases = (
+            ("report date", "Date of Report: September 9, 2026. Quarter ended June 30, 2026. "
+             "On September 8, 2026, the Company issued a press release announcing "
+             "its financial results for the quarter.", "2026-09-08"),
+            ("company abbreviation", "Date of Report: August 1, 2026. "
+             "On July 31, 2026, Example Inc. issued a press release announcing "
+             "financial results for its fiscal third quarter.", "2026-07-31"),
+            ("dateline", "BURLINGTON, N.C., July 30, 2026 - Labcorp Holdings Inc. (NYSE: LH), "
+             "a global leader of innovative and comprehensive laboratory services, "
+             "today announced results for the second quarter ended June 30, 2026 "
+             "and updated its full-year financial guidance.", "2026-07-30"),
+            ("preliminary", "On August 31, 2026, the Company issued a press release announcing "
+             "certain preliminary financial results for its second quarter.", None),
         )
-
-        self.assertEqual(earnings_calendar.extract_release_date(text), "2026-09-08")
-
-    def test_extract_release_date_allows_company_abbreviation_after_date(self):
-        text=(
-            "Date of Report: August 1, 2026. "
-            "On July 31, 2026, Example Inc. issued a press release announcing "
-            "financial results for its fiscal third quarter."
-        )
-        self.assertEqual(earnings_calendar.extract_release_date(text),"2026-07-31")
-
-    def test_extract_release_date_accepts_dateline_before_release_language(self):
-        text=(
-            "BURLINGTON, N.C., July 30, 2026 - Labcorp Holdings Inc. (NYSE: LH), "
-            "a global leader of innovative and comprehensive laboratory services, "
-            "today announced results for the second quarter ended June 30, 2026 "
-            "and updated its full-year financial guidance."
-        )
-        self.assertEqual(earnings_calendar.extract_release_date(text),"2026-07-30")
-
-    def test_extract_release_date_rejects_preliminary_duplicate_event(self):
-        text=(
-            "On August 31, 2026, the Company issued a press release announcing "
-            "certain preliminary financial results for its second quarter."
-        )
-        self.assertIsNone(earnings_calendar.extract_release_date(text))
+        for label, text, expected in cases:
+            with self.subTest(case=label):
+                self.assertEqual(earnings_calendar.extract_release_date(text), expected)
 
     def test_sec_history_resolves_ticker_and_returns_explicit_releases(self):
         json_payloads = {
