@@ -493,21 +493,32 @@ def merge_candidate_urls(
 )->list[str]:
     """Preserve scout evidence; rank distinct focused publishers by health then provenance."""
     scout=extract_candidate_urls("\n".join(scout_urls),limit=limit)
-    if len(scout)>=limit:return scout
     focused=extract_candidate_urls("\n".join(focused_urls),limit=max(len(focused_urls),limit))
-    seen={publisher_domain(url) for url in scout}
     unhealthy=unhealthy_domains if unhealthy_domains is not None else recently_unreachable_domains(
         diagnostics or [],now or dt.datetime.now(dt.timezone.utc),
     )
+    seen={publisher_domain(url) for url in scout}
+    focused=[url for url in focused if publisher_domain(url) not in seen]
     ranked=sorted(enumerate(focused),key=lambda item:(
         publisher_domain(item[1]) in unhealthy,-source_profile(item[1])["rank"],item[0],
     ))
+    healthy_scout=[url for url in scout if publisher_domain(url) not in unhealthy]
+    unhealthy_scout=[url for url in scout if publisher_domain(url) in unhealthy]
+    chosen=healthy_scout[:limit]
     for _,url in ranked:
-        domain=publisher_domain(url)
-        if domain in seen:continue
-        scout.append(url);seen.add(domain)
-        if len(scout)>=limit:break
-    return scout
+        if len(chosen)>=limit:break
+        chosen.append(url)
+    for url in unhealthy_scout:
+        if len(chosen)>=limit:break
+        chosen.append(url)
+    return chosen
+
+
+def candidate_alternate_urls(scout:list[str],focused:list[str],selected:list[str],*,unhealthy_domains:set[str])->list[str]:
+    """Retain displaced scout evidence before optional focused rescue URLs."""
+    displaced=[url for url in scout if url not in selected]
+    expanded=merge_candidate_urls(scout,focused,limit=MAX_CANDIDATE_URLS_AFTER_RESCUE,unhealthy_domains=unhealthy_domains)
+    return list(dict.fromkeys(displaced+[url for url in expanded if url not in selected]))[:2]
 
 
 def focused_retrieval(candidates:list[dict[str,Any]],deadline:float|None=None)->dict[str,list[str]]:
@@ -1094,15 +1105,60 @@ EVIDENCE:
 
 
 def is_sec_archive_filing_url(url:str)->bool:
-    try:parsed=urllib.parse.urlparse(str(url))
+    try:
+        parsed=urllib.parse.urlparse(str(url))
+        port=parsed.port
     except ValueError:return False
     return (
         parsed.scheme=="https" and parsed.hostname=="www.sec.gov"
         and parsed.username is None and parsed.password is None
-        and parsed.port in {None,443}
+        and port in {None,443}
         and re.fullmatch(r"/Archives/edgar/data/\d+/\d+/[^/?#]+",parsed.path) is not None
         and not parsed.query and not parsed.fragment
     )
+
+
+def valid_publication_timestamp(raw:Any)->bool:
+    if not isinstance(raw,str):return False
+    try:return dt.datetime.fromisoformat(raw.replace("Z","+00:00")).tzinfo is not None
+    except ValueError:return False
+
+
+def attach_sec_filing_dates(pages:list[dict[str,Any]],filing_dates:dict[str,str|None])->list[dict[str,Any]]:
+    """Use exact SEC submission metadata only for its matching archive document."""
+    enriched=[]
+    for page in pages:
+        copy=dict(page)
+        url=str(copy.get("url") or "")
+        date=filing_dates.get(url)
+        if not valid_publication_timestamp(copy.get("published_at")) and date and is_sec_archive_filing_url(url):
+            try:copy["published_at"]=dt.date.fromisoformat(date).isoformat()+"T00:00:00Z"
+            except ValueError:pass
+        enriched.append(copy)
+    return enriched
+
+
+def sec_filing_date_for_url(url:str,deadline:float|None=None,urlopen=urllib.request.urlopen)->str|None:
+    """Verify the archive document against official exact-CIK submission metadata."""
+    if not is_sec_archive_filing_url(url):return None
+    match=re.fullmatch(r"/Archives/edgar/data/(\d+)/(\d{18})/([A-Za-z0-9._-]+)",urllib.parse.urlparse(url).path)
+    if match is None:return None
+    cik,accession,directory=match.groups()
+    remaining=15 if deadline is None else deadline-monotonic()
+    if remaining<=0:return None
+    try:
+        req=urllib.request.Request(
+            f"{SEC_SUBMISSIONS_BASE}/CIK{int(cik):010d}.json",
+            headers={"User-Agent":SEC_USER_AGENT,"Accept":"application/json"},
+        )
+        with urlopen(req,timeout=min(15,remaining)) as response:
+            payload=json.loads(response.read(2_000_000).decode("utf-8"))
+        recent=payload["filings"]["recent"]
+        for i,record in enumerate(recent["accessionNumber"]):
+            if str(record).replace("-","")==accession and recent["primaryDocument"][i]==directory:
+                return dt.date.fromisoformat(recent["filingDate"][i]).isoformat()
+    except (OSError,ValueError,TypeError,KeyError,IndexError):pass
+    return None
 
 
 def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlopen,cache_path:Path|None=None,deadline:float|None=None)->str|None:
@@ -1254,11 +1310,19 @@ def post_fetch_rescue_candidate(
                     "url":url,"domain":urllib.parse.urlparse(url).netloc.lower(),
                     "reason":"source_url_mismatch",
                 })
-        filtered,quality=filter_evidence(bound)
+        filtered,quality=filter_evidence(attach_sec_filing_dates(
+            bound,{url:sec_filing_date_for_url(url,deadline=deadline)}
+            if is_sec_archive_filing_url(url) and any(not valid_publication_timestamp(p.get("published_at")) for p in bound) else {},
+        ))
         diagnostics.extend(quality)
         for page in filtered:
             domain=publisher_domain(str(page.get("url") or ""))
             if domain and domain not in domains():accepted.append(page)
+    if len(domains())>=2:return accepted
+    for alternate in candidate.get("_alternate_urls",[])[:3]:
+        if len(domains())>=2 or monotonic()>=deadline:break
+        if not isinstance(alternate,str) or publisher_domain(alternate) in domains():continue
+        try_url(alternate)
     if len(domains())>=2:return accepted
     if "primary" not in roles():
         try_url(sec_edgar_filing_url(
@@ -1297,6 +1361,16 @@ def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:b
     return c
 
 
+def prioritize_thin_candidates(candidates:list[dict[str,Any]],pages:list[dict[str,Any]])->list[dict[str,Any]]:
+    """Spend rescue time on bundles one accepted publisher away from completion."""
+    def priority(candidate:dict[str,Any])->tuple[int,int,int]:
+        urls=set(str(url) for url in candidate.get("urls",[]))
+        accepted={publisher_domain(str(page.get("url") or "")) for page in pages if isinstance(page.get("url"),str) and page.get("url") in urls}
+        discovered={publisher_domain(url) for url in urls}
+        return (-len(accepted),-len(discovered),candidates.index(candidate))
+    return sorted(candidates,key=priority)
+
+
 def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any]]|None=None)->dict[str,Any]:
     """One discovery run; stop at the first candidate passing shared intake.
 
@@ -1324,7 +1398,12 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         unhealthy=recently_unreachable_domains(source_history,dt.datetime.now(dt.timezone.utc))
         for scout_candidate in scout_candidates:
             symbol=str(scout_candidate.get("symbol") or "").upper()
-            scout_candidate["urls"]=merge_candidate_urls(list(scout_candidate.get("urls",[])),list(focused.get(symbol,[])),limit=3,unhealthy_domains=unhealthy)
+            initial_urls=list(scout_candidate.get("urls",[]))
+            selected=merge_candidate_urls(initial_urls,list(focused.get(symbol,[])),limit=3,unhealthy_domains=unhealthy)
+            scout_candidate["_alternate_urls"]=candidate_alternate_urls(
+                initial_urls,list(focused.get(symbol,[])),selected,unhealthy_domains=unhealthy,
+            )
+            scout_candidate["urls"]=selected
     urls=[];seen_urls=set()
     for scout_candidate in scout_candidates:
         for url in scout_candidate.get("urls",[]):
@@ -1340,20 +1419,21 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             collection_deadline=evidence_deadline,
         )
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
+    sec_dates={}
+    for page in fetched_evidence:
+        url=page.get("url")
+        if isinstance(url,str) and is_sec_archive_filing_url(url) and not valid_publication_timestamp(page.get("published_at")) and monotonic()<evidence_deadline:
+            sec_dates[url]=sec_filing_date_for_url(url,deadline=evidence_deadline)
+    fetched_evidence=attach_sec_filing_dates(fetched_evidence,sec_dates)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     source_diagnostics.extend(initial_quality)
     rescued_candidates=0
     initially_ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
-    def rescue_priority(candidate:dict[str,Any])->tuple[int,int,int]:
-        urls=set(str(url) for url in candidate.get("urls",[]))
-        accepted=[page for page in filtered_evidence if str(page.get("url") or "") in urls]
-        discovered={publisher_domain(url) for url in urls}
-        return (-len({publisher_domain(str(page.get("url") or "")) for page in accepted}),-len(discovered),scout_candidates.index(candidate))
     def rescue_thin_candidates(deadline:float)->None:
         nonlocal rescued_candidates
         with timed_research_stage("evidence_rescue"):
-            for scout_candidate in sorted(scout_candidates,key=rescue_priority):
+            for scout_candidate in prioritize_thin_candidates(scout_candidates,filtered_evidence):
                 candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
                 accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
                 if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue

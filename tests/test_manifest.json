@@ -32,7 +32,8 @@
       "test_w2_w4"
     ],
     "full_only": [
-      "test_alpha_radar"
+      "test_alpha_radar",
+      "test_retrieval_improvements"
     ]
   }
 }
