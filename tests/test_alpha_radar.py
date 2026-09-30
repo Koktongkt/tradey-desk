@@ -108,7 +108,7 @@ class AlphaRadarTests(unittest.TestCase):
         prompt=alpha_radar.discovery_prompt({"min_price_usd":1,"max_position_usd":500})
         self.assertIn("$1-$500",prompt)
         self.assertIn("at least one confirmed",prompt)
-        self.assertIn("web_search exactly twice in parallel",prompt)
+        self.assertIn("web_search exactly four times in parallel with limit 10 each",prompt)
         self.assertNotIn("web_extract",prompt)
         self.assertNotIn("at least two successfully extracted",prompt)
         self.assertIn("focused retrieval stage",prompt)
@@ -129,6 +129,15 @@ class AlphaRadarTests(unittest.TestCase):
         candidates,diag=alpha_radar.scout_parse_result(json.dumps(payload))
         self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB","CCC","DDD","EEE"])
         self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":6,"parsed_candidate_count":5,"valid_url_count":5})
+
+    def test_scout_duplicate_symbols_cannot_starve_other_candidates(self):
+        repeated=[json.loads(structured_scout("AAA",[f"https://source{i}.example/story"]))["candidates"][0] for i in range(5)]
+        other=json.loads(structured_scout("BBB",["https://different.example/story"]))["candidates"][0]
+        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":repeated+[other]}))
+        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB"])
+        self.assertEqual(candidates[0]["urls"],["https://source0.example/story"])
+        self.assertEqual(diag["raw_candidate_count"],6)
+        self.assertEqual(diag["valid_url_count"],2)
 
     def test_scout_parse_result_skips_malformed_ranked_entries_before_funneling(self):
         malformed=[
@@ -188,11 +197,19 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("no commentary", alpha_radar.SCOUT_PROMPT)
         self.assertNotIn("web_extract", alpha_radar.SCOUT_PROMPT)
         self.assertIn("landing, index, search, symbol, or homepage URLs", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("web_search exactly twice in parallel", alpha_radar.SCOUT_PROMPT)
+        self.assertIn("web_search exactly four times in parallel with limit 10 each", alpha_radar.SCOUT_PROMPT)
         self.assertIn("Use exactly one tool-using turn", alpha_radar.SCOUT_PROMPT)
         self.assertIn("focused retrieval stage", alpha_radar.SCOUT_PROMPT)
         self.assertIn("catalyst materiality", alpha_radar.SCOUT_PROMPT)
         self.assertIn("at least one confirmed article URL", alpha_radar.SCOUT_PROMPT)
+
+    def test_scout_searches_distinct_discovery_lanes_without_expanding_intake(self):
+        prompt=alpha_radar.SCOUT_PROMPT
+        for lane in ("broad US-equity catalysts", "SEC and issuer disclosures",
+                     "independent financial reporting", "undercovered sectors or smaller liquid companies"):
+            self.assertIn(lane,prompt)
+        self.assertIn("one to five candidates",prompt)
+        self.assertIn("at most five URLs total",prompt)
 
     def test_extract_candidate_urls_dedupes_per_domain_and_caps_six(self):
         text = "https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y"

@@ -555,7 +555,7 @@ def discovery_prompt(cfg:dict[str,Any])->str:
     floor=f"{float(cfg.get('min_price_usd',1)):g}";cap=f"{float(cfg.get('max_position_usd',500)):g}"
     return f"""You are the broad discovery stage of a stock research pipeline. Using web search ONLY, identify up to five provisionally ranked US-listed cash-equity company + catalyst pairs worth deeper research today. Do not extract pages, perform focused corroboration, synthesize a trade, or require a two-source bundle; the focused retrieval stage does that next. A catalyst must be specific and dated: state what changed, when, the prior expectation/state, and why it could affect earnings, cash flow, valuation, competitive position, or market expectations. Prefer liquid common stocks whose approximate whole-share price is within the deterministic ${floor}-${cap} intake range. Do not select imminent pre-earnings setups, non-common-stock instruments, generic AI narratives, routine conference appearances, unexplained price moves, recycled stories, or promotional commentary.
 
-Use exactly one tool-using turn: call web_search exactly twice in parallel with limit 10, one broad query for fresh US-equity catalysts and one source-first query emphasizing SEC/issuer disclosures plus Reuters, Bloomberg, Dow Jones/WSJ, CNBC, AP, FT, Business Wire, PR Newswire, or GlobeNewswire. Rank the provisional company-event pairs by catalyst materiality/certainty, freshness, 1-30-session horizon fit, observable market confirmation, liquidity/approximate ${floor}-${cap} affordability, and lower binary-event risk.
+Use exactly one tool-using turn: call web_search exactly four times in parallel with limit 10 each. Use four distinct discovery lanes, not variations of one broad query: (1) broad US-equity catalysts—fresh material company-specific developments across industries; (2) SEC and issuer disclosures—recent 8-Ks, regulatory filings, and dated issuer IR releases; (3) independent financial reporting—recent company-specific Reuters, Bloomberg, Dow Jones/WSJ, CNBC, AP, FT, or Barron's coverage; (4) undercovered sectors or smaller liquid companies—dated, substantive catalysts outside the most-covered mega-cap technology names, including credible trade wires such as Business Wire, PR Newswire, or GlobeNewswire. Search only for events relevant today; do not broaden the evidence freshness or security eligibility rules. Merge and deduplicate company-event pairs across all four results before ranking; do not favor a candidate merely because it appears in more searches. Rank the provisional company-event pairs by catalyst materiality/certainty, freshness, 1-30-session horizon fit, observable market confirmation, liquidity/approximate ${floor}-${cap} affordability, and lower binary-event risk.
 
 Return exactly one JSON object and no commentary or markdown:
 {{"candidates":[{{"symbol":"ABC","catalyst":"specific dated change","event_date":"YYYY-MM-DD","urls":["https://..."]}}]}}
@@ -584,7 +584,7 @@ def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5)->list
     if not isinstance(payload,dict):return []
     raw_candidates=payload.get("candidates")
     if not isinstance(raw_candidates,list):return []
-    candidates=[];remaining=max_urls
+    candidates=[];remaining=max_urls;seen_symbols:set[str]=set()
     for raw in raw_candidates:
         if len(candidates)>=max_candidates or remaining<=0:break
         if not isinstance(raw,dict):continue
@@ -607,9 +607,11 @@ def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5)->list
             for url in raw_urls
         ):continue
         symbol=symbol.upper();catalyst=catalyst.strip()
+        if symbol in seen_symbols:continue
         urls=extract_candidate_urls("\n".join(raw_urls),limit=remaining)
         if len(urls)<1:continue
         candidates.append({"symbol":symbol,"catalyst":catalyst,"event_date":event_date,"urls":urls})
+        seen_symbols.add(symbol)
         remaining-=len(urls)
     return candidates
 

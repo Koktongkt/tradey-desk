@@ -198,11 +198,12 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertIn("focused retrieval stage",alpha_radar.SCOUT_PROMPT)
         self.assertIn("apply the final two-domain evidence gate",alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_uses_both_search_calls_in_only_tool_turn(self):
+    def test_scout_uses_four_search_calls_in_only_tool_turn(self):
         self.assertIn(
-            "call web_search exactly twice in parallel",
+            "call web_search exactly four times in parallel with limit 10 each",
             alpha_radar.SCOUT_PROMPT,
         )
+        self.assertIn("Use exactly one tool-using turn",alpha_radar.SCOUT_PROMPT)
 
     def test_scout_does_not_extract_or_apply_focused_source_gate(self):
         self.assertNotIn("web_extract",alpha_radar.SCOUT_PROMPT)
