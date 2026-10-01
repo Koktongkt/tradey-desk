@@ -20,11 +20,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autotrader
+from support_fixtures import broker_snapshot, policy_config as _cfg
 
 
 def _proposal():
-    immutable, cfg, _ = ReviewBundleStripTests()._build(_snapshot_with_bars(), _candidate())
-    proposal, errors = autotrader.build_canonical_proposal(_candidate(), immutable["broker_snapshot"], cfg, 0.0)
+    snapshot, candidate = _snapshot_with_bars(), _candidate()
+    immutable = autotrader.authoritative_bundle(candidate, snapshot, snapshot["captured_at"])
+    cfg = _cfg()
+    exposure = 0.0
+    proposal, errors = autotrader.build_canonical_proposal(_candidate(), immutable["broker_snapshot"], cfg, exposure)
     if errors or proposal is None:
         raise AssertionError(f"canonical proposal from full snapshot failed: {errors}")
     return proposal
@@ -36,30 +40,12 @@ def _review_ts():
 
 
 def _snapshot_with_bars():
-    bars = [
-        {"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i,
-         "volume": 1_000_000 + i, "timestamp": 1700000000 + i * 86400}
-        for i in range(25)
-    ]
-    return {
-        "captured_at": "2026-09-05T14:00:00Z",
-        "buying_power": 10000.0,
-        "cash": 10000.0,
-        "positions": [],
-        "open_orders": [],
-        "asset": {"symbol": "DELL", "tradable": True, "class": "us_equity",
-                  "exchange": "NASDAQ", "name": "Dell Technologies Inc.",
-                  "fractionable": True, "leveraged": False, "inverse": False},
-        "quote": {"bid": 99.98, "ask": 100.02, "timestamp": "2026-09-05T14:00:00Z"},
-        "quote_feed": "alpaca_iex",
-        "average_volume": 5_000_000.0,
-        "volume_feed": "massive_consolidated",
-        "technical_bars": bars,
-        "technical_bars_feed": "massive_consolidated_completed_daily",
-        "earnings_status": "unknown",
-        "earnings_sessions_away": None,
-        "trading_sessions": ["2026-09-05", "2026-09-08", "2026-09-09"],
-    }
+    return broker_snapshot(
+        captured_at="2026-09-05T14:00:00Z", cash=10000.0,
+        quote={"bid": 99.98, "ask": 100.02, "timestamp": "2026-09-05T14:00:00Z"},
+        earnings_status="unknown", earnings_sessions_away=None,
+        trading_sessions=["2026-09-05", "2026-09-08", "2026-09-09"],
+    )
 
 
 def _candidate():
@@ -84,18 +70,7 @@ def _candidate():
     }
 
 
-def _cfg():
-    cfg_path = Path(__file__).resolve().parents[1] / "autonomy_config.json"
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    cfg["min_price_usd"] = 10
-    return cfg
-
-
 class ReviewBundleStripTests(unittest.TestCase):
-    def _build(self, snapshot, candidate):
-        exposure = 0.0
-        return autotrader.authoritative_bundle(candidate, snapshot, snapshot["captured_at"]), _cfg(), exposure
-
     def test_review_bundle_excludes_raw_bars_and_arrays(self):
         bundle = autotrader.build_review_bundle(_candidate(), _snapshot_with_bars(), _proposal())
         evidence = bundle["evidence"]

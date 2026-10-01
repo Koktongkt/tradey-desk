@@ -18,6 +18,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+from broker_process import bridge_command as broker_command, run_bridge
 from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
@@ -872,16 +873,8 @@ def independent_reviews(bundle: dict[str, Any], cfg: dict[str, Any]) -> list[dic
 
 
 def bridge_command(operation: str) -> list[str]:
-    """Resolve the bridge invocation once.
-
-    The client fastmcp major version must match the server's fastmcp<4 pin;
-    uv is resolved by absolute path because cron contexts may not carry
-    /usr/local/bin on PATH.
-    """
-    return [
-        "/usr/local/bin/uv", "run", "--with", "fastmcp<4", "python",
-        str(ROOT / "broker_mcp_bridge.py"), operation,
-    ]
+    """Pin the client runtime and use an absolute uv path for cron contexts."""
+    return broker_command(ROOT, operation, executable="/usr/local/bin/uv")
 
 
 def _record_bridge_diagnostics(operation: str, attempts_made: int, duration_ms: int, result: subprocess.CompletedProcess | None, failure_class: str) -> None:
@@ -921,7 +914,7 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
     result = None
     for attempt in range(1, attempts + 1):
         try:
-            result = subprocess.run(cmd, input=data, text=True, capture_output=True, timeout=180)
+            result = run_bridge(cmd, input=data, timeout=180, run=subprocess.run)
         except subprocess.TimeoutExpired:
             result = subprocess.CompletedProcess(cmd, 124, "", "timeout")
         except Exception:

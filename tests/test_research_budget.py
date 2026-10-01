@@ -393,6 +393,16 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         self.assertEqual(calls,["direct","gateway"])
         self.assertEqual([page["title"] for page in pages],["Wire"])
 
+    def test_shared_gateway_failure_preserves_implicit_and_explicit_causes(self):
+        error=OSError("private fixture")
+        for explicit in (False,True):
+            try:
+                raise error
+            except OSError:
+                with self.assertRaises(alpha_radar.ResearchFailure) as caught:
+                    alpha_radar._gateway_provider_failure(True,error if explicit else None)
+            self.assertEqual((caught.exception.code,caught.exception.__cause__,caught.exception.__context__,caught.exception.__suppress_context__), ("research_rescue_unavailable",error if explicit else None,error,explicit))
+
     def test_gateway_fallback_failure_keeps_typed_timeout(self):
         diagnostics = []
 

@@ -109,6 +109,14 @@ class BridgeRetryTests(unittest.TestCase):
                     autotrader._broker_bridge(operation, payload)
                 self.assertEqual(run.call_count, 1)
 
+    def test_transport_preserves_exact_invocation_and_single_attempt_exception(self):
+        import broker_process
+        for error in (OSError("launch"), ValueError("unexpected"), subprocess.TimeoutExpired(["fixture"], 17)):
+            with self.subTest(error=type(error).__name__), patch("subprocess.run", side_effect=error) as run:
+                with self.assertRaises(type(error)):
+                    broker_process.run_bridge(["fixture"], input="raw stdin\n", timeout=17, cwd=None, check=False, run=run)
+                run.assert_called_once_with(["fixture"], input="raw stdin\n", text=True, capture_output=True, timeout=17, cwd=None, check=False)
+
 
 class RadarReuseFirstTests(unittest.TestCase):
     def test_research_failure_does_not_reuse_reviewed_candidate(self):

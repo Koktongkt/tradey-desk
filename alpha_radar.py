@@ -685,6 +685,13 @@ GATEWAY_FALLBACK_PROMPT=(
     "page text starting with its publication date if present; no commentary.\nURL: {url}"
 )
 
+def _gateway_provider_failure(strict_provider:bool,error:Exception|None=None)->None:
+    if strict_provider:
+        if error is not None:raise ResearchFailure("research_rescue_unavailable") from error
+        raise ResearchFailure("research_rescue_unavailable")
+    return None
+
+
 def fetch_source_via_gateway(
     url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOUT_SECONDS,strict_provider:bool=False,
 )->dict[str,Any]|None:
@@ -700,17 +707,14 @@ def fetch_source_via_gateway(
             capture_output=True,text=True,timeout=timeout_seconds,cwd=ROOT,
         )
     except (subprocess.TimeoutExpired,OSError) as error:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
-        return None
+        return _gateway_provider_failure(strict_provider,error)
     if result.returncode or not result.stdout.strip():
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider)
     lines=[line for line in result.stdout.strip().splitlines() if not line.startswith("session_id:")]
     text=extract_page_text(html.escape("\n".join(lines),quote=False)) if "<" in "\n".join(lines) else " ".join(lines)
     text=re.sub(r"\s+"," ",text).strip()[:6000]
     if not text:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider)
     published=None
     host=(urllib.parse.urlparse(url).hostname or "").lower()
     match=None
@@ -780,6 +784,14 @@ def gather_evidence(
             except (KeyError,ValueError):continue
             if checked.tzinfo is not None and checked<=current and current-checked<=dt.timedelta(hours=24):
                 results[i]=entry["page"];cached_urls.add(url)
+    def publish_page(i:int,u:str,page:Any)->None:
+        if not isinstance(page,dict) or page.get("url")!=u:
+            with lock:
+                if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
+            return
+        with lock:
+            if not collected[0]:results[i]=page
+
     def worker(i:int,u:str)->None:
         if results[i]:return
         host=(urllib.parse.urlparse(u).hostname or "").lower()
@@ -791,12 +803,7 @@ def gather_evidence(
                 remaining=deadline-monotonic()
                 if remaining<=0:raise TimeoutError("collection deadline exhausted")
                 page=fetch_source(u,min(per_source_timeout,remaining))
-                if not isinstance(page,dict) or page.get("url")!=u:
-                    with lock:
-                        if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
-                    return
-                with lock:
-                    if not collected[0]:results[i]=page
+                publish_page(i,u,page)
                 return
             except Exception as error:
                 if isinstance(error,UnsafeURLTarget):
@@ -831,12 +838,7 @@ def gather_evidence(
                         fatal_failures[i]=fatal
                     return
                 if page is not None:
-                    if not isinstance(page,dict) or page.get("url")!=u:
-                        with lock:
-                            if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
-                        return
-                    with lock:
-                        if not collected[0]:results[i]=page
+                    publish_page(i,u,page)
                     return
                 if monotonic()>=deadline:reason="source_deadline_exhausted"
                 elif http_code in {401,403}:reason="source_http_forbidden"
@@ -1234,29 +1236,20 @@ def gateway_rescue_url(
         if remaining<=0:return None
         result=run(cmd,input=prompt,capture_output=True,text=True,timeout=min(GATEWAY_RESCUE_TIMEOUT_SECONDS,remaining),cwd=ROOT)
     except (subprocess.TimeoutExpired,OSError) as error:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
-        return None
-    if result.returncode:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
-    if not result.stdout.strip():
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider,error)
+    if result.returncode or not result.stdout.strip():
+        return _gateway_provider_failure(strict_provider)
     match=re.search(r"\{.*\}",result.stdout.strip(),re.DOTALL)
     if not match:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider)
     try:payload=json.loads(match.group(0))
     except (json.JSONDecodeError,TypeError) as error:
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable") from error
-        return None
+        return _gateway_provider_failure(strict_provider,error)
     if not isinstance(payload,dict):
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider)
     raw_urls=payload.get("urls")
     if not isinstance(raw_urls,list) or any(not isinstance(url,str) for url in raw_urls):
-        if strict_provider:raise ResearchFailure("research_rescue_unavailable")
-        return None
+        return _gateway_provider_failure(strict_provider)
     owned=extract_candidate_urls("\n".join(raw_urls),limit=3)
     for url in owned:
         if source_profile(url)["role"]==role:return url

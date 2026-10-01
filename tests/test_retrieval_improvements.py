@@ -98,6 +98,33 @@ class RetrievalImprovements(unittest.TestCase):
         self.assertEqual(result,[page])
         self.assertEqual(calls,urls)
 
+    def test_gateway_wrong_url_cannot_enter_cache_or_evidence(self):
+        url="https://requested.example/a"
+        with tempfile.TemporaryDirectory() as td, patch.object(radar,"fetch_source",side_effect=TimeoutError("fixture")), patch.object(radar,"fetch_source_via_gateway",return_value={"url":url+"/wrong"}):
+            cache,diagnostics=Path(td)/"cache.json",[]
+            self.assertEqual(radar.gather_evidence([url],diagnostics=diagnostics,cache_path=cache),[])
+            self.assertEqual((json.loads(cache.read_text()),diagnostics), ({},[{"url":url,"domain":"requested.example","reason":"source_url_mismatch"}]))
+
+    def test_late_direct_and_gateway_pages_cannot_publish_after_collection(self):
+        import threading
+        url="https://requested.example/a"
+        for lane in ("direct","gateway"):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as td:
+                release,workers,diagnostics,cache=threading.Event(),[],[],Path(td)/"cache.json"
+                def blocked(*args,**kwargs):
+                    workers.append(threading.current_thread())
+                    self.assertTrue(release.wait(2),"worker not released")
+                    return {"url":url,"text":"late"}
+                with patch.object(radar,"fetch_source",side_effect=blocked if lane=="direct" else TimeoutError("fixture")), patch.object(radar,"fetch_source_via_gateway",side_effect=blocked):
+                    try:
+                        result=radar.gather_evidence([url],diagnostics=diagnostics,cache_path=cache,collection_budget_seconds=0.1)
+                        self.assertTrue(workers and workers[0].is_alive())
+                        frozen=(list(result),list(diagnostics),cache.read_bytes())
+                    finally:
+                        release.set()
+                        for worker in workers:worker.join(2)
+                    self.assertEqual(((result,diagnostics,cache.read_bytes()),workers[0].is_alive()),(frozen,False))
+
     def test_sec_archive_url_rejects_malformed_port_without_crashing(self):
         url="https://www.sec.gov:bad/Archives/edgar/data/1045810/000104581026000001/report.htm"
         self.assertFalse(radar.is_sec_archive_filing_url(url))

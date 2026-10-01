@@ -25,6 +25,56 @@ def structured_scout(symbol="SNOW",urls=None):
     }]})
 
 
+def _research_none_result():
+    return subprocess.CompletedProcess([], 0, json.dumps({"status": "none", "none_reason": "no_fresh_setup"}), "")
+
+
+def _deferred_scout(urls, alternate_catalyst="supported"):
+    return subprocess.CompletedProcess([], 0, json.dumps({"candidates": [
+        {"symbol": "AAA", "catalyst": "thin", "event_date": "2026-09-08", "urls": urls[:1]},
+        {"symbol": "BBB", "catalyst": alternate_catalyst, "event_date": "2026-09-08", "urls": urls[1:3]},
+    ]}), "")
+
+
+def _event_pages(urls, label="material event"):
+    return [{"url": url, "title": "News", "text": _body(label),
+             "published_at": "2026-09-08T12:00:00Z"} for url in urls]
+
+
+@contextlib.contextmanager
+def _research_run(**run_options):
+    """Fresh diagnostic root and explicitly configured scout/synthesis mock."""
+    with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)), patch.object(
+        alpha_radar.subprocess, "run", **run_options
+    ) as runs:
+        yield td, runs
+
+
+def _verified_sources(urls=("https://a.example/1", "https://b.example/2"), receipt_count=2):
+    sources = [{"url": url, "title": title, "published_at": published}
+               for url, title, published in zip(urls, ("A", "B"),
+                   ("2026-09-08T14:57:00Z", "2026-09-08T15:00:00Z"))]
+    return {"sources": sources,
+            "_source_receipts": [{**source, "content_sha256": digest * 64}
+                                 for source, digest in zip(sources[:receipt_count], ("a", "b"))]}
+
+
+def _dated_pair(first_body, second_body):
+    sources = _verified_sources()["sources"]
+    return [{**source, "text": _body(label)}
+            for source, label in zip(sources, (first_body, second_body))]
+
+
+def _persistable_candidate(*, researched_at="2026-09-09T14:00:00Z", receipt_count=2):
+    return {
+        "symbol": "AAPL", "price": 100, "spy_price": 500, "instrument_type": "cash_equity",
+        **_verified_sources(receipt_count=receipt_count),
+        "earnings_event_at": "2026-11-01T21:00:00Z", "researched_at": researched_at,
+        "setup_type": "post_news_momentum", "planned_exit_at": "2026-09-18T20:00:00Z",
+        "horizon_rationale": "repricing", "thesis": "x", "catalyst": "y",
+    }
+
+
 class AlphaRadarTests(unittest.TestCase):
     def test_research_is_two_stage_with_bounded_scout_and_tool_free_synthesis(self):
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
@@ -183,7 +233,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_treats_empty_discovery_as_healthy_no_setup(self):
         scout=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout):
+        with _research_run(return_value=scout) as (td, _runs):
             result=alpha_radar.live_research({"min_price_usd":1,"max_position_usd":500})
             row=json.loads((Path(td)/"private"/"research_diagnostics.jsonl").read_text())
         self.assertEqual(result,{"status":"none","none_reason":"no_fresh_setup"})
@@ -191,7 +241,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_types_invalid_discovery_json(self):
         scout=subprocess.CompletedProcess([],0,'not-json',"")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout):
+        with _research_run(return_value=scout) as (td, _runs):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"min_price_usd":1,"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_scout_parse_failure")
@@ -610,16 +660,13 @@ class AlphaRadarTests(unittest.TestCase):
     def test_live_research_types_source_fetch_and_parse_failures(self):
         scout=subprocess.CompletedProcess([],0,structured_scout(),"")
         synth=subprocess.CompletedProcess([],0,"not-json","")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
-            alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
-            ]
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
+            alpha_radar,"gather_evidence",return_value=_dated_pair("a", "b")
         ):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.live_research({"max_position_usd":500})
         self.assertEqual(ctx.exception.code,"research_parse_failure")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(
             alpha_radar,"gather_evidence",return_value=[{"url":"https://a.example/1","text":_body("a")}]
         ), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=lambda candidate,accepted,**kwargs:accepted
@@ -632,7 +679,7 @@ class AlphaRadarTests(unittest.TestCase):
         scout=subprocess.CompletedProcess([],0,structured_scout("AAA",[
             "https://old.example/1","https://a.example/2","https://b.example/3",
         ]),"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         pages=[
             {"url":"https://old.example/1","title":"Old","text":_body("stale event"),"published_at":"2025-08-28T14:57:00Z"},
             {"url":"https://a.example/2","title":"A","text":_body("current event"),"published_at":"2026-09-08T14:57:00Z"},
@@ -643,9 +690,7 @@ class AlphaRadarTests(unittest.TestCase):
             calls.append(kwargs.get("input", ""))
             return scout if len(calls)==1 else synth
 
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=run
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages):
+        with _research_run(side_effect=run) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages):
             candidate=alpha_radar.live_research({"max_position_usd":500})
             diagnostics=[json.loads(line) for line in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
 
@@ -670,9 +715,7 @@ class AlphaRadarTests(unittest.TestCase):
         def gather(_urls,diagnostics,cache_path=None,collection_deadline=None):
             diagnostics.append({"url":"https://missing.example/2","domain":"missing.example","reason":"source_fetch_timeout"})
             return pages
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=lambda candidate,accepted,**kwargs:accepted
         ):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -681,14 +724,9 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_does_not_rescue_when_focused_retrieval_supplies_second_domain(self):
         scout=subprocess.CompletedProcess([],0,structured_scout("AAA",["https://a.example/1"]),"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
-        pages=[
-            {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
-            {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
-        ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        synth=_research_none_result()
+        pages=_dated_pair("a", "b")
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"focused_retrieval",return_value={"AAA":["https://b.example/2"]}
         ), patch.object(alpha_radar,"post_fetch_rescue_candidate") as rescue:
             result=alpha_radar.live_research({"max_position_usd":500,"focused_retrieval_enabled":True})
@@ -701,7 +739,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-14","urls":["https://c.example/3","https://d.example/4"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         pages=[
             {"url":"https://a.example/1","title":"A","text":_body("thin"),"published_at":"2026-09-14T10:00:00Z"},
             {"url":"https://c.example/3","title":"C","text":_body("supported"),"published_at":"2026-09-14T11:00:00Z"},
@@ -711,9 +749,7 @@ class AlphaRadarTests(unittest.TestCase):
         def run(_cmd,**kwargs):
             calls.append(kwargs.get("input",""))
             return scout if len(calls)==1 else synth
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=run
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(side_effect=run) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=lambda candidate,accepted,**kwargs:accepted
         ):
             alpha_radar.live_research({"max_position_usd":500})
@@ -733,9 +769,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://c.example/3","title":"C","text":_body("supported"),"published_at":"2026-09-14T11:00:00Z"},
             {"url":"https://d.example/4","title":"D","text":_body("confirmed"),"published_at":"2026-09-14T12:00:00Z"},
         ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"synchronized_completed_close_prices"
         ) as prices:
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -748,14 +782,9 @@ class AlphaRadarTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 scout = subprocess.CompletedProcess([],0,structured_scout(),'')
                 synth = subprocess.CompletedProcess([],0,json.dumps({'status':'none','none_reason':'no_fresh_setup'}),'')
-                pages = [
-                    {'url':'https://a.example/1','title':'A','text':_body('current event'),'published_at':'2026-09-08T14:57:00Z'},
-                    {'url':'https://b.example/2','title':'B','text':_body('current confirmation'),'published_at':'2026-09-08T15:00:00Z'},
-                ]
+                pages = _dated_pair('current event', 'current confirmation')
                 run_options = {'return_value':scout} if stage == 'record_research_diagnostics' else {'side_effect':[scout,synth]}
-                with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,'ROOT',Path(td)), patch.object(
-                    alpha_radar.subprocess,'run',**run_options
-                ), patch.object(alpha_radar,'gather_evidence',return_value=pages), patch.object(
+                with _research_run(**run_options) as (td, _runs), patch.object(alpha_radar,'gather_evidence',return_value=pages), patch.object(
                     alpha_radar,stage,side_effect=OSError('disk')
                 ):
                     with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -772,11 +801,8 @@ class AlphaRadarTests(unittest.TestCase):
             "setup_type":"event_momentum","horizon_rationale":"Post-event continuation",
         }
         synth=subprocess.CompletedProcess([],0,json.dumps(model_candidate),"")
-        pages=[
-            {"url":"https://a.example/1","title":"A","text":_body("alpha"),"published_at":"2026-09-08T14:57:00Z"},
-            {"url":"https://b.example/2","title":"B","text":_body("beta"),"published_at":"2026-09-08T15:00:00Z"},
-        ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
+        pages=_dated_pair("alpha", "beta")
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
             alpha_radar,"gather_evidence",return_value=pages
         ), patch.object(
             alpha_radar,"resolve_candidate_earnings",side_effect=lambda c,**kw:{**c,"earnings_event_at":"2026-11-30","earnings_date_status":"estimated"}
@@ -805,11 +831,8 @@ class AlphaRadarTests(unittest.TestCase):
             "market_prices_at":"2026-09-04T20:00:00Z",
             "market_price_feed":"massive_consolidated_completed_daily",
         }
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
-            alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
-            ]
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
+            alpha_radar,"gather_evidence",return_value=_dated_pair("a", "b")
         ), patch.object(
             alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,**_kw:candidate
         ), patch.object(
@@ -842,31 +865,14 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertFalse(alpha_radar.qualified(candidate,cfg,now=now))
 
     def test_source_verification_rejects_sibling_subdomains_as_one_publisher(self):
-        candidate={
-            "sources":[
-                {"url":"https://news.example.com/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://ir.example.com/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://news.example.com/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                {"url":"https://ir.example.com/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
-            ],
-        }
+        candidate=_verified_sources(urls=('https://news.example.com/1', 'https://ir.example.com/2'))
         result=alpha_radar.source_verification_result(candidate)
         self.assertFalse(result["passed"])
         self.assertEqual(result["reason"],"duplicate_domain")
         self.assertEqual(result["independent_domains"],1)
 
     def test_source_verification_result_types_missing_receipt_with_counts(self):
-        candidate={
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-            ],
-        }
+        candidate=_verified_sources(receipt_count=1)
 
         self.assertEqual(alpha_radar.source_verification_result(candidate),{
             "passed":False,
@@ -879,16 +885,7 @@ class AlphaRadarTests(unittest.TestCase):
         })
 
     def test_source_verification_preserves_legacy_acceptance_of_matching_non_http_url(self):
-        candidate={
-            "sources":[
-                {"url":"ftp://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"ftp://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
-            ],
-        }
+        candidate=_verified_sources(urls=('ftp://a.example/1', 'https://b.example/2'))
 
         self.assertTrue(alpha_radar.source_verification_result(candidate)["passed"])
         self.assertTrue(alpha_radar.verify_sources(candidate))
@@ -915,16 +912,7 @@ class AlphaRadarTests(unittest.TestCase):
         })
 
     def test_verify_sources_uses_immutable_receipts_without_network_refetch(self):
-        candidate={
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
-            ],
-        }
+        candidate=_verified_sources()
 
         with patch.object(alpha_radar.urllib.request,"urlopen",side_effect=TimeoutError("transient")) as refetch:
             self.assertTrue(alpha_radar.verify_sources(candidate))
@@ -933,11 +921,8 @@ class AlphaRadarTests(unittest.TestCase):
     def test_live_research_types_synchronized_market_data_failure(self):
         scout=subprocess.CompletedProcess([],0,structured_scout("SNOW"),"")
         synth=subprocess.CompletedProcess([],0,json.dumps({"symbol":"SNOW","status":"ok"}),"")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
-            alpha_radar,"gather_evidence",return_value=[
-                {"url":"https://a.example/1","title":"A","text":_body("a"),"published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","text":_body("b"),"published_at":"2026-09-08T15:00:00Z"},
-            ]
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
+            alpha_radar,"gather_evidence",return_value=_dated_pair("a", "b")
         ), patch.object(
             alpha_radar,"resolve_candidate_earnings",side_effect=lambda candidate,**_kw:candidate
         ), patch.object(
@@ -949,20 +934,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code,"research_market_data_unavailable")
 
     def test_main_strips_private_source_receipts_before_persisting(self):
-        candidate={
-            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
-            ],
-            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
-            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
-            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
-        }
+        candidate=_persistable_candidate()
         with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
             alpha_radar,"fresh_verified_candidate",return_value=None
         ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
@@ -980,19 +952,7 @@ class AlphaRadarTests(unittest.TestCase):
     def test_main_preserves_verification_failure_across_diagnostic_write_outcomes(self):
         for write_fails in (False, True):
             with self.subTest(diagnostic_write_fails=write_fails):
-                candidate={
-                    "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-                    "sources":[
-                        {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                        {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-                    ],
-                    "_source_receipts":[
-                        {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                    ],
-                    "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
-                    "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
-                    "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
-                }
+                candidate=_persistable_candidate(receipt_count=1)
                 out=io.StringIO()
                 with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
                     alpha_radar,"fresh_verified_candidate",return_value=None
@@ -1011,20 +971,7 @@ class AlphaRadarTests(unittest.TestCase):
 
 
     def test_main_types_candidate_persistence_failure(self):
-        candidate={
-            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z","content_sha256":"b"*64},
-            ],
-            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-05T14:00:00Z",
-            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
-            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
-        }
+        candidate=_persistable_candidate(researched_at='2026-09-05T14:00:00Z')
         out=io.StringIO()
         with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
             alpha_radar,"fresh_verified_candidate",return_value=None
@@ -1338,7 +1285,7 @@ class BundleRescueTests(unittest.TestCase):
             "urls":["https://www.businesswire.com/news/a","https://one.example/a"],
         }]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         one={"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}
         reuters={"url":"https://www.reuters.com/markets/a","title":"Reuters","text":_body("two"),"published_at":"2026-09-08T13:00:00Z"}
         calls=[]
@@ -1348,9 +1295,7 @@ class BundleRescueTests(unittest.TestCase):
                 diagnostics.append({"url":"https://www.businesswire.com/news/a","domain":"www.businesswire.com","reason":"source_http_forbidden"})
                 return [one]
             return [reuters]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(
             alpha_radar,"sec_edgar_filing_url",return_value=None
         ), patch.object(
             alpha_radar,"gateway_rescue_url",return_value="https://www.reuters.com/markets/a"
@@ -1369,7 +1314,7 @@ class BundleRescueTests(unittest.TestCase):
              "urls":["https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         pages=[
             {"url":"https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm",
              "title":"8-K","text":_body("topline results"),"published_at":"2026-09-08T14:57:00Z"},
@@ -1379,9 +1324,7 @@ class BundleRescueTests(unittest.TestCase):
         def rescue_after_fetch(candidate,accepted,**_kwargs):
             candidate["urls"].append("https://www.reuters.com/markets/2026-09-08-syre")
             return pages
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue_after_fetch
         ) as rescue:
             result=alpha_radar.live_research({"max_position_usd":500})
@@ -1394,15 +1337,13 @@ class BundleRescueTests(unittest.TestCase):
             {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-08","urls":["https://two.example/b","https://three.example/b"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         pages=[
             {"url":"https://one.example/a","title":"One","text":_body("thin"),"published_at":"2026-09-08T12:00:00Z"},
             {"url":"https://two.example/b","title":"Two","text":_body("support"),"published_at":"2026-09-08T12:00:00Z"},
             {"url":"https://three.example/b","title":"Three","text":_body("corroboration"),"published_at":"2026-09-08T13:00:00Z"},
         ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ) as runs, patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(side_effect=[scout,synth]) as (td, runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"sec_edgar_filing_url",return_value=None
         ), patch.object(
             alpha_radar,"gateway_rescue_url",side_effect=alpha_radar.ResearchFailure("research_rescue_unavailable")
@@ -1415,15 +1356,10 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_prioritizes_already_sourceable_alternate_before_rescue(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:]},
-        ]}),"")
-        pages=[{"url":url,"title":"News","text":_body("material event"),"published_at":"2026-09-08T12:00:00Z"} for url in urls]
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ) as runs, patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        scout = _deferred_scout(urls)
+        pages = _event_pages(urls)
+        synth=_research_none_result()
+        with _research_run(side_effect=[scout,synth]) as (td, runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate"
         ) as rescue, patch.object(alpha_radar,"synthesize_candidate",return_value={"symbol":"BBB"}) as synthesized:
             alpha_radar.live_research({"max_position_usd":500},intake=lambda c:c)
@@ -1433,12 +1369,8 @@ class BundleRescueTests(unittest.TestCase):
     def test_live_research_rescues_thin_candidate_after_sourceable_synthesis_none(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
               "https://www.reuters.com/a"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
-        ]}),"")
-        pages=[{"url":url,"title":"News","text":_body("material event"),
-                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        scout = _deferred_scout(urls)
+        pages = _event_pages(urls)
         calls=[]
         def synth(_cfg,selected,evidence,_deadline,**_kwargs):
             calls.append(selected["symbol"])
@@ -1447,9 +1379,7 @@ class BundleRescueTests(unittest.TestCase):
             self.assertEqual(candidate["symbol"],"AAA")
             self.assertGreater(kwargs["deadline"],alpha_radar.monotonic())
             candidate["urls"].append(urls[3]);return accepted+[pages[3]]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
             alpha_radar,"synthesize_candidate",side_effect=synth
         ), patch.object(alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue) as rescued:
             result=alpha_radar.live_research({},intake=lambda c:c)
@@ -1459,12 +1389,8 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_skips_deferred_rescue_when_synthesis_budget_is_spent(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:]},
-        ]}),"")
-        pages=[{"url":url,"title":"News","text":_body("material event"),
-                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        scout = _deferred_scout(urls)
+        pages = _event_pages(urls)
         for remaining in (0,0.1,2,29.9,30):
             with self.subTest(remaining=remaining):
                 clock=[100.0]
@@ -1494,12 +1420,8 @@ class BundleRescueTests(unittest.TestCase):
     def test_live_research_fast_deferred_rescue_uses_original_synthesis_deadline(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
               "https://www.reuters.com/a"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
-        ]}),"")
-        pages=[{"url":url,"title":"News","text":_body("material event"),
-                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        scout = _deferred_scout(urls)
+        pages = _event_pages(urls)
         clock=[100.0];synth_deadlines=[];rescue_deadlines=[]
         def synth(_cfg,selected,_evidence,deadline,**_kwargs):
             synth_deadlines.append(deadline)
@@ -1528,12 +1450,8 @@ class BundleRescueTests(unittest.TestCase):
     def test_live_research_rescues_after_intake_rejection_without_resetting_deadline(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
               "https://www.reuters.com/a"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"supported","event_date":"2026-09-08","urls":urls[1:3]},
-        ]}),"")
-        pages=[{"url":url,"title":"News","text":_body("event"),
-                "published_at":"2026-09-08T12:00:00Z"} for url in urls]
+        scout = _deferred_scout(urls)
+        pages = _event_pages(urls, label="event")
         deadlines=[];calls=[]
         def synth(_cfg,selected,_evidence,_deadline,**_kwargs):
             calls.append(selected["symbol"]);return {"symbol":selected["symbol"]}
@@ -1543,9 +1461,7 @@ class BundleRescueTests(unittest.TestCase):
         def rescue(candidate,accepted,**kwargs):
             deadlines.append(kwargs["deadline"])
             candidate["urls"].append(urls[3]);return accepted+[pages[3]]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages[:3]), patch.object(
             alpha_radar,"synthesize_candidate",side_effect=synth
         ), patch.object(alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue):
             result=alpha_radar.live_research({},intake=intake)
@@ -1555,19 +1471,14 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_rescue_orders_alternate_publisher_mix_before_single_source(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b"]
-        scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin","event_date":"2026-09-08","urls":urls[:1]},
-            {"symbol":"BBB","catalyst":"alternate","event_date":"2026-09-08","urls":urls[1:]},
-        ]}),"")
+        scout = _deferred_scout(urls, alternate_catalyst="alternate")
         pages=[{"url":urls[0],"title":"News","text":_body("event"),"published_at":"2026-09-08T12:00:00Z"},
                {"url":urls[1],"title":"Filing","text":_body("event"),"published_at":"2026-09-08T12:00:00Z"}]
         order=[]
         def rescue(candidate,accepted,**kwargs):
             order.append((candidate["symbol"],kwargs["deadline"]))
             return accepted
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue
         ):
             with self.assertRaises(alpha_radar.ResearchFailure):
@@ -1588,9 +1499,7 @@ class BundleRescueTests(unittest.TestCase):
         def failed_rescue(candidate,accepted,diagnostics,**_kwargs):
             diagnostics.append({"url":candidate["urls"][0],"domain":"sec.gov","reason":"bundle_rescue_unavailable"})
             return accepted
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=failed_rescue
         ):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
@@ -1610,9 +1519,7 @@ class BundleRescueTests(unittest.TestCase):
         def rescue(candidate,accepted,**_kwargs):
             rescued.append(candidate["symbol"])
             return accepted
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=[scout,synth]
-        ), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
+        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(alpha_radar,"gather_evidence",return_value=pages), patch.object(
             alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue
         ):
             with self.assertRaises(alpha_radar.ResearchFailure):
@@ -1687,9 +1594,7 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
             return []
 
         scout=subprocess.CompletedProcess([],0,"{}","")
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",return_value=scout
-        ), patch.object(alpha_radar,"scout_parse_result",return_value=(candidates,{"reason":"ok"})), patch.object(
+        with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"scout_parse_result",return_value=(candidates,{"reason":"ok"})), patch.object(
             alpha_radar,"gather_evidence",side_effect=gather
         ), patch.object(alpha_radar,"post_fetch_rescue_candidate",return_value=[]):
             with self.assertRaises(alpha_radar.ResearchFailure):
@@ -1750,7 +1655,7 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
             {"symbol":"BBB","catalyst":"second","event_date":"2026-09-14","urls":["https://www.sec.gov/c"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
+        synth=_research_none_result()
         focused={"AAA":["https://www.globenewswire.com/b"],"BBB":["https://www.reuters.com/d"]}
         pages=[
             {"url":"https://www.businesswire.com/a","title":"A","text":_body("a"),"published_at":"2026-09-14T10:00:00Z"},
@@ -1762,9 +1667,7 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         def run(_cmd,**kwargs):
             prompts.append(kwargs.get("input",""))
             return scout if len(prompts)==1 else synth
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(
-            alpha_radar.subprocess,"run",side_effect=run
-        ), patch.object(alpha_radar,"focused_retrieval",return_value=focused) as retrieve, patch.object(
+        with _research_run(side_effect=run) as (td, _runs), patch.object(alpha_radar,"focused_retrieval",return_value=focused) as retrieve, patch.object(
             alpha_radar,"gather_evidence",return_value=pages
         ), patch.object(alpha_radar,"post_fetch_rescue_candidate") as rescue:
             result=alpha_radar.live_research({"max_position_usd":500,"focused_retrieval_enabled":True})

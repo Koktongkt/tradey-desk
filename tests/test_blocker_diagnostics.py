@@ -18,21 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import autotrader
-
-
-def _cfg():
-    cfg_path = Path(__file__).resolve().parents[1] / "autonomy_config.json"
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    cfg["min_price_usd"] = 10
-    return cfg
-
-
-def _bars():
-    return [
-        {"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i,
-         "volume": 1_000_000 + i, "timestamp": 1700000000 + i * 86400}
-        for i in range(25)
-    ]
+from support_fixtures import broker_snapshot, policy_config as _cfg
 
 
 def _quote(bid=99.98, ask=100.02):
@@ -42,25 +28,11 @@ def _quote(bid=99.98, ask=100.02):
 
 def _snapshot(quote=None, cash=10000.0):
     now = dt.datetime.now(dt.timezone.utc)
-    return {
-        "captured_at": now.isoformat().replace("+00:00", "Z"),
-        "buying_power": 10000.0,
-        "cash": cash,
-        "positions": [],
-        "open_orders": [],
-        "asset": {"symbol": "DELL", "tradable": True, "class": "us_equity",
-                  "exchange": "NASDAQ", "name": "Dell Technologies Inc.",
-                  "fractionable": True, "leveraged": False, "inverse": False},
-        "quote": quote or _quote(),
-        "quote_feed": "alpaca_iex",
-        "average_volume": 5_000_000.0,
-        "volume_feed": "massive_consolidated",
-        "technical_bars": _bars(),
-        "technical_bars_feed": "massive_consolidated_completed_daily",
-        "earnings_status": "upcoming",
-        "earnings_sessions_away": 9,
-        "trading_sessions": [(now.date() + dt.timedelta(days=i)).isoformat() for i in range(31)],
-    }
+    return broker_snapshot(
+        captured_at=now.isoformat().replace("+00:00", "Z"), cash=cash,
+        quote=quote or _quote(), earnings_status="upcoming", earnings_sessions_away=9,
+        trading_sessions=[(now.date() + dt.timedelta(days=i)).isoformat() for i in range(31)],
+    )
 
 
 def _order():

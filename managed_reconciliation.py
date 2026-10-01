@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+from broker_process import bridge_command, run_bridge
 import sys
 from pathlib import Path
 from decimal import Decimal
@@ -323,14 +324,14 @@ def register_protection(registry_path: Path, row: dict, broker) -> None:
 
 def default_bridge(operation: str, payload: dict | None = None) -> dict:
     """Read-only subprocess bridge to broker_mcp_bridge.py; retries reads only."""
-    cmd = [os.environ.get('UV_BIN', '/usr/local/bin/uv'), 'run', '--with', 'fastmcp<4', 'python',
-           str(Path(__file__).resolve().parent / 'broker_mcp_bridge.py'), operation]
+    cmd = bridge_command(Path(__file__).resolve().parent, operation,
+                         executable=os.environ.get('UV_BIN', '/usr/local/bin/uv'))
     attempts = 2 if operation == 'reconciliation_snapshot' else 1
     result = None
     for attempt in range(1, attempts + 1):
         try:
-            result = subprocess.run(cmd, input=json.dumps(payload or {}), text=True,
-                                    capture_output=True, timeout=180, check=False)
+            result = run_bridge(cmd, input=json.dumps(payload or {}), timeout=180,
+                                check=False, run=subprocess.run)
         except subprocess.TimeoutExpired:
             result = subprocess.CompletedProcess(cmd, 124, '', 'timeout')
         except OSError:
