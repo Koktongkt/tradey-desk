@@ -92,30 +92,26 @@ class DeadlineContextTests(unittest.TestCase):
             with self.assertRaises(research_budget.ResearchDeadlineExceeded):
                 research_budget.raise_if_expired_timeout(TimeoutError('connect deadline'))
 
-    def test_connect_timeout_at_deadline_keeps_typed_enrichment_reason(self):
-        clock=[100.0]
-        def timed_out(*args,**kwargs):
-            clock[0]=108.0
-            raise TimeoutError('connect deadline')
-        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
-            with patch.object(market_data,"configured_massive_key",return_value="fixture"), patch.object(market_data.urllib.request,"urlopen",side_effect=timed_out):
-                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
-                    market_data.synchronized_completed_close_prices("AAPL")
-        clock[0]=100.0
-        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
-            with patch.object(earnings_calendar.urllib.request,"urlopen",side_effect=timed_out):
-                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
-                    earnings_calendar._get_text("https://example.com/")
-
-    def test_wrapped_connect_timeout_at_deadline_is_not_treated_as_source_outage(self):
-        clock=[100.0]
-        def wrapped_timeout(*args,**kwargs):
-            clock[0]=108.0
-            raise urllib.error.URLError(TimeoutError('socket deadline'))
-        with patch.object(research_budget,"monotonic",side_effect=lambda:clock[0]), research_budget.active_deadline(108):
-            with patch.object(market_data,"configured_massive_key",return_value="fixture"), patch.object(market_data.urllib.request,"urlopen",side_effect=wrapped_timeout):
-                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
-                    market_data.synchronized_completed_close_prices("AAPL")
+    def test_connect_timeout_at_deadline_preserves_typed_reason(self):
+        cases = (("market direct", "market", False, "connect deadline"),
+                 ("earnings direct", "earnings", False, "connect deadline"),
+                 ("market wrapped", "market", True, "socket deadline"))
+        for label, boundary, wrapped, message in cases:
+            with self.subTest(case=label):
+                clock = [100.0]
+                def timed_out(*args, **kwargs):
+                    clock[0] = 108.0
+                    error = TimeoutError(message)
+                    raise urllib.error.URLError(error) if wrapped else error
+                with patch.object(research_budget, "monotonic", side_effect=lambda: clock[0]), research_budget.active_deadline(108):
+                    if boundary == "market":
+                        with patch.object(market_data, "configured_massive_key", return_value="fixture"), patch.object(market_data.urllib.request, "urlopen", side_effect=timed_out):
+                            with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                                market_data.synchronized_completed_close_prices("AAPL")
+                    else:
+                        with patch.object(earnings_calendar.urllib.request, "urlopen", side_effect=timed_out):
+                            with self.assertRaises(research_budget.ResearchDeadlineExceeded):
+                                earnings_calendar._get_text("https://example.com/")
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
@@ -185,29 +181,27 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
     surplus (5 candidates minus dedupe/walls/staleness left <2 usable).
     """
 
-    def test_scout_prompt_forbids_unverified_url_construction(self):
-        self.assertIn("confirmed article URL copied exactly from the web_search results", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Never construct or guess", alpha_radar.SCOUT_PROMPT)
-
-    def test_scout_returns_ranked_company_event_groups(self):
-        self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn("one to five candidates in ranked order", alpha_radar.SCOUT_PROMPT)
-
-    def test_scout_defers_two_domain_bundle_to_focused_retrieval(self):
-        self.assertIn("at least one confirmed article URL",alpha_radar.SCOUT_PROMPT)
-        self.assertIn("focused retrieval stage",alpha_radar.SCOUT_PROMPT)
-        self.assertIn("apply the final two-domain evidence gate",alpha_radar.SCOUT_PROMPT)
-
-    def test_scout_uses_four_search_calls_in_only_tool_turn(self):
-        self.assertIn(
-            "call web_search exactly four times in parallel with limit 10 each",
-            alpha_radar.SCOUT_PROMPT,
+    def test_scout_prompt_discovery_contracts(self):
+        cases = (
+            ("verified article URL", True, "confirmed article URL copied exactly from the web_search results"),
+            ("no guessed URLs", True, "Never construct or guess"),
+            ("candidate schema", True, '"candidates"'),
+            ("ranked groups", True, "one to five candidates in ranked order"),
+            ("one confirmed URL", True, "at least one confirmed article URL"),
+            ("focused stage", True, "focused retrieval stage"),
+            ("deferred two-domain gate", True, "apply the final two-domain evidence gate"),
+            ("four parallel searches", True, "call web_search exactly four times in parallel with limit 10 each"),
+            ("one tool turn", True, "Use exactly one tool-using turn"),
+            ("no extraction tool", False, "web_extract"),
+            ("no page extraction", True, "Do not extract pages"),
         )
-        self.assertIn("Use exactly one tool-using turn",alpha_radar.SCOUT_PROMPT)
+        for label, present, phrase in cases:
+            with self.subTest(case=label):
+                if present:
+                    self.assertIn(phrase, alpha_radar.SCOUT_PROMPT)
+                else:
+                    self.assertNotIn(phrase, alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_does_not_extract_or_apply_focused_source_gate(self):
-        self.assertNotIn("web_extract",alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Do not extract pages",alpha_radar.SCOUT_PROMPT)
 
     def test_live_research_enforces_five_total_discovery_urls(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
@@ -294,32 +288,24 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
             [{"url":"https://down.example/a","domain": "down.example", "reason": "source_fetch_timeout"}],
         )
 
-    def test_gather_evidence_retries_transient_connection_failure_once(self):
-        attempts = {"n": 0}
+    def test_gather_evidence_retries_connection_reset_once(self):
+        for label, url, wrapped in (
+            ("direct reset", "https://bad.example/a", False),
+            ("wrapped reset", "https://wrapped.example/a", True),
+        ):
+            with self.subTest(case=label):
+                attempts = {"n": 0}
+                def fetch(requested, _timeout):
+                    attempts["n"] += 1
+                    if attempts["n"] == 1:
+                        error = ConnectionResetError("reset")
+                        raise urllib.error.URLError(error) if wrapped else error
+                    return {"url": requested, "title": "Recovered", "text": "usable evidence", "published_at": "2026-09-08T15:00:00Z"}
+                with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
+                    pages = alpha_radar.gather_evidence([url])
+                self.assertEqual(attempts["n"], 2)
+                self.assertEqual([page["title"] for page in pages], ["Recovered"])
 
-        def fetch(url, _timeout):
-            attempts["n"] += 1
-            if attempts["n"] == 1:
-                raise ConnectionResetError("reset")
-            return {"url":url,"title":"Recovered","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
-
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch):
-            pages = alpha_radar.gather_evidence(["https://bad.example/a"])
-
-        self.assertEqual(attempts["n"], 2)
-        self.assertEqual([page["title"] for page in pages],["Recovered"])
-
-    def test_gather_evidence_retries_wrapped_urlerror_connection_failure(self):
-        attempts={"n":0}
-        def fetch(url,_timeout):
-            attempts["n"]+=1
-            if attempts["n"]==1:
-                raise urllib.error.URLError(ConnectionResetError("reset"))
-            return {"url":url,"title":"Recovered","text":"usable evidence","published_at":"2026-09-08T15:00:00Z"}
-        with patch.object(alpha_radar,"fetch_source",side_effect=fetch):
-            pages=alpha_radar.gather_evidence(["https://wrapped.example/a"])
-        self.assertEqual(attempts["n"],2)
-        self.assertEqual([page["title"] for page in pages],["Recovered"])
 
     def test_collection_budget_exhaustion_is_typed_without_starting_fetch(self):
         diagnostics=[]

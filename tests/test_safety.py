@@ -48,12 +48,21 @@ class TradeySafetyTests(unittest.TestCase):
         }
         self.decision = {"action":"BUY","symbol":"AAPL","quantity":1,"order_type":"limit","limit_price":100.05,"stop":98.0,"target":104.2,"horizon":"5 sessions","confidence":0.82,"thesis":"Catalyst with liquid tape","risk_reward":2.075}
 
-    def test_disagreement_blocks_and_strips_order(self):
-        other = dict(self.decision, action="HOLD")
-        result = autotrader.consensus(self.decision, other, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertIsNone(result["order"])
-        self.assertEqual(result["reason"], "model_disagreement")
+    def test_consensus_rejection_reasons_and_order_suppression(self):
+        cases = (
+            ("action disagreement", {"action": "HOLD"}, "model_disagreement", True),
+            ("reviewer unavailable", None, "reviewer_unavailable", True),
+            ("level disagreement", {"stop": 90.0, "target": 120.0}, "level_disagreement", False),
+        )
+        for label, overrides, reason, check_order in cases:
+            with self.subTest(case=label):
+                first = dict(self.decision)
+                other = None if overrides is None else dict(self.decision, **overrides)
+                result = autotrader.consensus(first, other, dict(self.cfg))
+                self.assertFalse(result["approved"])
+                self.assertEqual(result["reason"], reason)
+                if check_order:
+                    self.assertIsNone(result["order"])
 
     def test_fractional_quantity_can_reach_consensus(self):
         fractional = dict(self.decision, quantity=0.5)
@@ -87,47 +96,30 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertFalse(result["approved"])
         self.assertEqual(result["reason"], "consensus_hold")
 
-    def test_unavailable_or_malformed_reviewer_blocks(self):
-        result = autotrader.consensus(self.decision, None, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "reviewer_unavailable")
-        self.assertIsNone(result["order"])
 
-    def test_materially_different_levels_block_update(self):
-        other = dict(self.decision, stop=90.0, target=120.0)
-        result = autotrader.consensus(self.decision, other, self.cfg)
-        self.assertFalse(result["approved"])
-        self.assertEqual(result["reason"], "level_disagreement")
-
-    def test_fractional_buy_is_valid_for_fractionable_asset_under_position_cap(self):
-        order = dict(self.decision, quantity=0.5)
-        snap = dict(
-            self.snapshot,
-            asset={**self.snapshot["asset"], "fractionable": True},
-            quote={**self.snapshot["quote"], "timestamp": autotrader.utcnow()},
+    def test_fractional_buy_policy_asset_and_cap(self):
+        cases = (
+            ("valid under cap", 0.5, True, True, True, None),
+            ("broker not fractionable", 0.5, False, True, False, "asset_not_fractionable"),
+            ("position cap", 1.01, True, True, False, "position_size_exceeded"),
+            ("policy disabled", 0.5, True, False, False, "fractional_shares_disabled"),
         )
-        cfg = dict(self.cfg, allow_fractional_shares=True)
-        errors = autotrader.validate_order(order, snap, cfg, daily_orders=0)
-        self.assertEqual(errors, [])
+        for label, quantity, fractionable, enabled, fresh_quote, error in cases:
+            with self.subTest(case=label):
+                order = dict(self.decision, quantity=quantity)
+                snap = dict(self.snapshot, asset={**self.snapshot["asset"], "fractionable": fractionable},
+                            quote=dict(self.snapshot["quote"]))
+                if fresh_quote:
+                    snap["quote"]["timestamp"] = autotrader.utcnow()
+                cfg = dict(self.cfg)
+                if enabled:
+                    cfg["allow_fractional_shares"] = True
+                errors = autotrader.validate_order(order, snap, cfg, daily_orders=0)
+                if error is None:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertIn(error, errors)
 
-    def test_fractional_buy_requires_broker_fractionable_asset(self):
-        order = dict(self.decision, quantity=0.5)
-        cfg = dict(self.cfg, allow_fractional_shares=True)
-        errors = autotrader.validate_order(order, self.snapshot, cfg, daily_orders=0)
-        self.assertIn("asset_not_fractionable", errors)
-
-    def test_fractional_buy_still_obeys_position_cap(self):
-        order = dict(self.decision, quantity=1.01)
-        snap = dict(self.snapshot, asset={**self.snapshot["asset"], "fractionable": True})
-        cfg = dict(self.cfg, allow_fractional_shares=True)
-        errors = autotrader.validate_order(order, snap, cfg, daily_orders=0)
-        self.assertIn("position_size_exceeded", errors)
-
-    def test_fractional_buy_is_blocked_when_policy_is_disabled(self):
-        order = dict(self.decision, quantity=0.5)
-        snap = dict(self.snapshot, asset={**self.snapshot["asset"], "fractionable": True})
-        errors = autotrader.validate_order(order, snap, self.cfg, daily_orders=0)
-        self.assertIn("fractional_shares_disabled", errors)
 
     def test_unknown_buying_power_fails_closed(self):
         snap = dict(self.snapshot, buying_power=None)
@@ -140,9 +132,13 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertIn("unknown_cash",errors)
         self.assertIn("fund_or_etn_forbidden",errors)
 
-    def test_any_active_broker_order_blocks_new_order(self):
-        snap=dict(self.snapshot,open_orders=[{"symbol":"MSFT","status":"accepted"}])
-        self.assertIn("active_broker_order",autotrader.validate_order(self.decision,snap,self.cfg,daily_orders=0))
+    def test_active_broker_orders_block_same_and_other_symbols(self):
+        for label, symbol, status in (("other accepted", "MSFT", "accepted"),
+                                      ("same new", "AAPL", "new")):
+            with self.subTest(case=label):
+                snap = dict(self.snapshot, open_orders=[{"symbol": symbol, "status": status}])
+                self.assertIn("active_broker_order", autotrader.validate_order(
+                    dict(self.decision), snap, dict(self.cfg), daily_orders=0))
 
     def test_valid_protective_exit_does_not_block_another_symbol(self):
         snap = dict(
@@ -268,10 +264,6 @@ class TradeySafetyTests(unittest.TestCase):
             cfg = dict(self.cfg, enabled=True, kill_switch_path=str(p))
             self.assertIn("kill_switch_active", autotrader.runtime_blockers(cfg))
 
-    def test_active_order_for_symbol_is_rejected(self):
-        snap = dict(self.snapshot, open_orders=[{"symbol":"AAPL","status":"new"}])
-        errors = autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0)
-        self.assertIn("active_broker_order", errors)
 
     def test_reward_risk_and_spread_are_deterministic(self):
         bad = dict(self.decision, target=101.0)
@@ -285,61 +277,49 @@ class TradeySafetyTests(unittest.TestCase):
         normalized = autotrader.normalize_order_metrics(order)
         self.assertAlmostEqual(normalized["risk_reward"], 60 / 42)
 
-    def test_horizon_classifier_uses_verified_exchange_sessions(self):
-        candidate = {
-            "planned_exit_at": "2026-09-08T20:00:00Z",
-            "claimed_holding_sessions": 5,
-        }
-        snapshot = {
-            "trading_sessions": [
-                "2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08",
-            ],
-        }
-        result, errors = autotrader.classify_horizon(candidate, snapshot)
-        self.assertEqual(errors, [])
-        self.assertEqual(result, {"holding_sessions": 5, "assigned_rubric": "short_1_5"})
+    def test_horizon_classifier_verified_sessions_claim_and_timezone(self):
+        cases = (
+            ("verified five", "2026-09-08T20:00:00Z", 5,
+             ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08"],
+             {"holding_sessions": 5, "assigned_rubric": "short_1_5"}, []),
+            ("claim mismatch", "2026-09-09T20:00:00Z", 5,
+             ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08", "2026-09-09"],
+             None, ["horizon_session_mismatch"]),
+            ("New York exit date", "2026-09-09T00:30:00Z", None,
+             ["2026-09-08", "2026-09-09"], 1, []),
+        )
+        for label, exit_at, claim, sessions, expected, expected_errors in cases:
+            with self.subTest(case=label):
+                candidate: dict = {"planned_exit_at": exit_at}
+                if claim is not None:
+                    candidate["claimed_holding_sessions"] = claim
+                result, errors = autotrader.classify_horizon(candidate, {"trading_sessions": list(sessions)})
+                self.assertEqual(errors, expected_errors)
+                if expected is None:
+                    self.assertIsNone(result)
+                elif isinstance(expected, dict):
+                    self.assertEqual(result, expected)
+                else:
+                    self.assertIsNotNone(result)
+                    self.assertEqual((result or {})["holding_sessions"], expected)
 
-    def test_horizon_classifier_fails_closed_on_claim_mismatch(self):
-        candidate = {
-            "planned_exit_at": "2026-09-09T20:00:00Z",
-            "claimed_holding_sessions": 5,
-        }
-        snapshot = {
-            "trading_sessions": [
-                "2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08", "2026-09-09",
-            ],
-        }
-        result, errors = autotrader.classify_horizon(candidate, snapshot)
-        self.assertIsNone(result)
-        self.assertEqual(errors, ["horizon_session_mismatch"])
 
-    def test_horizon_exit_date_is_interpreted_in_new_york(self):
-        candidate = {"planned_exit_at": "2026-09-09T00:30:00Z"}
-        snapshot = {"trading_sessions": ["2026-09-08", "2026-09-09"]}
-        result, errors = autotrader.classify_horizon(candidate, snapshot)
-        self.assertEqual(errors, [])
-        self.assertEqual(result["holding_sessions"], 1)
+    def test_deterministic_levels_by_setup_family(self):
+        cases = (
+            ("momentum", "breakout", "short_1_5", {"stop": 95.0, "target": 109.0, "atr_14": 4.0, "level_method": "atr_momentum"}),
+            ("swing", "strategic_rerating", "swing_6_30", {"stop": 94.0, "target": 112.0, "atr_14": 4.0, "level_method": "atr_swing"}),
+            ("pullback", "pullback_to_support", "short_1_5", {"stop": 97.6, "target": 102.0, "atr_14": 4.0, "level_method": "recent_structure"}),
+        )
+        for label, setup, rubric, expected in cases:
+            with self.subTest(case=label):
+                bars = [
+                    {"open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0, "timestamp": f"2026-08-{day:02d}"}
+                    for day in range(1, 21)
+                ]
+                levels, errors = autotrader.derive_technical_levels(100.0, bars, setup, rubric)
+                self.assertEqual(errors, [])
+                self.assertEqual(levels, expected)
 
-    def test_deterministic_levels_use_atr_and_setup_family(self):
-        bars = [
-            {"open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0, "timestamp": f"2026-08-{day:02d}"}
-            for day in range(1, 21)
-        ]
-        momentum, errors = autotrader.derive_technical_levels(100.0, bars, "breakout", "short_1_5")
-        self.assertEqual(errors, [])
-        self.assertEqual(momentum, {"stop": 95.0, "target": 109.0, "atr_14": 4.0, "level_method": "atr_momentum"})
-        swing, errors = autotrader.derive_technical_levels(100.0, bars, "strategic_rerating", "swing_6_30")
-        self.assertEqual(errors, [])
-        self.assertEqual(swing, {"stop": 94.0, "target": 112.0, "atr_14": 4.0, "level_method": "atr_swing"})
-
-    def test_deterministic_pullback_levels_use_recent_structure(self):
-        bars = [
-            {"open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0, "timestamp": f"2026-08-{day:02d}"}
-            for day in range(1, 21)
-        ]
-        levels, errors = autotrader.derive_technical_levels(100.0, bars, "pullback_to_support", "short_1_5")
-        self.assertEqual(errors, [])
-        self.assertEqual(levels, {"stop": 97.6, "target": 102.0, "atr_14": 4.0, "level_method": "recent_structure"})
 
     def test_deterministic_levels_fail_closed_on_bad_bars(self):
         levels, errors = autotrader.derive_technical_levels(100.0, [{"high": 1}], "breakout", "short_1_5")
@@ -457,24 +437,26 @@ class TradeySafetyTests(unittest.TestCase):
         cfg=dict(self.cfg,max_quote_age_seconds=120)
         self.assertIn("stale_quote",autotrader.validate_order(self.decision,snap,cfg,daily_orders=0))
 
-    def test_reported_earnings_do_not_trigger_upcoming_blackout(self):
-        snap = dict(self.snapshot, earnings_status="reported", earnings_sessions_away=None)
-        errors = autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0)
-        self.assertNotIn("near_term_earnings", errors)
-        self.assertNotIn("earnings_unknown", errors)
+    def test_earnings_status_and_holding_period_blackout(self):
+        cases = (
+            ("reported", "reported", None, None, None),
+            ("blackout boundary", "upcoming", 2, None, "near_term_earnings"),
+            ("holding period plus buffer", "upcoming", 6, 5, "near_term_earnings"),
+            ("unknown", "unknown", None, None, "earnings_unknown"),
+        )
+        for label, status, away, holding, error in cases:
+            with self.subTest(case=label):
+                snap = dict(self.snapshot, earnings_status=status, earnings_sessions_away=away)
+                order = dict(self.decision)
+                if holding is not None:
+                    order["holding_sessions"] = holding
+                errors = autotrader.validate_order(order, snap, dict(self.cfg), daily_orders=0)
+                if error is None:
+                    self.assertNotIn("near_term_earnings", errors)
+                    self.assertNotIn("earnings_unknown", errors)
+                else:
+                    self.assertIn(error, errors)
 
-    def test_upcoming_earnings_inside_blackout_are_rejected(self):
-        snap = dict(self.snapshot, earnings_status="upcoming", earnings_sessions_away=2)
-        self.assertIn("near_term_earnings", autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0))
-
-    def test_upcoming_earnings_during_holding_period_plus_buffer_are_rejected(self):
-        snap = dict(self.snapshot, earnings_status="upcoming", earnings_sessions_away=6)
-        order = dict(self.decision, holding_sessions=5)
-        self.assertIn("near_term_earnings", autotrader.validate_order(order, snap, self.cfg, daily_orders=0))
-
-    def test_unknown_earnings_status_fails_closed(self):
-        snap = dict(self.snapshot, earnings_status="unknown", earnings_sessions_away=None)
-        self.assertIn("earnings_unknown", autotrader.validate_order(self.decision, snap, self.cfg, daily_orders=0))
 
     def test_broker_nulls_replace_model_values(self):
         model_claim = {"buying_power":999999,"positions":[{"symbol":"FAKE"}],"asset":{"tradable":True}}

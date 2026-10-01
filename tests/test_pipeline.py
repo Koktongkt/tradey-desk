@@ -49,34 +49,26 @@ class PipelineTests(unittest.TestCase):
         now=dt.datetime(2026,9,10,12,32,tzinfo=dt.timezone.utc)
         self.assertTrue(alpha_radar.qualified(candidate,cfg,now=now))
 
-    def test_date_only_earnings_today_remains_in_blackout(self):
-        base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
-        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
-        now=dt.datetime(2026,9,10,12,32,tzinfo=dt.timezone.utc)
-        self.assertEqual(alpha_radar.candidate_preflight(
-            {**base,"earnings_event_at":"2026-09-10"},cfg,now
-        ),["near_term_earnings"])
-
-    def test_radar_blocks_earnings_inside_holding_period_plus_blackout_buffer(self):
-        candidate={
-            "price":100,"setup_type":"breakout",
-            "planned_exit_at":"2026-09-25T20:00:00Z",
-            "earnings_event_at":"2026-09-29",
-            "earnings_date_status":"estimated",
-        }
-        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
-        now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc)
-
-        self.assertEqual(alpha_radar.candidate_preflight(candidate,cfg,now),["near_term_earnings"])
-
     def test_candidate_preflight_types_earnings_dead_ends(self):
-        base={"price":100,"setup_type":"breakout","planned_exit_at":"2026-09-18T20:00:00Z"}
-        cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}
-        friday=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
-        self.assertEqual(alpha_radar.candidate_preflight(base,cfg,friday),["earnings_unknown"])
-        self.assertEqual(alpha_radar.candidate_preflight(
-            {**base,"earnings_event_at":"2026-09-08T20:00:00Z"},cfg,friday
-        ),["near_term_earnings"])
+        cases = (
+            ("unknown", {}, (2026, 9, 4, 14, 0), ["earnings_unknown"]),
+            ("near_term_timestamp", {"earnings_event_at": "2026-09-08T20:00:00Z"},
+             (2026, 9, 4, 14, 0), ["near_term_earnings"]),
+            ("date_only_today", {"earnings_event_at": "2026-09-10"},
+             (2026, 9, 10, 12, 32), ["near_term_earnings"]),
+            ("holding_period_plus_blackout_buffer", {
+                "planned_exit_at": "2026-09-25T20:00:00Z",
+                "earnings_event_at": "2026-09-29", "earnings_date_status": "estimated",
+             }, (2026, 9, 11, 14, 0), ["near_term_earnings"]),
+        )
+        for label, changes, clock, expected in cases:
+            with self.subTest(case=label):
+                candidate = {"price": 100, "setup_type": "breakout",
+                             "planned_exit_at": "2026-09-18T20:00:00Z", **changes}
+                cfg = {"max_position_usd": 500, "allow_fractional_shares": False,
+                       "earnings_blackout_sessions": 2}
+                now = dt.datetime(*clock, tzinfo=dt.timezone.utc)
+                self.assertEqual(alpha_radar.candidate_preflight(candidate, cfg, now), expected)
 
     def test_research_prompt_prioritizes_evidence_backed_past_or_future_earnings_date(self):
         cfg={"max_position_usd":500,"allow_fractional_shares":False,"earnings_blackout_sessions":2}

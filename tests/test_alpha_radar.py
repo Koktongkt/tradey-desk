@@ -1,6 +1,7 @@
 """Tests for the alpha_radar two-stage research pipeline and fallback."""
 import argparse
 import contextlib
+import copy
 import io
 import json
 import subprocess
@@ -104,58 +105,70 @@ class AlphaRadarTests(unittest.TestCase):
                     alpha_radar.load_configured_default_model(run=run)
                 self.assertEqual(ctx.exception.code,"research_model_configuration_unavailable")
 
-    def test_scout_prompt_is_discovery_only_and_allows_one_confirmed_url(self):
-        prompt=alpha_radar.discovery_prompt({"min_price_usd":1,"max_position_usd":500})
-        self.assertIn("$1-$500",prompt)
-        self.assertIn("at least one confirmed",prompt)
-        self.assertIn("web_search exactly four times in parallel with limit 10 each",prompt)
-        self.assertNotIn("web_extract",prompt)
-        self.assertNotIn("at least two successfully extracted",prompt)
-        self.assertIn("focused retrieval stage",prompt)
+    def test_scout_prompt_discovery_contract(self):
+        cases = (
+            ('configured_price_range', {'min_price_usd':1,'max_position_usd':500},
+             ('$1-$500','at least one confirmed','web_search exactly four times in parallel with limit 10 each','focused retrieval stage'),
+             ('web_extract','at least two successfully extracted')),
+            ('bounded_structured_prompt', None,
+             ('"candidates"','"symbol"','"catalyst"','at most 500 characters','"urls"','no commentary',
+              'landing, index, search, symbol, or homepage URLs','web_search exactly four times in parallel with limit 10 each',
+              'Use exactly one tool-using turn','focused retrieval stage','catalyst materiality','at least one confirmed article URL'),
+             ('web_extract',)),
+            ('distinct_discovery_lanes', None,
+             ('broad US-equity catalysts','SEC and issuer disclosures','independent financial reporting',
+              'undercovered sectors or smaller liquid companies','one to five candidates','at most five URLs total'), ()),
+        )
+        for label, config, required, forbidden in cases:
+            with self.subTest(case=label):
+                prompt = alpha_radar.SCOUT_PROMPT if config is None else alpha_radar.discovery_prompt(dict(config))
+                for fragment in required:
+                    with self.subTest(required=fragment):
+                        self.assertIn(fragment,prompt)
+                for fragment in forbidden:
+                    with self.subTest(forbidden=fragment):
+                        self.assertNotIn(fragment,prompt)
 
-    def test_scout_parse_result_distinguishes_empty_invalid_and_schema_rejection(self):
-        candidates,diag=alpha_radar.scout_parse_result('{bad')
-        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"invalid_json")
-        candidates,diag=alpha_radar.scout_parse_result('{"candidates":[]}')
-        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"no_discovered_candidate")
-        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":[{"symbol":"bad"}]}))
-        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
-        candidates,diag=alpha_radar.scout_parse_result(structured_scout("AAA",["https://a.example/1"]))
-        self.assertEqual([c["symbol"] for c in candidates],["AAA"])
-        self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":1,"parsed_candidate_count":1,"valid_url_count":1})
-
-    def test_scout_parse_result_funnels_surplus_candidates_to_ranked_top_five(self):
-        payload={"candidates":[json.loads(structured_scout(symbol,[f"https://{symbol.lower()}.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD","EEE","FFF")]}
-        candidates,diag=alpha_radar.scout_parse_result(json.dumps(payload))
-        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB","CCC","DDD","EEE"])
-        self.assertEqual(diag,{"reason":"discovery_candidates_ready","raw_candidate_count":6,"parsed_candidate_count":5,"valid_url_count":5})
-
-    def test_scout_duplicate_symbols_cannot_starve_other_candidates(self):
-        repeated=[json.loads(structured_scout("AAA",[f"https://source{i}.example/story"]))["candidates"][0] for i in range(5)]
-        other=json.loads(structured_scout("BBB",["https://different.example/story"]))["candidates"][0]
-        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":repeated+[other]}))
-        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB"])
-        self.assertEqual(candidates[0]["urls"],["https://source0.example/story"])
-        self.assertEqual(diag["raw_candidate_count"],6)
-        self.assertEqual(diag["valid_url_count"],2)
-
-    def test_scout_parse_result_skips_malformed_ranked_entries_before_funneling(self):
-        malformed=[
-            {"symbol":"bad","catalyst":"invalid ticker","event_date":"2026-09-14","urls":["https://bad.example/1"]},
-            {"symbol":"NOPE","catalyst":"invalid date","event_date":"not-a-date","urls":["https://nope.example/1"]},
+    def test_scout_parse_result_validation_funneling_and_diagnostics(self):
+        ranked = [json.loads(structured_scout(symbol,[f'https://{symbol.lower()}.example/1']))['candidates'][0]
+                  for symbol in ('AAA','BBB','CCC','DDD','EEE','FFF')]
+        malformed = [
+            {'symbol':'bad','catalyst':'invalid ticker','event_date':'2026-09-14','urls':['https://bad.example/1']},
+            {'symbol':'NOPE','catalyst':'invalid date','event_date':'not-a-date','urls':['https://nope.example/1']},
         ]
-        valid=[json.loads(structured_scout(symbol,[f"https://{symbol.lower()}.example/1"]))["candidates"][0] for symbol in ("AAA","BBB","CCC","DDD","EEE","FFF")]
-        candidates,diag=alpha_radar.scout_parse_result(json.dumps({"candidates":malformed+valid}))
-        self.assertEqual([c["symbol"] for c in candidates],["AAA","BBB","CCC","DDD","EEE"])
-        self.assertEqual(diag["raw_candidate_count"],8)
-        self.assertEqual(diag["parsed_candidate_count"],5)
-        self.assertEqual(diag["reason"],"discovery_candidates_ready")
+        repeated = [json.loads(structured_scout('AAA',[f'https://source{i}.example/story']))['candidates'][0] for i in range(5)]
+        other = json.loads(structured_scout('BBB',['https://different.example/story']))['candidates'][0]
+        cases = (
+            ('invalid_json', '{bad', [], {'reason':'invalid_json'}, False, None),
+            ('empty_candidates', '{"candidates":[]}', [], {'reason':'no_discovered_candidate'}, False, None),
+            ('schema_rejection', json.dumps({'candidates':[{'symbol':'bad'}]}), [], {'reason':'candidate_schema_rejected'}, False, None),
+            ('single_confirmed_url', structured_scout('AAA',['https://a.example/1']), ['AAA'],
+             {'reason':'discovery_candidates_ready','raw_candidate_count':1,'parsed_candidate_count':1,'valid_url_count':1}, True, None),
+            ('ranked_top_five', json.dumps({'candidates':ranked}), ['AAA','BBB','CCC','DDD','EEE'],
+             {'reason':'discovery_candidates_ready','raw_candidate_count':6,'parsed_candidate_count':5,'valid_url_count':5}, True, None),
+            ('duplicate_symbols', json.dumps({'candidates':repeated+[other]}), ['AAA','BBB'],
+             {'raw_candidate_count':6,'valid_url_count':2}, False, ['https://source0.example/story']),
+            ('malformed_before_funneling', json.dumps({'candidates':malformed+ranked}), ['AAA','BBB','CCC','DDD','EEE'],
+             {'raw_candidate_count':8,'parsed_candidate_count':5,'reason':'discovery_candidates_ready'}, False, None),
+            ('five_url_budget', structured_scout('AAA',[
+                'https://a.example/1','https://b.example/2','https://c.example/3','https://d.example/4','https://e.example/5','https://f.example/6',
+            ]), [], {'reason':'candidate_schema_rejected'}, False, None),
+        )
+        for label, payload, symbols, expected_diag, exact_diag, first_urls in cases:
+            with self.subTest(case=label):
+                candidates, diag = alpha_radar.scout_parse_result(payload)
+                if symbols:
+                    self.assertEqual([c['symbol'] for c in candidates], symbols)
+                else:
+                    self.assertEqual(candidates, [])
+                if exact_diag:
+                    self.assertEqual(diag, expected_diag)
+                else:
+                    for key, value in expected_diag.items():
+                        self.assertEqual(diag[key], value)
+                if first_urls is not None:
+                    self.assertEqual(candidates[0]['urls'], first_urls)
 
-    def test_scout_parse_result_enforces_five_url_budget(self):
-        candidates,diag=alpha_radar.scout_parse_result(structured_scout("AAA",[
-            "https://a.example/1","https://b.example/2","https://c.example/3","https://d.example/4","https://e.example/5","https://f.example/6",
-        ]))
-        self.assertEqual(candidates,[]);self.assertEqual(diag["reason"],"candidate_schema_rejected")
 
     def test_record_scout_diagnostic_persists_only_sanitized_counts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -188,46 +201,18 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(cfg["min_price_usd"],1)
         self.assertEqual(cfg["max_position_usd"],500)
 
-    def test_scout_prompt_bounded_and_structured(self):
-        self.assertIn('"candidates"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn('"symbol"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn('"catalyst"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn("at most 500 characters",alpha_radar.SCOUT_PROMPT)
-        self.assertIn('"urls"', alpha_radar.SCOUT_PROMPT)
-        self.assertIn("no commentary", alpha_radar.SCOUT_PROMPT)
-        self.assertNotIn("web_extract", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("landing, index, search, symbol, or homepage URLs", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("web_search exactly four times in parallel with limit 10 each", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("Use exactly one tool-using turn", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("focused retrieval stage", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("catalyst materiality", alpha_radar.SCOUT_PROMPT)
-        self.assertIn("at least one confirmed article URL", alpha_radar.SCOUT_PROMPT)
 
-    def test_scout_searches_distinct_discovery_lanes_without_expanding_intake(self):
-        prompt=alpha_radar.SCOUT_PROMPT
-        for lane in ("broad US-equity catalysts", "SEC and issuer disclosures",
-                     "independent financial reporting", "undercovered sectors or smaller liquid companies"):
-            self.assertIn(lane,prompt)
-        self.assertIn("one to five candidates",prompt)
-        self.assertIn("at most five URLs total",prompt)
+    def test_extract_candidate_urls_deduplicates_publishers(self):
+        cases = (
+            ('per_domain_and_caps_six', 'https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y', 6,
+             ['https://a.com/1', 'https://b.com/x', 'https://c.com/y']),
+            ('registered_domains', 'https://news.example.com/1\nhttps://ir.example.com/2\nhttps://news.publisher.co.uk/3\nhttps://investors.publisher.co.uk/4\nhttps://other.co.uk/5', 7,
+             ['https://news.example.com/1', 'https://news.publisher.co.uk/3', 'https://other.co.uk/5']),
+        )
+        for label, text, limit, expected in cases:
+            with self.subTest(case=label):
+                self.assertEqual(alpha_radar.extract_candidate_urls(text, limit=limit), expected)
 
-    def test_extract_candidate_urls_dedupes_per_domain_and_caps_six(self):
-        text = "https://a.com/1\nhttps://a.com/2\nhttps://b.com/x\nhttps://c.com/y"
-        self.assertEqual(
-            alpha_radar.extract_candidate_urls(text, limit=6),
-            ["https://a.com/1", "https://b.com/x", "https://c.com/y"],
-        )
-
-    def test_extract_candidate_urls_dedupes_registered_domains(self):
-        text=(
-            "https://news.example.com/1\nhttps://ir.example.com/2\n"
-            "https://news.publisher.co.uk/3\nhttps://investors.publisher.co.uk/4\n"
-            "https://other.co.uk/5"
-        )
-        self.assertEqual(
-            alpha_radar.extract_candidate_urls(text,limit=7),
-            ["https://news.example.com/1","https://news.publisher.co.uk/3","https://other.co.uk/5"],
-        )
 
     def test_source_profile_ranks_primary_independent_wire_and_unknown(self):
         self.assertEqual(alpha_radar.source_profile("https://www.sec.gov/Archives/x")["role"], "primary")
@@ -247,53 +232,34 @@ class AlphaRadarTests(unittest.TestCase):
                     {"role":"unknown","rank":40},
                 )
 
-    def test_extract_scout_candidates_rejects_non_json_legacy_urls(self):
-        self.assertEqual(
-            alpha_radar.extract_scout_candidates("https://a.example/1\nhttps://b.example/2"),
-            [],
-        )
+    def test_extract_scout_candidates_schema_and_ranked_groups(self):
+        valid = {'symbol':'AAA', 'catalyst':'raised guidance', 'event_date':'2026-09-14', 'urls':['https://a.example/1']}
+        cases = [('non_json_legacy_urls', 'https://a.example/1\nhttps://b.example/2', [], None)]
+        for date in (None, '', '2026-02-30', '09/14/2026', '2026-9-14'):
+            raw = dict(valid)
+            if date is None:
+                del raw['event_date']
+            else:
+                raw['event_date'] = date
+            cases.append((f'invalid_event_date:{date!r}', json.dumps({'candidates':[raw]}), [], None))
+        cases.extend((
+            ('single_url_candidate', json.dumps({'candidates':[valid]}), ['AAA'], ['https://a.example/1']),
+            ('non_url_list_members', json.dumps({'candidates':[{**valid, 'urls':['https://a.example/1',123]}]}), [], None),
+            ('oversized_catalyst', json.dumps({'candidates':[{**valid, 'catalyst':'x'*501}]}), [], None),
+            ('ranked_company_event_groups', json.dumps({'candidates':[
+                {**valid, 'urls':['https://a.example/1','https://b.example/2']},
+                {'symbol':'BBB','catalyst':'contract win','event_date':'2026-09-13','urls':['https://c.example/3','https://d.example/4']},
+            ]}), ['AAA','BBB'], ['https://a.example/1','https://b.example/2']),
+        ))
+        for label, payload, symbols, first_urls in cases:
+            with self.subTest(case=label):
+                candidates = alpha_radar.extract_scout_candidates(payload)
+                if not symbols:
+                    self.assertEqual(candidates, [])
+                else:
+                    self.assertEqual([candidate['symbol'] for candidate in candidates], symbols)
+                    self.assertEqual(candidates[0]['urls'], first_urls)
 
-    def test_extract_scout_candidates_rejects_missing_or_invalid_event_date(self):
-        for event_date in (None,"","2026-02-30","09/14/2026","2026-9-14"):
-            raw={"symbol":"AAA","catalyst":"raised guidance","urls":["https://a.example/1"]}
-            if event_date is not None:raw["event_date"]=event_date
-            with self.subTest(event_date=event_date):
-                self.assertEqual(
-                    alpha_radar.extract_scout_candidates(json.dumps({"candidates":[raw]})),
-                    [],
-                )
-
-    def test_extract_scout_candidates_keeps_single_url_candidate(self):
-        payload=json.dumps({"candidates":[{
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-14",
-            "urls":["https://a.example/1"],
-        }]})
-        candidates=alpha_radar.extract_scout_candidates(payload)
-        self.assertEqual([candidate["symbol"] for candidate in candidates],["AAA"])
-        self.assertEqual(candidates[0]["urls"],["https://a.example/1"])
-
-    def test_extract_scout_candidates_rejects_non_url_list_members(self):
-        payload=json.dumps({"candidates":[{
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-14",
-            "urls":["https://a.example/1",123],
-        }]})
-        self.assertEqual(alpha_radar.extract_scout_candidates(payload),[])
-
-    def test_extract_scout_candidates_rejects_oversized_catalyst(self):
-        payload=json.dumps({"candidates":[{
-            "symbol":"AAA","catalyst":"x"*501,"event_date":"2026-09-14",
-            "urls":["https://a.example/1"],
-        }]})
-        self.assertEqual(alpha_radar.extract_scout_candidates(payload),[])
-
-    def test_extract_scout_candidates_keeps_ranked_company_event_groups(self):
-        payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-14","urls":["https://a.example/1","https://b.example/2"]},
-            {"symbol":"BBB","catalyst":"contract win","event_date":"2026-09-13","urls":["https://c.example/3","https://d.example/4"]},
-        ]})
-        candidates=alpha_radar.extract_scout_candidates(payload)
-        self.assertEqual([candidate["symbol"] for candidate in candidates],["AAA","BBB"])
-        self.assertEqual(candidates[0]["urls"],["https://a.example/1","https://b.example/2"])
 
     def test_select_candidate_evidence_rejects_sibling_subdomains_as_one_publisher(self):
         urls=["https://news.example.com/1","https://ir.example.com/2"]
@@ -367,172 +333,110 @@ class AlphaRadarTests(unittest.TestCase):
             "research_evidence_insufficient",
         )
 
-    def test_fetch_source_prefers_article_over_navigation_prefix(self):
-        html = (
-            "<html><head><title>Current release</title></head><body>"
-            + "<nav>" + ("navigation " * 900) + "</nav>"
-            + "<article><time datetime='2026-09-02T20:05:00Z'>September 2, 2026</time>"
-            + "<h1>Fiscal Q2 2027 results</h1>"
-            + "<p>Revenue was $1.55 billion and full-year guidance was raised.</p></article>"
-            + "</body></html>"
-        ).encode()
-
-        class Response:
-            status = 200
-            def __enter__(self): return self
-            def __exit__(self, *_): return False
-            def geturl(self): return "https://issuer.example/release"
-            def read(self, _limit): return html
-
-        with patch.object(alpha_radar, "safe_urlopen", return_value=Response()):
-            page = alpha_radar.fetch_source("https://issuer.example/release")
-
-        self.assertIn("September 2, 2026", page["text"])
-        self.assertIn("$1.55 billion", page["text"])
-        self.assertNotIn("navigation navigation", page["text"])
-
-    def test_fetch_source_extracts_structured_publication_time(self):
-        html = b"""<html><head><meta property='article:published_time' content='2026-09-02T20:05:00Z'></head><body><article>Current earnings release with enough evidence.</article></body></html>"""
-
-        class Response:
-            def __enter__(self): return self
-            def __exit__(self, *_): return False
-            def geturl(self): return "https://issuer.example/release"
-            def read(self, _limit): return html
-
-        with patch.object(alpha_radar, "safe_urlopen", return_value=Response()):
-            page = alpha_radar.fetch_source("https://issuer.example/release")
-
-        self.assertEqual(page["published_at"], "2026-09-02T20:05:00Z")
-
-    def test_extract_published_at_supports_json_ld_date_published(self):
-        body = """<script type='application/ld+json'>{"@type":"NewsArticle","datePublished":"2026-09-14T12:00:00+00:00"}</script>"""
-        self.assertEqual(
-            alpha_radar.extract_published_at(body),
-            "2026-09-14T12:00:00+00:00",
+    def test_fetch_source_extracts_article_and_structured_publication_time(self):
+        cases = (
+            ('article_over_navigation', (
+                '<html><head><title>Current release</title></head><body>'
+                + '<nav>' + ('navigation '*900) + '</nav>'
+                + "<article><time datetime='2026-09-02T20:05:00Z'>September 2, 2026</time>"
+                + '<h1>Fiscal Q2 2027 results</h1>'
+                + '<p>Revenue was $1.55 billion and full-year guidance was raised.</p></article>'
+                + '</body></html>'
+            ).encode()),
+            ('structured_publication_time', b"<html><head><meta property='article:published_time' content='2026-09-02T20:05:00Z'></head><body><article>Current earnings release with enough evidence.</article></body></html>"),
         )
+        for label, html in cases:
+            with self.subTest(case=label):
+                class Response:
+                    def __enter__(self): return self
+                    def __exit__(self,*_): return False
+                    def geturl(self): return 'https://issuer.example/release'
+                    def read(self,_limit): return html
+                if label == 'article_over_navigation':
+                    Response.status = 200
+                with patch.object(alpha_radar,'safe_urlopen',return_value=Response()):
+                    page = alpha_radar.fetch_source('https://issuer.example/release')
+                if label == 'article_over_navigation':
+                    self.assertIn('September 2, 2026',page['text'])
+                    self.assertIn('$1.55 billion',page['text'])
+                    self.assertNotIn('navigation navigation',page['text'])
+                else:
+                    self.assertEqual(page['published_at'],'2026-09-02T20:05:00Z')
 
-    def test_extract_published_at_supports_display_date_attribute(self):
-        body = """<article displayDate="2026-09-14T12:00:00+00:00">Current release</article>"""
-        self.assertEqual(
-            alpha_radar.extract_published_at(body),
-            "2026-09-14T12:00:00+00:00",
+
+    def test_extract_published_at_supported_markup_and_nonpublication_banner(self):
+        cases = (
+            ('json_ld_date_published', "<script type='application/ld+json'>{\"@type\":\"NewsArticle\",\"datePublished\":\"2026-09-14T12:00:00+00:00\"}</script>", '2026-09-14T12:00:00+00:00'),
+            ('display_date_attribute', '<article displayDate="2026-09-14T12:00:00+00:00">Current release</article>', '2026-09-14T12:00:00+00:00'),
+            ('non_publication_update_class', '<div class="update-banner">September 8, 2026</div><article>Results</article>', None),
+            ('visible_labeled_release_date', '<div class="field field--name-field-nir-news-date">September 8, 2026</div><article>Results</article>', '2026-09-08T00:00:00Z'),
         )
+        for label, body, expected in cases:
+            with self.subTest(case=label):
+                actual = alpha_radar.extract_published_at(body)
+                if expected is None:
+                    self.assertIsNone(actual)
+                else:
+                    self.assertEqual(actual, expected)
 
-    def test_extract_published_at_ignores_non_publication_update_class(self):
-        body="""<div class="update-banner">September 8, 2026</div><article>Results</article>"""
-        self.assertIsNone(alpha_radar.extract_published_at(body))
 
-    def test_extract_published_at_supports_visible_labeled_release_date(self):
-        body = """<div class="field field--name-field-nir-news-date">September 8, 2026</div><article>Results</article>"""
-        self.assertEqual(
-            alpha_radar.extract_published_at(body),
-            "2026-09-08T00:00:00Z",
+    def test_gateway_fallback_publication_dates_are_publisher_bound(self):
+        cases = (
+            ('marketscreener_numeric_publication_date', 'https://www.marketscreener.com/news/thomson-reuters-guidance',
+             'Published on 08/05/2026 at 10:07 am EDT\n# Thomson Reuters raises 2026 guidance\n' + _body('guidance details'), '2026-08-05T00:00:00Z'),
+            ('reuters_matching_url_date', 'https://www.reuters.com/business/thomson-reuters-results-2026-08-05/',
+             'Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. ' + _body('revenue and guidance details'), '2026-08-05T00:00:00Z'),
+            ('marketscreener_other_domain', 'https://example.com/news/guidance',
+             'Published on 08/05/2026 at 10:07 am EDT\n' + _body('guidance details'), None),
+            ('reuters_mismatched_url_date', 'https://www.reuters.com/business/thomson-reuters-results-2026-08-06/',
+             'Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. ' + _body('revenue and guidance details'), None),
+            ('reuters_other_domain', 'https://example.com/business/thomson-reuters-results-2026-08-05/',
+             'Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. ' + _body('revenue and guidance details'), None),
         )
+        for label, url, body, expected in cases:
+            with self.subTest(case=label):
+                result = subprocess.CompletedProcess([], 0, body, '')
+                with patch.object(alpha_radar.subprocess, 'run', return_value=result):
+                    page = alpha_radar.fetch_source_via_gateway(url)
+                if expected is None:
+                    self.assertIsNone(page['published_at'])
+                else:
+                    self.assertEqual(page['published_at'], expected)
 
-    def test_gateway_fallback_parses_marketscreener_numeric_publication_date(self):
-        result=subprocess.CompletedProcess(
-            [],0,
-            "Published on 08/05/2026 at 10:07 am EDT\n"
-            "# Thomson Reuters raises 2026 guidance\n"
-            + _body("guidance details"),
-            "",
+
+    def test_filter_evidence_quality_and_freshness_diagnostics(self):
+        midnight = alpha_radar.dt.datetime(2026,9,9,tzinfo=alpha_radar.dt.timezone.utc)
+        noon = midnight.replace(hour=12)
+        cases = (
+            ('explicitly_stale_articles', [
+                {'url':'https://old.example/story','title':'Old','text':_body('old event'),'published_at':'2025-08-28T14:57:00Z'},
+                {'url':'https://new.example/release','title':'New','text':_body('current event'),'published_at':'2026-09-02T20:05:00Z'},
+            ], {'now':midnight}, ['https://new.example/release'], 'old.example', 'https://old.example/story', 'stale_source'),
+            ('exact_timedelta_boundary', [
+                {'url':'https://old.example/story','title':'Old','text':_body('event'),'published_at':(noon-alpha_radar.dt.timedelta(days=180,seconds=1)).isoformat()},
+            ], {'now':noon,'max_age_days':180}, [], 'old.example', 'https://old.example/story', 'stale_source'),
+            ('navigation_only_body', [
+                {'url':'https://ir.example/quarterly-results','title':'Quarterly Results','text':'Investor Menu Site Search Investor Email Alerts Subscribe Unsubscribe Privacy Notice','published_at':None},
+            ], {'now':midnight}, [], 'ir.example', 'https://ir.example/quarterly-results', 'article_body_missing'),
+            ('empty_body', [{'url':'https://empty.example/story','title':'','text':'','published_at':None}], {}, [], 'empty.example', 'https://empty.example/story', 'article_body_missing'),
+            ('title_only_page', [{'url':'https://title.example/story','title':'Quarterly results','text':'   ','published_at':'2026-09-08T15:00:00Z'}], {'now':midnight}, [], 'title.example', 'https://title.example/story', 'article_body_missing'),
         )
-        with patch.object(alpha_radar.subprocess,"run",return_value=result):
-            page=alpha_radar.fetch_source_via_gateway(
-                "https://www.marketscreener.com/news/thomson-reuters-guidance"
-            )
-        self.assertEqual(page["published_at"],"2026-08-05T00:00:00Z")
+        for label, pages, kwargs, expected_urls, domain, url, reason in cases:
+            with self.subTest(case=label):
+                accepted, diagnostics = alpha_radar.filter_evidence(copy.deepcopy(pages), **kwargs)
+                if expected_urls:
+                    self.assertEqual([page['url'] for page in accepted], expected_urls)
+                else:
+                    self.assertEqual(accepted, [])
+                self.assertEqual(diagnostics, [{'url':url,'domain':domain,'reason':reason}])
+        for published in (None, 'not-a-date', '2026-13-99T99:00:00Z', '2026-09-08T15:00:00'):
+            with self.subTest(case='freshness_unknown', published=published):
+                accepted, diagnostics = alpha_radar.filter_evidence([
+                    {'url':'https://u.example/story','title':'U','text':_body('event body'),'published_at':published},
+                ], now=noon)
+                self.assertEqual(accepted, [], published)
+                self.assertEqual(diagnostics, [{'url':'https://u.example/story','domain':'u.example','reason':'source_freshness_unknown'}], published)
 
-    def test_gateway_fallback_parses_reuters_dateline_when_url_date_matches(self):
-        result=subprocess.CompletedProcess(
-            [],0,
-            "Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. "
-            + _body("revenue and guidance details"),
-            "",
-        )
-        with patch.object(alpha_radar.subprocess,"run",return_value=result):
-            page=alpha_radar.fetch_source_via_gateway(
-                "https://www.reuters.com/business/thomson-reuters-results-2026-08-05/"
-            )
-        self.assertEqual(page["published_at"],"2026-08-05T00:00:00Z")
-
-    def test_gateway_fallback_ignores_marketscreener_date_format_on_other_domains(self):
-        result=subprocess.CompletedProcess(
-            [],0,
-            "Published on 08/05/2026 at 10:07 am EDT\n" + _body("guidance details"),
-            "",
-        )
-        with patch.object(alpha_radar.subprocess,"run",return_value=result):
-            page=alpha_radar.fetch_source_via_gateway("https://example.com/news/guidance")
-        self.assertIsNone(page["published_at"])
-
-    def test_gateway_fallback_reuters_dateline_requires_matching_reuters_url_date(self):
-        result=subprocess.CompletedProcess(
-            [],0,
-            "Aug 5 (Reuters) - Thomson Reuters lifted its full-year forecast. "
-            + _body("revenue and guidance details"),
-            "",
-        )
-        urls=(
-            "https://www.reuters.com/business/thomson-reuters-results-2026-08-06/",
-            "https://example.com/business/thomson-reuters-results-2026-08-05/",
-        )
-        with patch.object(alpha_radar.subprocess,"run",return_value=result):
-            for url in urls:
-                with self.subTest(url=url):
-                    page=alpha_radar.fetch_source_via_gateway(url)
-                    self.assertIsNone(page["published_at"])
-
-    def test_filter_evidence_drops_explicitly_stale_articles(self):
-        pages = [
-            {"url": "https://old.example/story", "title": "Old", "text": _body("old event"), "published_at": "2025-08-28T14:57:00Z"},
-            {"url": "https://new.example/release", "title": "New", "text": _body("current event"), "published_at": "2026-09-02T20:05:00Z"},
-        ]
-        accepted, diagnostics = alpha_radar.filter_evidence(
-            pages,
-            now=alpha_radar.dt.datetime(2026, 9, 9, tzinfo=alpha_radar.dt.timezone.utc),
-        )
-
-        self.assertEqual([page["url"] for page in accepted], ["https://new.example/release"])
-        self.assertEqual(diagnostics, [{"url":"https://old.example/story","domain": "old.example", "reason": "stale_source"}])
-
-    def test_filter_evidence_applies_staleness_at_exact_timedelta_boundary(self):
-        now=alpha_radar.dt.datetime(2026,9,9,12,0,tzinfo=alpha_radar.dt.timezone.utc)
-        published=(now-alpha_radar.dt.timedelta(days=180,seconds=1)).isoformat()
-        accepted,diagnostics=alpha_radar.filter_evidence([
-            {"url":"https://old.example/story","title":"Old","text":_body("event"),"published_at":published}
-        ],now=now,max_age_days=180)
-        self.assertEqual(accepted,[])
-        self.assertEqual(diagnostics,[{"url":"https://old.example/story","domain":"old.example","reason":"stale_source"}])
-
-    def test_filter_evidence_drops_navigation_only_body(self):
-        pages = [{
-            "url": "https://ir.example/quarterly-results",
-            "title": "Quarterly Results",
-            "text": "Investor Menu Site Search Investor Email Alerts Subscribe Unsubscribe Privacy Notice",
-            "published_at": None,
-        }]
-        accepted, diagnostics = alpha_radar.filter_evidence(
-            pages,
-            now=alpha_radar.dt.datetime(2026, 9, 9, tzinfo=alpha_radar.dt.timezone.utc),
-        )
-        self.assertEqual(accepted, [])
-        self.assertEqual(diagnostics, [{"url":"https://ir.example/quarterly-results","domain": "ir.example", "reason": "article_body_missing"}])
-
-    def test_filter_evidence_types_empty_body(self):
-        accepted,diagnostics=alpha_radar.filter_evidence([
-            {"url":"https://empty.example/story","title":"","text":"","published_at":None}
-        ])
-        self.assertEqual(accepted,[])
-        self.assertEqual(diagnostics,[{"url":"https://empty.example/story","domain":"empty.example","reason":"article_body_missing"}])
-
-    def test_filter_evidence_rejects_title_only_page_as_missing_body(self):
-        accepted,diagnostics=alpha_radar.filter_evidence([
-            {"url":"https://title.example/story","title":"Quarterly results","text":"   ","published_at":"2026-09-08T15:00:00Z"}
-        ],now=alpha_radar.dt.datetime(2026,9,9,tzinfo=alpha_radar.dt.timezone.utc))
-        self.assertEqual(accepted,[])
-        self.assertEqual(diagnostics,[{"url":"https://title.example/story","domain":"title.example","reason":"article_body_missing"}])
 
     def test_gather_evidence_records_typed_fetch_failures(self):
         diagnostics = []
@@ -553,26 +457,24 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
         self.assertEqual(diagnostics, [{"url":"https://slow.example/a","domain": "slow.example", "reason": "source_fetch_timeout"}])
 
-    def test_filter_evidence_fails_closed_when_freshness_unknown(self):
-        now=alpha_radar.dt.datetime(2026,9,9,12,0,tzinfo=alpha_radar.dt.timezone.utc)
-        for published in (None,"not-a-date","2026-13-99T99:00:00Z","2026-09-08T15:00:00"):
-            accepted,diagnostics=alpha_radar.filter_evidence([
-                {"url":"https://u.example/story","title":"U","text":_body("event body"),"published_at":published}
-            ],now=now)
-            self.assertEqual(accepted,[],published)
-            self.assertEqual(diagnostics,[{"url":"https://u.example/story","domain":"u.example","reason":"source_freshness_unknown"}],published)
 
-    def test_record_research_diagnostics_persists_freshness_unknown_reason(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"private"/"research_diagnostics.jsonl"
-            alpha_radar.record_research_diagnostics(
-                [{"domain":"u.example","reason":"source_freshness_unknown"}],
-                path=path,
-                now="2026-09-09T12:31:52Z",
-            )
-            row=json.loads(path.read_text())
-        self.assertEqual(row["reason"],"source_freshness_unknown")
-        self.assertEqual(row["stage"],"source_quality")
+    def test_record_research_diagnostics_private_projection_and_stage(self):
+        cases = (
+            ('freshness_unknown', {'domain':'u.example','reason':'source_freshness_unknown'},
+             {'reason':'source_freshness_unknown','stage':'source_quality'}, False),
+            ('strict_private_projection', {'domain':'slow.example','reason':'source_fetch_timeout','raw_error':'secret traceback'},
+             {'domain':'slow.example','reason':'source_fetch_timeout','stage':'source_fetch','timestamp':'2026-09-09T12:31:52Z'}, True),
+        )
+        for label, diagnostic, expected, exact in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                path = Path(td)/'private'/'research_diagnostics.jsonl'
+                alpha_radar.record_research_diagnostics([dict(diagnostic)],path=path,now='2026-09-09T12:31:52Z')
+                row = json.loads(path.read_text())
+                if exact:
+                    self.assertEqual(row, expected)
+                else:
+                    for key, value in expected.items():
+                        self.assertEqual(row[key], value)
 
     def test_gather_evidence_types_still_alive_workers_and_is_deterministic(self):
         diagnostics = []
@@ -601,22 +503,6 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(pages[0]["text"], _body("usable evidence"))
         self.assertEqual(diagnostics, [{"url":"https://hung.example/a","domain": "hung.example", "reason": "source_deadline_exhausted"}])
 
-    def test_record_research_diagnostics_uses_strict_private_projection(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "private" / "research_diagnostics.jsonl"
-            alpha_radar.record_research_diagnostics(
-                [{"domain": "slow.example", "reason": "source_fetch_timeout", "raw_error": "secret traceback"}],
-                path=path,
-                now="2026-09-09T12:31:52Z",
-            )
-            row = json.loads(path.read_text())
-
-        self.assertEqual(row, {
-            "domain": "slow.example",
-            "reason": "source_fetch_timeout",
-            "stage": "source_fetch",
-            "timestamp": "2026-09-09T12:31:52Z",
-        })
 
     def test_record_synthesis_none_preserves_typed_reason_and_evidence_hash(self):
         with tempfile.TemporaryDirectory() as td:
@@ -704,32 +590,22 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(rc,3)
         self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_scout_timeout")
 
-    def test_main_reports_normalized_synthesis_none_reason(self):
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"live_research",return_value={"status":"none","none_reason":"earnings_timestamp_unverified"}
-        ), contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc,2)
-        self.assertEqual(out.getvalue().strip(),"BLOCKER research_earnings_timestamp_unverified")
+    def test_main_normalizes_synthesis_none_outcomes(self):
+        cases = (
+            ('normalized_synthesis_none_reason', 'earnings_timestamp_unverified', 2, 'BLOCKER research_earnings_timestamp_unverified'),
+            ('supported_no_setup', 'no_fresh_setup', 0, 'DECISION skipped no_fresh_setup'),
+            ('unrecognized_synthesis_none_reason', 'arbitrary model prose', 2, 'BLOCKER research_evidence_insufficient'),
+        )
+        for label, reason, expected_rc, expected_output in cases:
+            with self.subTest(case=label):
+                out = io.StringIO()
+                with patch.object(alpha_radar, 'reusable_fresh_candidate', return_value=None), patch.object(
+                    alpha_radar, 'live_research', return_value={'status':'none','none_reason':reason}
+                ), contextlib.redirect_stdout(out):
+                    rc = alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+                self.assertEqual(rc, expected_rc)
+                self.assertEqual(out.getvalue().strip(), expected_output)
 
-    def test_main_treats_supported_no_setup_as_healthy_noop(self):
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"live_research",return_value={"status":"none","none_reason":"no_fresh_setup"}
-        ), contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc,0)
-        self.assertEqual(out.getvalue().strip(),"DECISION skipped no_fresh_setup")
-
-    def test_main_rejects_unrecognized_synthesis_none_reason(self):
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"live_research",return_value={"status":"none","none_reason":"arbitrary model prose"}
-        ), contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc,2)
-        self.assertEqual(out.getvalue().strip(),"BLOCKER research_evidence_insufficient")
 
     def test_live_research_types_source_fetch_and_parse_failures(self):
         scout=subprocess.CompletedProcess([],0,structured_scout(),"")
@@ -867,32 +743,25 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code,"research_candidate_mismatch")
         prices.assert_not_called()
 
-    def test_live_research_types_diagnostic_persistence_failure(self):
-        scout=subprocess.CompletedProcess([],0,structured_scout(),"")
-        pages=[
-            {"url":"https://a.example/1","title":"A","text":_body("current event"),"published_at":"2026-09-08T14:57:00Z"},
-            {"url":"https://b.example/2","title":"B","text":_body("current confirmation"),"published_at":"2026-09-08T15:00:00Z"},
-        ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",return_value=scout), patch.object(
-            alpha_radar,"gather_evidence",return_value=pages
-        ), patch.object(alpha_radar,"record_research_diagnostics",side_effect=OSError("disk")):
-            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
-                alpha_radar.live_research({"max_position_usd":500})
-        self.assertEqual(ctx.exception.code,"research_persistence_failure")
+    def test_live_research_types_diagnostic_persistence_failures(self):
+        for stage in ('record_research_diagnostics', 'record_synthesis_none'):
+            with self.subTest(stage=stage):
+                scout = subprocess.CompletedProcess([],0,structured_scout(),'')
+                synth = subprocess.CompletedProcess([],0,json.dumps({'status':'none','none_reason':'no_fresh_setup'}),'')
+                pages = [
+                    {'url':'https://a.example/1','title':'A','text':_body('current event'),'published_at':'2026-09-08T14:57:00Z'},
+                    {'url':'https://b.example/2','title':'B','text':_body('current confirmation'),'published_at':'2026-09-08T15:00:00Z'},
+                ]
+                run_options = {'return_value':scout} if stage == 'record_research_diagnostics' else {'side_effect':[scout,synth]}
+                with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,'ROOT',Path(td)), patch.object(
+                    alpha_radar.subprocess,'run',**run_options
+                ), patch.object(alpha_radar,'gather_evidence',return_value=pages), patch.object(
+                    alpha_radar,stage,side_effect=OSError('disk')
+                ):
+                    with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                        alpha_radar.live_research({'max_position_usd':500})
+                self.assertEqual(ctx.exception.code,'research_persistence_failure')
 
-    def test_live_research_types_synthesis_diagnostic_persistence_failure(self):
-        scout=subprocess.CompletedProcess([],0,structured_scout(),"")
-        synth=subprocess.CompletedProcess([],0,json.dumps({"status":"none","none_reason":"no_fresh_setup"}),"")
-        pages=[
-            {"url":"https://a.example/1","title":"A","text":_body("current event"),"published_at":"2026-09-08T14:57:00Z"},
-            {"url":"https://b.example/2","title":"B","text":_body("current confirmation"),"published_at":"2026-09-08T15:00:00Z"},
-        ]
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar.subprocess,"run",side_effect=[scout,synth]), patch.object(
-            alpha_radar,"gather_evidence",return_value=pages
-        ), patch.object(alpha_radar,"record_synthesis_none",side_effect=OSError("disk")):
-            with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
-                alpha_radar.live_research({"max_position_usd":500})
-        self.assertEqual(ctx.exception.code,"research_persistence_failure")
 
     def test_live_research_applies_deterministic_earnings_resolution_before_market_data(self):
         scout=subprocess.CompletedProcess([],0,structured_scout("XYZ"),"")
@@ -1108,63 +977,38 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertNotIn("_source_receipts",persisted)
         self.assertIn("sources_verified_at",persisted)
 
-    def test_main_records_typed_verification_detail_without_changing_public_failure(self):
-        candidate={
-            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-            ],
-            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
-            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
-            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
-        }
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"fresh_verified_candidate",return_value=None
-        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
-            alpha_radar,"candidate_preflight",return_value=[]
-        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
-            alpha_radar,"record_source_verification_diagnostic"
-        ) as record, patch.object(alpha_radar,"append") as append, contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+    def test_main_preserves_verification_failure_across_diagnostic_write_outcomes(self):
+        for write_fails in (False, True):
+            with self.subTest(diagnostic_write_fails=write_fails):
+                candidate={
+                    "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
+                    "sources":[
+                        {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
+                        {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
+                    ],
+                    "_source_receipts":[
+                        {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
+                    ],
+                    "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
+                    "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
+                    "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
+                }
+                out=io.StringIO()
+                with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
+                    alpha_radar,"fresh_verified_candidate",return_value=None
+                ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
+                    alpha_radar,"candidate_preflight",return_value=[]
+                ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
+                    alpha_radar,"record_source_verification_diagnostic",side_effect=OSError("disk") if write_fails else None
+                ) as record, patch.object(alpha_radar,"append") as append, contextlib.redirect_stdout(out):
+                    rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
 
-        self.assertEqual(rc,3)
-        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_source_verification_failed")
-        record.assert_called_once()
-        self.assertEqual(record.call_args.args[0]["reason"],"receipt_missing")
-        append.assert_not_called()
+                self.assertEqual(rc,3)
+                self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_source_verification_failed")
+                record.assert_called_once()
+                self.assertEqual(record.call_args.args[0]["reason"],"receipt_missing")
+                append.assert_not_called()
 
-    def test_main_preserves_source_verification_failure_when_diagnostic_write_fails(self):
-        candidate={
-            "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",
-            "sources":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
-                {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},
-            ],
-            "_source_receipts":[
-                {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z","content_sha256":"a"*64},
-            ],
-            "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-09-09T14:00:00Z",
-            "setup_type":"post_news_momentum","planned_exit_at":"2026-09-18T20:00:00Z",
-            "horizon_rationale":"repricing","thesis":"x","catalyst":"y",
-        }
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"fresh_verified_candidate",return_value=None
-        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
-            alpha_radar,"candidate_preflight",return_value=[]
-        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
-            alpha_radar,"record_source_verification_diagnostic",side_effect=OSError("disk")
-        ), patch.object(alpha_radar,"append") as append, contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-
-        self.assertEqual(rc,3)
-        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_source_verification_failed")
-        append.assert_not_called()
 
     def test_main_types_candidate_persistence_failure(self):
         candidate={
@@ -1367,63 +1211,37 @@ class BundleRescueTests(unittest.TestCase):
         self.assertEqual(len(candidate["urls"]),7)
         self.assertEqual(len(alpha_radar.ranked_candidate_evidence([candidate],rescued)),1)
 
-    def test_post_fetch_rescue_uses_wire_only_after_independent_is_unusable(self):
-        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
-        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
-        independent_url="https://www.reuters.com/markets/a";wire_url="https://www.prnewswire.com/news/a"
-        wire_page={"url":wire_url,"title":"Wire","text":_body("wire"),"published_at":"2026-09-08T13:00:00Z"}
-        lanes=[]
-        def rescue_url(symbol,catalyst,role="independent",**_kwargs):
-            lanes.append(role)
-            return {"independent":independent_url,"wire":wire_url}[role]
-        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
-            alpha_radar,"gateway_rescue_url",side_effect=rescue_url
-        ), patch.object(alpha_radar,"gather_evidence",side_effect=[[],[wire_page]]):
-            pages=alpha_radar.post_fetch_rescue_candidate(
-                candidate,accepted,diagnostics=[],deadline=alpha_radar.monotonic()+60
-            )
-        self.assertEqual(lanes,["independent","wire"])
-        self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
+    def test_post_fetch_rescue_wire_fallback_localizes_independent_lane_failure(self):
+        for failure in ('empty_fetch','gateway_search','gateway_fetch'):
+            with self.subTest(failure=failure):
+                candidate = {'symbol':'AAA','catalyst':'event','event_date':'2026-09-08','urls':['https://one.example/a']}
+                accepted = [{'url':'https://one.example/a','title':'One','text':_body('one'),'published_at':'2026-09-08T12:00:00Z'}]
+                independent_url = 'https://www.reuters.com/markets/a'
+                wire_url = 'https://www.prnewswire.com/news/a'
+                wire_page = {'url':wire_url,'title':'Wire','text':_body('wire'),'published_at':'2026-09-08T13:00:00Z'}
+                lanes, diagnostics = [], []
+                def rescue_url(symbol,catalyst,role='independent',**_kwargs):
+                    lanes.append(role)
+                    if failure == 'gateway_search' and role == 'independent':
+                        raise alpha_radar.ResearchFailure('research_rescue_unavailable')
+                    return {'independent':independent_url,'wire':wire_url}[role]
+                if failure == 'gateway_search':
+                    fetch_options = {'return_value':[wire_page]}
+                elif failure == 'gateway_fetch':
+                    fetch_options = {'side_effect':[alpha_radar.ResearchFailure('research_rescue_unavailable'),[wire_page]]}
+                else:
+                    fetch_options = {'side_effect':[[],[wire_page]]}
+                with patch.object(alpha_radar,'sec_edgar_filing_url',return_value=None), patch.object(
+                    alpha_radar,'gateway_rescue_url',side_effect=rescue_url
+                ), patch.object(alpha_radar,'gather_evidence',**fetch_options):
+                    pages = alpha_radar.post_fetch_rescue_candidate(
+                        candidate,accepted,diagnostics=diagnostics,deadline=alpha_radar.monotonic()+60
+                    )
+                self.assertEqual(lanes,['independent','wire'])
+                self.assertEqual({alpha_radar.publisher_domain(p['url']) for p in pages},{'one.example','prnewswire.com'})
+                if failure != 'empty_fetch':
+                    self.assertTrue(any(item['reason']=='bundle_rescue_unavailable' for item in diagnostics))
 
-    def test_post_fetch_rescue_localizes_gateway_search_failure_and_tries_wire(self):
-        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
-        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
-        wire_url="https://www.prnewswire.com/news/a"
-        wire_page={"url":wire_url,"title":"Wire","text":_body("wire"),"published_at":"2026-09-08T13:00:00Z"}
-        lanes=[];diagnostics=[]
-        def rescue_url(symbol,catalyst,role="independent",**_kwargs):
-            lanes.append(role)
-            if role=="independent":
-                raise alpha_radar.ResearchFailure("research_rescue_unavailable")
-            return wire_url
-        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
-            alpha_radar,"gateway_rescue_url",side_effect=rescue_url
-        ), patch.object(alpha_radar,"gather_evidence",return_value=[wire_page]):
-            pages=alpha_radar.post_fetch_rescue_candidate(
-                candidate,accepted,diagnostics=diagnostics,deadline=alpha_radar.monotonic()+60
-            )
-        self.assertEqual(lanes,["independent","wire"])
-        self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
-        self.assertTrue(any(item["reason"]=="bundle_rescue_unavailable" for item in diagnostics))
-
-    def test_post_fetch_rescue_localizes_gateway_fetch_failure_and_tries_wire(self):
-        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
-        accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
-        independent_url="https://www.reuters.com/markets/a";wire_url="https://www.prnewswire.com/news/a"
-        wire_page={"url":wire_url,"title":"Wire","text":_body("wire"),"published_at":"2026-09-08T13:00:00Z"}
-        diagnostics=[]
-        def rescue_url(symbol,catalyst,role="independent",**_kwargs):
-            return {"independent":independent_url,"wire":wire_url}[role]
-        with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
-            alpha_radar,"gateway_rescue_url",side_effect=rescue_url
-        ), patch.object(alpha_radar,"gather_evidence",side_effect=[
-            alpha_radar.ResearchFailure("research_rescue_unavailable"),[wire_page]
-        ]):
-            pages=alpha_radar.post_fetch_rescue_candidate(
-                candidate,accepted,diagnostics=diagnostics,deadline=alpha_radar.monotonic()+60
-            )
-        self.assertEqual({alpha_radar.publisher_domain(p["url"]) for p in pages},{"one.example","prnewswire.com"})
-        self.assertTrue(any(item["reason"]=="bundle_rescue_unavailable" for item in diagnostics))
 
     def test_post_fetch_rescue_preserves_unrelated_global_failure(self):
         candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
@@ -1494,33 +1312,25 @@ class BundleRescueTests(unittest.TestCase):
             return subprocess.CompletedProcess([],0,"https://www.sec.gov/edgar/x.htm","")
         self.assertIsNone(alpha_radar.gateway_rescue_url("SYRE","catalyst",run=wrong_domain))
 
-    def test_strict_rescue_gateway_lane_raises_on_malformed_provider_output(self):
-        malformed=subprocess.CompletedProcess([],0,"not-json","")
-        with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
-            alpha_radar.gateway_rescue_url(
-                "SYRE","catalyst",run=lambda *args,**kwargs:malformed,strict_provider=True
-            )
-        self.assertEqual(ctx.exception.code,"research_rescue_unavailable")
+    def test_strict_rescue_gateway_lane_provider_schema(self):
+        cases = (
+            ('malformed_provider_output','not-json',False),
+            ('urls_string',json.dumps({'urls':'https://www.reuters.com/story'}),False),
+            ('wrong_key',json.dumps({'url':[]}),False),
+            ('non_url_member',json.dumps({'urls':[123]}),False),
+            ('empty_url_list',json.dumps({'urls':[]}),True),
+        )
+        for label, output, valid_empty in cases:
+            with self.subTest(case=label):
+                result = subprocess.CompletedProcess([],0,output,'')
+                run = Mock(return_value=result)
+                if valid_empty:
+                    self.assertIsNone(alpha_radar.gateway_rescue_url('SYRE','catalyst',run=run,strict_provider=True))
+                else:
+                    with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
+                        alpha_radar.gateway_rescue_url('SYRE','catalyst',run=run,strict_provider=True)
+                    self.assertEqual(ctx.exception.code,'research_rescue_unavailable')
 
-    def test_strict_rescue_gateway_lane_validates_url_list_schema(self):
-        malformed_payloads=[
-            {"urls":"https://www.reuters.com/story"},
-            {"url":[]},
-            {"urls":[123]},
-        ]
-        for payload in malformed_payloads:
-            with self.subTest(payload=payload):
-                with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
-                    alpha_radar.gateway_rescue_url(
-                        "SYRE","catalyst",
-                        run=lambda *args,payload=payload,**kwargs:subprocess.CompletedProcess([],0,json.dumps(payload),""),
-                        strict_provider=True,
-                    )
-                self.assertEqual(ctx.exception.code,"research_rescue_unavailable")
-        no_result=subprocess.CompletedProcess([],0,json.dumps({"urls":[]}),"")
-        self.assertIsNone(alpha_radar.gateway_rescue_url(
-            "SYRE","catalyst",run=lambda *args,**kwargs:no_result,strict_provider=True
-        ))
 
     def test_live_research_runs_post_fetch_rescue_after_one_of_two_sources_fails(self):
         scout_payload=json.dumps({"candidates":[{
@@ -1912,26 +1722,27 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in lookup.call_args_list],
                          [page["url"] for page in pages])
 
-    def test_rerank_prefers_stronger_verified_bundle_over_scout_order(self):
-        now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
-        candidates=[
-            {"symbol":"AAA","catalyst":"adequate dated change","event_date":"2026-09-14","urls":["https://www.businesswire.com/a","https://www.globenewswire.com/b"]},
-            {"symbol":"BBB","catalyst":"brief","event_date":"2026-09-14","urls":["https://www.sec.gov/c","https://www.reuters.com/d"]},
-        ]
-        pages=[{"url":u,"text":_body("verified"),"published_at":"2026-09-14T12:00:00Z"} for c in candidates for u in c["urls"]]
-        candidate,evidence=alpha_radar.rerank_candidate_evidence(candidates,pages,now=now)
-        self.assertEqual(candidate["symbol"],"BBB")
-        self.assertEqual(len(evidence),2)
+    def test_rerank_verified_strength_then_scout_order(self):
+        cases = (
+            ('stronger_verified_bundle', [
+                {'symbol':'AAA','catalyst':'adequate dated change','event_date':'2026-09-14','urls':['https://www.businesswire.com/a','https://www.globenewswire.com/b']},
+                {'symbol':'BBB','catalyst':'brief','event_date':'2026-09-14','urls':['https://www.sec.gov/c','https://www.reuters.com/d']},
+            ], 'BBB', 2),
+            ('scout_order_tiebreaker', [
+                {'symbol':'AAA','catalyst':'x','event_date':'2026-09-14','urls':['https://a.example/1','https://b.example/2']},
+                {'symbol':'BBB','catalyst':'much more detailed catalyst prose','event_date':'2026-09-14','urls':['https://c.example/3','https://d.example/4']},
+            ], 'AAA', None),
+        )
+        for label, template, expected, evidence_count in cases:
+            with self.subTest(case=label):
+                candidates = copy.deepcopy(template)
+                now = alpha_radar.dt.datetime(2026,9,15,tzinfo=alpha_radar.dt.timezone.utc)
+                pages = [{'url':u,'text':_body('verified'),'published_at':'2026-09-14T12:00:00Z'} for c in candidates for u in c['urls']]
+                candidate, evidence = alpha_radar.rerank_candidate_evidence(candidates,pages,now=now)
+                self.assertEqual(candidate['symbol'],expected)
+                if evidence_count is not None:
+                    self.assertEqual(len(evidence),evidence_count)
 
-    def test_rerank_uses_scout_order_as_tiebreaker_not_catalyst_length(self):
-        now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
-        candidates=[
-            {"symbol":"AAA","catalyst":"x","event_date":"2026-09-14","urls":["https://a.example/1","https://b.example/2"]},
-            {"symbol":"BBB","catalyst":"much more detailed catalyst prose","event_date":"2026-09-14","urls":["https://c.example/3","https://d.example/4"]},
-        ]
-        pages=[{"url":u,"text":_body("verified"),"published_at":"2026-09-14T12:00:00Z"} for c in candidates for u in c["urls"]]
-        candidate,_=alpha_radar.rerank_candidate_evidence(candidates,pages,now=now)
-        self.assertEqual(candidate["symbol"],"AAA")
 
     def test_live_research_merges_focused_urls_then_selects_best_verified_candidate(self):
         scout_payload=json.dumps({"candidates":[
@@ -2051,36 +1862,34 @@ class RetrievalHardeningTests(unittest.TestCase):
         merged=alpha_radar.merge_candidate_urls(["https://scout.example/0"],focused["AAA"],limit=3)
         self.assertEqual(merged,["https://scout.example/0","https://www.sec.gov/4","https://www.reuters.com/3"])
 
-    def test_merge_focused_urls_preserves_verified_scout_domains(self):
-        merged=alpha_radar.merge_candidate_urls(
-            ["https://www.sec.gov/a","https://www.reuters.com/b"],
-            ["https://www.businesswire.com/c","https://www.globenewswire.com/d","https://www.cnbc.com/e"],
-            limit=4,
+    def test_merge_initial_urls_preserves_scout_and_bounds_diverse_intake(self):
+        cases = (
+            ('verified_scout_domains', ['https://www.sec.gov/a','https://www.reuters.com/b'],
+             ['https://www.businesswire.com/c','https://www.globenewswire.com/d','https://www.cnbc.com/e'], 4,
+             'membership', ['https://www.sec.gov/a','https://www.reuters.com/b']),
+            ('accessible_diverse_roles', ['https://issuer.example/disclosure'],
+             ['https://www.businesswire.com/news/home/1','https://news.businesswire.com/duplicate','https://www.reuters.com/markets/company-report','https://www.sec.gov/Archives/edgar/data/123/filing.htm'], 3,
+             'ordered', ['https://issuer.example/disclosure','https://www.sec.gov/Archives/edgar/data/123/filing.htm','https://www.reuters.com/markets/company-report']),
+            ('unknown_scout', ['https://localpublisher.example/story'],
+             ['https://wire.example/story','https://www.reuters.com/article/one'], 3,
+             'set', ['https://localpublisher.example/story','https://wire.example/story','https://www.reuters.com/article/one']),
+            ('scout_fills_cap', ['https://a.example/1','https://b.example/2','https://c.example/3'],
+             ['https://www.sec.gov/4'], 3, 'ordered', ['https://a.example/1','https://b.example/2','https://c.example/3']),
         )
-        self.assertIn("https://www.sec.gov/a",merged)
-        self.assertIn("https://www.reuters.com/b",merged)
-        self.assertEqual(len(merged),4)
+        for label, scout, focused, limit, comparison, expected in cases:
+            with self.subTest(case=label):
+                merged = alpha_radar.merge_candidate_urls(list(scout),list(focused),limit=limit)
+                if comparison == 'membership':
+                    for url in expected:
+                        self.assertIn(url,merged)
+                    self.assertEqual(len(merged),4)
+                elif comparison == 'set':
+                    self.assertEqual(set(merged),set(expected))
+                else:
+                    self.assertEqual(merged,expected)
+                if label == 'accessible_diverse_roles':
+                    self.assertEqual(len({alpha_radar.publisher_domain(url) for url in merged}),3)
 
-    def test_merge_initial_three_keeps_scout_and_prioritizes_accessible_diverse_roles(self):
-        scout="https://issuer.example/disclosure"
-        wire="https://www.businesswire.com/news/home/1"
-        independent="https://www.reuters.com/markets/company-report"
-        primary="https://www.sec.gov/Archives/edgar/data/123/filing.htm"
-        merged=alpha_radar.merge_candidate_urls(
-            [scout],[wire,"https://news.businesswire.com/duplicate",independent,primary],limit=3,
-        )
-        self.assertEqual(merged,[scout,primary,independent])
-        self.assertEqual(len({alpha_radar.publisher_domain(url) for url in merged}),3)
-
-    def test_merge_initial_three_does_not_invent_or_drop_unknown_scout(self):
-        scout="https://localpublisher.example/story"
-        urls=["https://wire.example/story","https://www.reuters.com/article/one"]
-        merged=alpha_radar.merge_candidate_urls([scout],urls,limit=3)
-        self.assertEqual(set(merged),set([scout]+urls))
-
-    def test_merge_never_exceeds_cap_when_scout_already_fills_it(self):
-        scout=["https://a.example/1","https://b.example/2","https://c.example/3"]
-        self.assertEqual(alpha_radar.merge_candidate_urls(scout,["https://www.sec.gov/4"],limit=3),scout)
 
     def test_merge_demotes_repeated_recent_failed_primary_without_excluding_it(self):
         now=__import__('datetime').datetime(2026,9,29,12,tzinfo=__import__('datetime').timezone.utc)

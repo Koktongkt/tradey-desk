@@ -121,23 +121,19 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["earnings_status"], "upcoming")
         self.assertEqual(result["earnings_sessions_away"], 2)
 
-    def test_reported_earnings_event_is_not_treated_as_upcoming(self):
-        status, sessions = broker_mcp_bridge.earnings_state(
-            "2026-09-01T20:05:00Z", [], datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
+    def test_earnings_state_distinguishes_reported_same_day_and_upcoming(self):
+        cases = (
+            ("reported_timestamp", "2026-09-01T20:05:00Z", (), ("reported", None)),
+            ("reported_date_only", "2026-09-01", (), ("reported", None)),
+            ("same_day_date_only", "2026-09-02", (), ("upcoming", 0)),
+            ("upcoming_broker_sessions", "2026-09-04T20:05:00Z",
+             ("2026-09-02", "2026-09-03", "2026-09-04"), ("upcoming", 2)),
         )
-        self.assertEqual((status, sessions), ("reported", None))
-
-    def test_date_only_past_event_is_reported_but_same_day_stays_upcoming(self):
-        now=datetime(2026,9,2,14,0,tzinfo=timezone.utc)
-        self.assertEqual(broker_mcp_bridge.earnings_state("2026-09-01",[],now),("reported",None))
-        self.assertEqual(broker_mcp_bridge.earnings_state("2026-09-02",[],now),("upcoming",0))
-
-    def test_upcoming_earnings_sessions_are_counted_from_broker_calendar(self):
-        calendar = [{"date": "2026-09-02"}, {"date": "2026-09-03"}, {"date": "2026-09-04"}]
-        status, sessions = broker_mcp_bridge.earnings_state(
-            "2026-09-04T20:05:00Z", calendar, datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
-        )
-        self.assertEqual((status, sessions), ("upcoming", 2))
+        for label, event, dates, expected in cases:
+            with self.subTest(case=label):
+                now = datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
+                calendar = [{"date": date} for date in dates]
+                self.assertEqual(broker_mcp_bridge.earnings_state(event, calendar, now), expected)
 
     async def test_reconcile_many_fetches_all_parent_brackets_in_one_session(self):
         class OrdersAlpaca:

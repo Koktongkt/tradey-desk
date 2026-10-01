@@ -115,45 +115,31 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(value["price"], 330.2)
         self.assertEqual(value["spy_price"], 769.1)
 
-    def test_synchronized_prices_reject_rows_from_the_wrong_session_date(self):
-        wrong_date = _PayloadResponse({"status":"OK","results":[
-            {"T":"SPY","c":999.0,"t":1788465600000},
-            {"T":"SNOW","c":999.0,"t":1788465600000},
-        ]})
-        prior_session = _PayloadResponse({"status":"OK","results":[
-            {"T":"SPY","c":769.1,"t":1788465600000},
-            {"T":"SNOW","c":330.2,"t":1788465600000},
-        ]})
-        with patch("market_data.configured_massive_key", return_value="secret"), patch(
-            "market_data.urllib.request.urlopen", side_effect=[wrong_date, prior_session]
-        ) as open_url:
-            value = market_data.synchronized_completed_close_prices(
-                "SNOW", now_ms=1788609600000
-            )
-
-        self.assertEqual(open_url.call_count, 2)
-        self.assertEqual(value["price"], 330.2)
-        self.assertEqual(value["spy_price"], 769.1)
-        self.assertEqual(value["market_prices_at"], "2026-09-03T20:00:00Z")
-
-    def test_synchronized_prices_reject_non_ok_payload_status(self):
-        invalid = _PayloadResponse({"status":"ERROR","results":[
-            {"T":"SPY","c":999.0,"t":1788552000000},
-            {"T":"SNOW","c":999.0,"t":1788552000000},
-        ]})
-        prior_session = _PayloadResponse({"status":"OK","results":[
-            {"T":"SPY","c":769.1,"t":1788465600000},
-            {"T":"SNOW","c":330.2,"t":1788465600000},
-        ]})
-        with patch("market_data.configured_massive_key", return_value="secret"), patch(
-            "market_data.urllib.request.urlopen", side_effect=[invalid, prior_session]
-        ) as open_url:
-            value = market_data.synchronized_completed_close_prices(
-                "SNOW", now_ms=1788609600000
-            )
-
-        self.assertEqual(open_url.call_count, 2)
-        self.assertEqual(value["price"], 330.2)
+    def test_synchronized_prices_reject_invalid_grouped_responses(self):
+        cases = (
+            ("wrong_session_date", "OK", 1788465600000),
+            ("non_ok_payload_status", "ERROR", 1788552000000),
+        )
+        for label, status, timestamp in cases:
+            with self.subTest(case=label):
+                invalid = _PayloadResponse({"status": status, "results": [
+                    {"T": "SPY", "c": 999.0, "t": timestamp},
+                    {"T": "SNOW", "c": 999.0, "t": timestamp},
+                ]})
+                prior_session = _PayloadResponse({"status": "OK", "results": [
+                    {"T": "SPY", "c": 769.1, "t": 1788465600000},
+                    {"T": "SNOW", "c": 330.2, "t": 1788465600000},
+                ]})
+                with patch("market_data.configured_massive_key", return_value="secret"), patch(
+                    "market_data.urllib.request.urlopen", side_effect=[invalid, prior_session]
+                ) as open_url:
+                    value = market_data.synchronized_completed_close_prices(
+                        "SNOW", now_ms=1788609600000
+                    )
+                self.assertEqual(open_url.call_count, 2)
+                self.assertEqual(value["price"], 330.2)
+                self.assertEqual(value["spy_price"], 769.1)
+                self.assertEqual(value["market_prices_at"], "2026-09-03T20:00:00Z")
 
     def test_massive_volume_uses_header_and_completed_sessions(self):
         with patch("market_data.configured_massive_key", return_value="secret"), patch(

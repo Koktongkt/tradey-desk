@@ -32,24 +32,29 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(call.call_count,2)
         self.assertEqual(call.call_args.kwargs["timeout"],600)
 
-    def test_audit_result_records_only_a_concise_sanitized_decision(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"decision_audit.jsonl"
-            run_cycle.audit_result("autotrader","execution",2,"BLOCKER consensus_hold\nprivate detail",path)
-            row=json.loads(path.read_text())
-        self.assertEqual(row["mode"],"autotrader")
-        self.assertEqual(row["stage"],"execution")
-        self.assertEqual(row["decision"],"blocked")
-        self.assertEqual(row["reason"],"unspecified")
-        self.assertNotIn("private detail",json.dumps(row))
+    def test_audit_result_sanitized_decision_schemas(self):
+        cases = (
+            ("private blocked", "autotrader", "execution", 2, "BLOCKER consensus_hold\nprivate detail",
+             {"mode": "autotrader", "stage": "execution", "decision": "blocked", "reason": "unspecified"}, "private detail"),
+            ("healthy research skip", "premarket", "research", 0, "DECISION skipped no_fresh_setup",
+             {"decision": "skipped", "reason": "no_fresh_setup"}, None),
+            ("qualified candidate", "radar", "research", 0, "DECISION candidate_qualified AAPL",
+             {"decision": "candidate_qualified", "symbol": "AAPL"}, None),
+            ("safe fill identity", "autotrader", "execution", 0, "TRADE BUY 1 AAPL @ 100.05",
+             {"decision": "trade_filled", "action": "BUY", "symbol": "AAPL"}, None),
+            ("scheduled skip", "radar", "schedule", 0, "DECISION skipped outside_window",
+             {"decision": "skipped", "reason": "outside_window"}, None),
+        )
+        for label, mode, stage, rc, text, expected, private in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "decision_audit.jsonl"
+                run_cycle.audit_result(mode, stage, rc, text, path)
+                row = json.loads(path.read_text())
+                for field, value in expected.items():
+                    self.assertEqual(row[field], value, field)
+                if private is not None:
+                    self.assertNotIn(private, json.dumps(row))
 
-    def test_audit_result_records_no_fresh_setup_as_healthy_skip(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"decision_audit.jsonl"
-            run_cycle.audit_result("premarket","research",0,"DECISION skipped no_fresh_setup",path)
-            row=json.loads(path.read_text())
-        self.assertEqual(row["decision"],"skipped")
-        self.assertEqual(row["reason"],"no_fresh_setup")
 
     def test_execute_audits_the_final_result_after_retries(self):
         failed=subprocess.CompletedProcess([],3,"BLOCKER temporary_failure","")
@@ -63,76 +68,32 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]["decision"],"completed")
 
-    def test_audit_result_accepts_a_structured_success_decision(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"decision_audit.jsonl"
-            run_cycle.audit_result("radar","research",0,"DECISION candidate_qualified AAPL",path)
-            row=json.loads(path.read_text())
-        self.assertEqual(row["decision"],"candidate_qualified")
-        self.assertEqual(row["symbol"],"AAPL")
 
-    def test_audit_result_keeps_safe_trade_identity(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"decision_audit.jsonl"
-            run_cycle.audit_result("autotrader","execution",0,"TRADE BUY 1 AAPL @ 100.05",path)
-            row=json.loads(path.read_text())
-        self.assertEqual(row["decision"],"trade_filled")
-        self.assertEqual(row["action"],"BUY")
-        self.assertEqual(row["symbol"],"AAPL")
+    def test_execute_order_lifecycle_notices_without_overclaim(self):
+        cases = (
+            ("placing", "ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n",
+             "Tradey Autotrader: Placing paper bracket order to Alpaca — BUY 3 ZS at limit $162.79; stop $151.24; target $184.37. This is a placement notice, not confirmation of acceptance or fill.\n",
+             {"decision": "order_placed", "action": "BUY", "symbol": "ZS"}),
+            ("accepted", "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n",
+             "Tradey Autotrader: Paper bracket order accepted — BUY 3 ZS at limit $162.79; stop $151.24; target $184.37. Broker status: accepted. This confirms order acceptance, not a fill.\n",
+             {"decision": "order_placed", "action": "BUY", "symbol": "ZS"}),
+            ("filled", "ORDER filled BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n",
+             "Tradey Autotrader: Paper bracket order filled — BUY 3 ZS; average fill $162.80; limit $162.79; stop $151.24; target $184.37. Broker-confirmed fill.\n",
+             {"decision": "trade_filled"}),
+        )
+        for label, text, expected_output, expected_row in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                audit = Path(td) / "decision_audit.jsonl"
+                output = __import__("io").StringIO()
+                completed = subprocess.CompletedProcess([], 0, text, "")
+                with patch("run_cycle.subprocess.run", return_value=completed), patch("sys.stdout", output):
+                    rc = run_cycle.execute(["fixture"], audit_mode="autotrader", audit_stage="execution", audit_path=audit)
+                row = json.loads(audit.read_text())
+                self.assertEqual(rc, 0)
+                self.assertEqual(output.getvalue(), expected_output)
+                for field, value in expected_row.items():
+                    self.assertEqual(row[field], value, field)
 
-    def test_execute_relays_placing_notice_before_submission_confirmation(self):
-        text="ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n"
-        completed=subprocess.CompletedProcess([],0,text,"")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
-            row=json.loads(audit.read_text())
-        self.assertEqual(rc,0)
-        self.assertEqual(output.getvalue(),"Tradey Autotrader: Placing paper bracket order to Alpaca — BUY 3 ZS at limit $162.79; stop $151.24; target $184.37. This is a placement notice, not confirmation of acceptance or fill.\n")
-        self.assertEqual(row["decision"],"order_placed")
-        self.assertEqual(row["action"],"BUY")
-        self.assertEqual(row["symbol"],"ZS")
-
-    def test_execute_rejects_avg_on_placing_notice(self):
-        text="ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n"
-        completed=subprocess.CompletedProcess([],0,text,"")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
-        self.assertEqual(rc,0)
-        self.assertEqual(output.getvalue(),"")
-
-    def test_execute_notifies_on_broker_confirmed_accepted_paper_order(self):
-        text="ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER\n"
-        completed=subprocess.CompletedProcess([],0,text,"")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
-            row=json.loads(audit.read_text())
-        self.assertEqual(rc,0)
-        self.assertEqual(output.getvalue(),"Tradey Autotrader: Paper bracket order accepted — BUY 3 ZS at limit $162.79; stop $151.24; target $184.37. Broker status: accepted. This confirms order acceptance, not a fill.\n")
-        self.assertEqual(row["decision"],"order_placed")
-        self.assertEqual(row["action"],"BUY")
-        self.assertEqual(row["symbol"],"ZS")
-
-    def test_execute_notifies_on_broker_confirmed_immediate_fill_without_overclaim(self):
-        text="ORDER filled BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n"
-        completed=subprocess.CompletedProcess([],0,text,"")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                rc=run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit)
-            row=json.loads(audit.read_text())
-        self.assertEqual(rc,0)
-        self.assertEqual(output.getvalue(),"Tradey Autotrader: Paper bracket order filled — BUY 3 ZS; average fill $162.80; limit $162.79; stop $151.24; target $184.37. Broker-confirmed fill.\n")
-        self.assertEqual(row["decision"],"trade_filled")
 
     def test_execute_notifies_each_broker_confirmed_recovered_order(self):
         text=(
@@ -167,6 +128,7 @@ class CycleTests(unittest.TestCase):
 
     def test_execute_keeps_malformed_or_private_order_output_silent(self):
         texts=[
+            "ORDER placing BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 AVG 162.80 PAPER\n",
             "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER private-id",
             "ORDER accepted BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 LIVE",
             "ORDER filled BUY 3 ZS LIMIT 162.79 STOP 151.24 TARGET 184.37 PAPER",
@@ -181,42 +143,33 @@ class CycleTests(unittest.TestCase):
                     self.assertEqual(run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit),0)
                 self.assertEqual(output.getvalue(),"")
 
-    def test_nonzero_private_output_is_replaced_with_generic_failure(self):
-        private="BLOCKER consensus_hold\naccount_id=secret broker_order_id=private /opt/data/private raw_payload thesis review"
-        completed=subprocess.CompletedProcess([],2,private,"")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                self.assertEqual(run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit),2)
-        self.assertEqual(output.getvalue(),"SYSTEM_FAILURE scheduled_task\n")
+    def test_execute_nonzero_private_output_fails_without_identity_leaks(self):
+        cases = (
+            ("multiline private blocker", 2,
+             "BLOCKER consensus_hold\naccount_id=secret broker_order_id=private /opt/data/private raw_payload thesis review",
+             {}, (), None),
+            ("private single token", 4, "SYSTEM_FAILURE accountsecretabc123\n",
+             {"reason": "unspecified"}, (), "accountsecretabc123"),
+            ("malformed trade", 4, "TRADE BUY SECRET account_id=hidden\n",
+             {"decision": "failed"}, ("action", "symbol"), None),
+        )
+        for label, rc, text, expected, absent, private in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                audit = Path(td) / "decision_audit.jsonl"
+                output = __import__("io").StringIO()
+                completed = subprocess.CompletedProcess([], rc, text, "")
+                with patch("run_cycle.subprocess.run", return_value=completed), patch("sys.stdout", output):
+                    self.assertEqual(run_cycle.execute(
+                        ["fixture"], audit_mode="autotrader", audit_stage="execution", audit_path=audit), rc)
+                row = json.loads(audit.read_text())
+                self.assertEqual(output.getvalue(), "SYSTEM_FAILURE scheduled_task\n")
+                for field, value in expected.items():
+                    self.assertEqual(row[field], value, field)
+                for field in absent:
+                    self.assertNotIn(field, row)
+                if private is not None:
+                    self.assertNotIn(private, json.dumps(row))
 
-    def test_single_token_private_failure_reason_is_not_allowlisted_or_audited(self):
-        completed=subprocess.CompletedProcess([],4,"SYSTEM_FAILURE accountsecretabc123\n","")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                self.assertEqual(run_cycle.execute(
-                    ["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit),4)
-            row=json.loads(audit.read_text())
-        self.assertEqual(output.getvalue(),"SYSTEM_FAILURE scheduled_task\n")
-        self.assertEqual(row["reason"],"unspecified")
-        self.assertNotIn("accountsecretabc123",json.dumps(row))
-
-    def test_malformed_nonzero_trade_does_not_project_identity_into_audit(self):
-        completed=subprocess.CompletedProcess([],4,"TRADE BUY SECRET account_id=hidden\n","")
-        with tempfile.TemporaryDirectory() as td:
-            audit=Path(td)/"decision_audit.jsonl"
-            output=__import__("io").StringIO()
-            with patch("run_cycle.subprocess.run",return_value=completed), patch("sys.stdout",output):
-                self.assertEqual(run_cycle.execute(
-                    ["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit),4)
-            row=json.loads(audit.read_text())
-        self.assertEqual(output.getvalue(),"SYSTEM_FAILURE scheduled_task\n")
-        self.assertEqual(row["decision"],"failed")
-        self.assertNotIn("action",row)
-        self.assertNotIn("symbol",row)
 
     def test_multiline_trade_or_order_output_never_projects_identity_into_audit(self):
         cases=[
@@ -258,13 +211,6 @@ class CycleTests(unittest.TestCase):
                 self.assertEqual(run_cycle.execute(["fixture"],audit_mode="autotrader",audit_stage="execution",audit_path=audit),2)
         self.assertEqual(output.getvalue(),"BLOCKER broker_review:insufficient_cash,spread_too_wide\n")
 
-    def test_audit_result_records_a_scheduled_skip_reason(self):
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/"decision_audit.jsonl"
-            run_cycle.audit_result("radar","schedule",0,"DECISION skipped outside_window",path)
-            row=json.loads(path.read_text())
-        self.assertEqual(row["decision"],"skipped")
-        self.assertEqual(row["reason"],"outside_window")
 
     def test_main_enables_auditing_for_an_autotrader_cycle(self):
         with patch.object(sys,"argv",["run_cycle.py","autotrader"]), patch("run_cycle.scheduled_slot",return_value=True), patch("run_cycle.in_window",return_value=True), patch("run_cycle.execute",return_value=0) as call:

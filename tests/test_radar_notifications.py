@@ -28,9 +28,11 @@ class RadarNotifications(unittest.TestCase):
 
     def test_unrelated_and_untrusted_output_remains_silent(self):
         for text in ['', 'DECISION skipped outside_window', 'DECISION skipped already_completed', 'DECISION candidate_qualified AAPL secret', 'DECISION candidate_qualified AAPL\nprivate data']:
-            self.assertEqual(self.run_output(text)[1], '')
+            with self.subTest(untrusted_output=text):
+                self.assertEqual(self.run_output(text)[1], '')
         for mode in ['autotrader', 'dashboard', 'postclose']:
-            self.assertEqual(self.run_output('DECISION skipped no_fresh_setup', mode=mode)[1], '')
+            with self.subTest(unrelated_mode=mode):
+                self.assertEqual(self.run_output('DECISION skipped no_fresh_setup', mode=mode)[1], '')
 
     def test_premarket_qualified_candidate_notifies(self):
         rc, out, row = self.run_output('DECISION candidate_qualified AAPL\n', mode='premarket')
@@ -38,27 +40,27 @@ class RadarNotifications(unittest.TestCase):
         self.assertEqual(out, 'Premarket Research: Final qualified candidate: AAPL. Research only; not a trade approval or execution.\n')
         self.assertEqual(row['decision'], 'candidate_qualified')
 
-    def test_premarket_no_candidate_notifies(self):
-        rc, out, row = self.run_output('DECISION skipped no_fresh_setup\n', mode='premarket')
-        self.assertEqual(rc, 0)
-        self.assertEqual(out, 'Premarket Research: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.\n')
-        self.assertEqual(row['reason'], 'no_fresh_setup')
+    def test_no_candidate_notifications_by_mode_and_reason(self):
+        cases = (
+            ("premarket_no_fresh_setup", "premarket", "no_fresh_setup",
+             'Premarket Research: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.\n'),
+            ("radar_no_fresh_setup", "radar", "no_fresh_setup",
+             'Alpha Radar: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.\n'),
+            ("radar_schema_rejection", "radar", "no_valid_discovery_candidate",
+             'Alpha Radar: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.\n'),
+        )
+        for label, mode, reason, expected in cases:
+            with self.subTest(case=label):
+                # run_output creates a fresh temporary audit root and subprocess mock.
+                rc, out, row = self.run_output(f'DECISION skipped {reason}\n', mode=mode)
+                self.assertEqual(rc, 0)
+                self.assertEqual(out, expected)
+                self.assertEqual(row['reason'], reason)
+                if label == "radar_schema_rejection":
+                    self.assertEqual(row['decision'], 'skipped')
 
     def test_blocker_still_delivered(self):
         rc, out, row = self.run_output('BLOCKER research_source_freshness_insufficient', code=2)
         self.assertEqual(rc, 2)
         self.assertEqual(out, 'BLOCKER research_source_freshness_insufficient\n')
         self.assertEqual(row['decision'], 'blocked')
-
-    def test_schema_rejection_notifies_as_no_candidate(self):
-        rc, out, row = self.run_output('DECISION skipped no_valid_discovery_candidate\n')
-        self.assertEqual(rc, 0)
-        self.assertEqual(out, 'Alpha Radar: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.\n')
-        self.assertEqual(row['decision'], 'skipped')
-        self.assertEqual(row['reason'], 'no_valid_discovery_candidate')
-
-    def test_no_candidate_notifies(self):
-        rc, out, row = self.run_output('DECISION skipped no_fresh_setup\n')
-        self.assertEqual(rc, 0)
-        self.assertEqual(out, 'Alpha Radar: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.\n')
-        self.assertEqual(row['reason'], 'no_fresh_setup')

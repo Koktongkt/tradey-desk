@@ -27,34 +27,27 @@ class RetrievalImprovements(unittest.TestCase):
         self.assertNotIn(scout[0],selected)
         self.assertIn(scout[0],alternates)
 
-    def test_one_forbidden_url_does_not_suppress_accessible_sibling(self):
-        urls = ["https://www.sec.gov/a", "https://www.sec.gov/b"]
-        calls = []
-        def forbidden(url, timeout):
-            calls.append(url)
-            raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
-        diagnostics = []
-        with patch.object(radar, "fetch_source", side_effect=forbidden), patch.object(
-            radar, "fetch_source_via_gateway", return_value=None
-        ):
-            radar.gather_evidence(urls, diagnostics=diagnostics, collection_budget_seconds=3)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len(diagnostics), 2)
-        self.assertTrue(all(d["reason"] == "source_http_forbidden" for d in diagnostics))
+    def test_same_publisher_failures_do_not_suppress_sibling_attempts(self):
+        cases = (
+            ('forbidden', ['https://www.sec.gov/a','https://www.sec.gov/b'], 'source_http_forbidden'),
+            ('timeout', ['https://www.globenewswire.com/a','https://www.globenewswire.com/b'], 'source_fetch_timeout'),
+        )
+        for label, urls, reason in cases:
+            with self.subTest(case=label):
+                calls, diagnostics = [], []
+                def fail(url, timeout):
+                    calls.append(url)
+                    if label == 'forbidden':
+                        raise urllib.error.HTTPError(url,403,'forbidden',{},None)
+                    raise TimeoutError('timed out')
+                with patch.object(radar, 'fetch_source', side_effect=fail), patch.object(
+                    radar, 'fetch_source_via_gateway', return_value=None
+                ):
+                    radar.gather_evidence(list(urls), diagnostics=diagnostics, collection_budget_seconds=3)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(len(diagnostics), 2)
+                self.assertTrue(all(d['reason'] == reason for d in diagnostics))
 
-    def test_timeout_on_one_url_does_not_suppress_distinct_sibling(self):
-        urls = ["https://www.globenewswire.com/a", "https://www.globenewswire.com/b"]
-        calls = []
-        def timeout(url, seconds):
-            calls.append(url)
-            raise TimeoutError("timed out")
-        diagnostics = []
-        with patch.object(radar, "fetch_source", side_effect=timeout), patch.object(
-            radar, "fetch_source_via_gateway", return_value=None
-        ):
-            radar.gather_evidence(urls, diagnostics=diagnostics, collection_budget_seconds=3)
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(all(d["reason"] == "source_fetch_timeout" for d in diagnostics))
 
     def test_successful_same_publisher_urls_fetch_concurrently_within_budget(self):
         urls=["https://www.sec.gov/a","https://www.sec.gov/b"]
@@ -109,21 +102,24 @@ class RetrievalImprovements(unittest.TestCase):
         url="https://www.sec.gov:bad/Archives/edgar/data/1045810/000104581026000001/report.htm"
         self.assertFalse(radar.is_sec_archive_filing_url(url))
 
-    def test_sec_filing_metadata_repairs_date_only_value(self):
-        url="https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/report.htm"
-        page={"url":url,"text":"Material filing "*20,"published_at":"2026-09-29"}
-        result=radar.attach_sec_filing_dates([page],{url:"2026-09-29"})
-        self.assertEqual(result[0]["published_at"],"2026-09-29T00:00:00Z")
+    def test_sec_filing_metadata_enrichment_is_bound_and_nonmutating(self):
+        cases = (
+            ('repairs_date_only', 'Material filing ', '2026-09-29'),
+            ('supplies_missing_date', 'Material event filing ', None),
+        )
+        for label, body, published in cases:
+            with self.subTest(case=label):
+                url = 'https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/report.htm'
+                page = {'url':url,'text':body*20,'published_at':published}
+                filings = {url:'2026-09-29'}
+                enriched = radar.attach_sec_filing_dates([page], filings)
+                self.assertEqual(enriched[0]['published_at'], '2026-09-29T00:00:00Z')
+                self.assertEqual(page['published_at'], published)
+                if published is None:
+                    self.assertIsNone(page['published_at'])
+                    other = {'url':'https://other.example/filing','text':'Material event '*20,'published_at':None}
+                    self.assertIsNone(radar.attach_sec_filing_dates([other], filings)[0]['published_at'])
 
-    def test_sec_filing_metadata_supplies_date_only_to_matching_fetched_document(self):
-        url="https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/report.htm"
-        page={"url":url,"text":"Material event filing "*20,"published_at":None}
-        filings={url:"2026-09-29"}
-        enriched=radar.attach_sec_filing_dates([page],filings)
-        self.assertEqual(enriched[0]["published_at"],"2026-09-29T00:00:00Z")
-        self.assertIsNone(page["published_at"])
-        other={"url":"https://other.example/filing","text":"Material event "*20,"published_at":None}
-        self.assertIsNone(radar.attach_sec_filing_dates([other],filings)[0]["published_at"])
 
     def test_initial_sec_page_uses_verified_submissions_date(self):
         url="https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/report.htm"

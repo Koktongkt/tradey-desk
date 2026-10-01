@@ -1,4 +1,5 @@
 """Deterministic earnings-calendar resolution tests."""
+import copy
 import datetime as dt
 import tempfile
 import unittest
@@ -21,6 +22,9 @@ class EarningsCalendarTests(unittest.TestCase):
              "a global leader of innovative and comprehensive laboratory services, "
              "today announced results for the second quarter ended June 30, 2026 "
              "and updated its full-year financial guidance.", "2026-07-30"),
+            ("reported header", "Date of Report (Date of earliest event reported): August 26, 2026. "
+             "Item 2.02 Results of Operations and Financial Condition. "
+             "The press release is attached as Exhibit 99.1.", "2026-08-26"),
             ("preliminary", "On August 31, 2026, the Company issued a press release announcing "
              "certain preliminary financial results for its second quarter.", None),
         )
@@ -174,19 +178,29 @@ class EarningsCalendarTests(unittest.TestCase):
         self.assertNotIn("evidence", parameters)
         self.assertIn("trusted_date_loader", parameters)
 
-    def test_trusted_source_confirms_future_date_without_history_lookup(self):
-        history_calls=[]
-        resolved = earnings_calendar.resolve_candidate_earnings(
-            {"symbol": "XYZ", "earnings_event_at": "2026-12-10"},
-            trusted_date_loader=lambda _symbol: ("2026-12-10", "https://stockanalysis.com/stocks/xyz/"),
-            history_loader=lambda symbol: (history_calls.append(symbol) or []),
-            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+    def test_resolver_trusted_future_date_overrides_model_claim(self):
+        cases = (
+            ("matching XYZ", {"symbol": "XYZ", "earnings_event_at": "2026-12-10"},
+             "2026-12-10", "https://stockanalysis.com/stocks/xyz/", True),
+            ("matching AAPL with exit", {"symbol": "AAPL", "earnings_event_at": "2026-10-29",
+                                         "planned_exit_at": "2026-10-20T20:00:00Z"},
+             "2026-10-29", "https://stockanalysis.com/stocks/aapl/", True),
+            ("different trusted date", {"symbol": "AAPL", "earnings_event_at": "2026-12-01"},
+             "2026-10-29", "https://api.nasdaq.com/calendar", False),
         )
-
-        self.assertEqual(resolved["earnings_event_at"], "2026-12-10")
-        self.assertEqual(resolved["earnings_date_status"], "confirmed")
-        self.assertEqual(resolved["earnings_confirmation_url"], "https://stockanalysis.com/stocks/xyz/")
-        self.assertEqual(history_calls, ["XYZ"])
+        for label, candidate, date, url, check_url in cases:
+            with self.subTest(case=label):
+                history_calls = []
+                resolved = earnings_calendar.resolve_candidate_earnings(
+                    dict(candidate), trusted_date_loader=lambda _symbol: (date, url),
+                    history_loader=lambda symbol: (history_calls.append(symbol) or []),
+                    now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+                )
+                self.assertEqual(resolved["earnings_event_at"], date)
+                self.assertEqual(resolved["earnings_date_status"], "confirmed")
+                if check_url:
+                    self.assertEqual(resolved["earnings_confirmation_url"], url)
+                self.assertEqual(history_calls, [candidate["symbol"]])
 
     def test_cached_history_avoids_repeat_sec_fetch_within_ttl(self):
         calls=[]
@@ -223,86 +237,67 @@ class EarningsCalendarTests(unittest.TestCase):
         loader.assert_called_once_with("XYZ")
         self.assertEqual(resolved["earnings_date_status"],"estimated")
 
-    def test_resolver_ignores_malformed_history_rows_and_fails_closed(self):
-        resolved=earnings_calendar.resolve_candidate_earnings(
-            {"symbol":"XYZ","earnings_event_at":"2026-09-08"},
-            history_loader=lambda _symbol:[{"date":"not-a-date"},{"unexpected":"value"}],
-            now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc),
+    def test_resolver_unusable_history_fails_closed(self):
+        cases = (
+            ("malformed rows", "2026-09-08", [{"date": "not-a-date"}, {"unexpected": "value"}], 0),
+            ("expired estimated window", "2026-03-01", [{"date": "2026-03-01"}, {"date": "2025-12-01"}], None),
         )
+        for label, model_date, history, expected_count in cases:
+            with self.subTest(case=label):
+                resolved = earnings_calendar.resolve_candidate_earnings(
+                    {"symbol": "XYZ", "earnings_event_at": model_date},
+                    history_loader=lambda _symbol: [dict(row) for row in history],
+                    now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
+                )
+                self.assertNotIn("earnings_event_at", resolved)
+                self.assertEqual(resolved["earnings_date_status"], "unknown")
+                if expected_count is not None:
+                    self.assertEqual(resolved["earnings_history_count"], expected_count)
 
-        self.assertNotIn("earnings_event_at",resolved)
-        self.assertEqual(resolved["earnings_date_status"],"unknown")
-        self.assertEqual(resolved["earnings_history_count"],0)
 
-    def test_expired_estimated_window_fails_closed_instead_of_looking_reported(self):
-        history=[
-            {"date":"2026-03-01"},
-            {"date":"2025-12-01"},
-        ]
-        resolved=earnings_calendar.resolve_candidate_earnings(
-            {"symbol":"XYZ","earnings_event_at":"2026-03-01"},
-            history_loader=lambda _symbol:history,
-            now=dt.datetime(2026,9,11,14,0,tzinfo=dt.timezone.utc),
+    def test_estimate_next_window_quarterly_sequences(self):
+        cases = (
+            ("nonquarterly gap", ["2026-08-31", "2024-05-17"], None),
+            ("two confirmed", ["2026-09-08", "2026-06-03"],
+             {"earliest": "2026-11-30", "latest": "2026-12-28", "history_count": 2}),
+            ("newest contiguous sequence", ["2026-09-09", "2026-06-02", "2026-03-19", "2025-03-19"],
+             {"earliest": "2026-12-03", "latest": "2026-12-31", "history_count": 2}),
+            ("ignore very old date", ["2026-09-08", "2026-06-03", "2015-01-20"],
+             {"earliest": "2026-11-30", "latest": "2026-12-28", "history_count": 2}),
         )
-
-        self.assertNotIn("earnings_event_at",resolved)
-        self.assertEqual(resolved["earnings_date_status"],"unknown")
-
-    def test_two_dates_with_nonquarterly_gap_do_not_create_estimate(self):
-        self.assertIsNone(earnings_calendar.estimate_next_window([
-            "2026-08-31","2024-05-17",
-        ]))
-
-    def test_two_confirmed_releases_are_enough_to_estimate_window(self):
-        result = earnings_calendar.estimate_next_window([
-            "2026-09-08",
-            "2026-06-03",
-        ])
-
-        self.assertEqual(result, {
-            "earliest": "2026-11-30",
-            "latest": "2026-12-28",
-            "history_count": 2,
-        })
-
-    def test_estimate_uses_newest_contiguous_quarterly_sequence_and_ignores_older_gap(self):
-        result = earnings_calendar.estimate_next_window([
-            "2026-09-09",
-            "2026-06-02",
-            "2026-03-19",
-            "2025-03-19",
-        ])
-
-        self.assertEqual(result, {
-            "earliest": "2026-12-03",
-            "latest": "2026-12-31",
-            "history_count": 2,
-        })
+        for label, dates, expected in cases:
+            with self.subTest(case=label):
+                result = earnings_calendar.estimate_next_window(list(dates))
+                if expected is None:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result, expected)
 
 
-    def test_extract_release_date_accepts_date_following_reported_header(self):
-        text=(
-            "Date of Report (Date of earliest event reported): August 26, 2026. "
-            "Item 2.02 Results of Operations and Financial Condition. "
-            "The press release is attached as Exhibit 99.1."
+    def test_nasdaq_calendar_scan_symbol_and_nullable_rows(self):
+        cases = (
+            ("holiday nulls", dt.date(2026, 12, 24), dt.date(2026, 12, 26),
+             {"2026-12-25": {"data": None},
+              "2026-12-24": {"data": {"rows": [{"symbol": "AAPL", "name": "Apple"}]}}},
+             {"data": {"asOf": "x", "headers": None, "rows": None}},
+             ("2026-12-24", "https://api.nasdaq.com/api/calendar/earnings?date=2026-12-24")),
+            ("symbol in horizon", dt.date(2026, 10, 27), dt.date(2026, 10, 30),
+             {"2026-10-29": {"data": {"rows": [{"symbol": "AAPL", "name": "Apple Inc.", "fiscalQuarterEnding": "Sep/2026"}]}}},
+             {"data": {"rows": []}},
+             ("2026-10-29", "https://api.nasdaq.com/api/calendar/earnings?date=2026-10-29")),
+            ("other symbol", dt.date(2026, 10, 27), dt.date(2026, 10, 28), {},
+             {"data": {"rows": [{"symbol": "MSFT", "name": "Microsoft"}]}}, None),
         )
-        self.assertEqual(earnings_calendar.extract_release_date(text),"2026-08-26")
-
-    def test_nasdaq_scan_tolerates_null_data_on_holidays(self):
-        def get_json(url):
-            if "2026-12-25" in url:
-                return {"data": None}
-            if "2026-12-24" in url:
-                return {"data": {"rows": [{"symbol": "AAPL", "name": "Apple"}]}}
-            return {"data": {"asOf": "x", "headers": None, "rows": None}}
-
-        self.assertEqual(
-            earnings_calendar.nasdaq_earnings_date(
-                "AAPL", dt.date(2026, 12, 24), dt.date(2026, 12, 26),
-                get_json=get_json, sleep=lambda _s: None,
-            ),
-            ("2026-12-24", "https://api.nasdaq.com/api/calendar/earnings?date=2026-12-24"),
-        )
+        for label, start, end, payloads, default, expected in cases:
+            with self.subTest(case=label):
+                def get_json(url):
+                    return copy.deepcopy(next((value for date, value in payloads.items() if date in url), default))
+                result = earnings_calendar.nasdaq_earnings_date(
+                    "AAPL", start, end, get_json=get_json, sleep=lambda _s: None)
+                if expected is None:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result, expected)
 
     def test_past_trusted_date_feeds_next_window_estimation(self):
         resolved = earnings_calendar.resolve_candidate_earnings(
@@ -322,89 +317,21 @@ class EarningsCalendarTests(unittest.TestCase):
         })
         self.assertEqual(resolved["earnings_event_at"], "2026-11-10")
 
-    def test_estimate_window_uses_only_latest_two_dates(self):
-        result = earnings_calendar.estimate_next_window([
-            "2026-09-08",
-            "2026-06-03",
-            "2015-01-20",
-        ])
 
-        self.assertEqual(result, {
-            "earliest": "2026-11-30",
-            "latest": "2026-12-28",
-            "history_count": 2,
-        })
-
-    def test_stockanalysis_page_provides_earnings_date(self):
-        page = '<div>Apple</div><script>{"earningsDate":"Oct 29, 2026"}</script>'
-
-        self.assertEqual(
-            earnings_calendar.stockanalysis_earnings_date(
-                "AAPL", get_text=lambda _url: page,
-            ),
-            ("2026-10-29", "https://stockanalysis.com/stocks/aapl/"),
+    def test_stockanalysis_page_date_presence(self):
+        cases = (
+            ("embedded date", '<div>Apple</div><script>{"earningsDate":"Oct 29, 2026"}</script>',
+             ("2026-10-29", "https://stockanalysis.com/stocks/aapl/")),
+            ("missing date", "<html>no date here</html>", None),
         )
+        for label, page, expected in cases:
+            with self.subTest(case=label):
+                result = earnings_calendar.stockanalysis_earnings_date("AAPL", get_text=lambda _url: page)
+                if expected is None:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result, expected)
 
-    def test_stockanalysis_page_without_date_returns_none(self):
-        self.assertIsNone(earnings_calendar.stockanalysis_earnings_date(
-            "AAPL", get_text=lambda _url: "<html>no date here</html>",
-        ))
-
-    def test_nasdaq_calendar_scan_finds_symbol_in_horizon(self):
-        def get_json(url):
-            if "2026-10-29" in url:
-                return {"data": {"rows": [{
-                    "symbol": "AAPL", "name": "Apple Inc.",
-                    "fiscalQuarterEnding": "Sep/2026",
-                }]}}
-            return {"data": {"rows": []}}
-
-        self.assertEqual(
-            earnings_calendar.nasdaq_earnings_date(
-                "AAPL", dt.date(2026, 10, 27), dt.date(2026, 10, 30),
-                get_json=get_json, sleep=lambda _s: None,
-            ),
-            ("2026-10-29", "https://api.nasdaq.com/api/calendar/earnings?date=2026-10-29"),
-        )
-
-    def test_nasdaq_calendar_scan_ignores_other_symbols(self):
-        def get_json(url):
-            return {"data": {"rows": [{"symbol": "MSFT", "name": "Microsoft"}]}}
-
-        self.assertIsNone(earnings_calendar.nasdaq_earnings_date(
-            "AAPL", dt.date(2026, 10, 27), dt.date(2026, 10, 28),
-            get_json=get_json, sleep=lambda _s: None,
-        ))
-
-    def test_resolver_confirms_from_stockanalysis_when_evidence_lacks_date(self):
-        candidate = {
-            "symbol": "AAPL", "earnings_event_at": "2026-10-29",
-            "planned_exit_at": "2026-10-20T20:00:00Z",
-        }
-        resolved = earnings_calendar.resolve_candidate_earnings(
-            candidate,
-            history_loader=lambda _symbol: [],
-            trusted_date_loader=lambda symbol: ("2026-10-29", "https://stockanalysis.com/stocks/aapl/"),
-            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
-        )
-
-        self.assertEqual(resolved["earnings_event_at"], "2026-10-29")
-        self.assertEqual(resolved["earnings_date_status"], "confirmed")
-        self.assertEqual(
-            resolved["earnings_confirmation_url"],
-            "https://stockanalysis.com/stocks/aapl/",
-        )
-
-    def test_resolver_confirms_from_trusted_source_with_different_date(self):
-        resolved = earnings_calendar.resolve_candidate_earnings(
-            {"symbol": "AAPL", "earnings_event_at": "2026-12-01"},
-            history_loader=lambda _symbol: [],
-            trusted_date_loader=lambda symbol: ("2026-10-29", "https://api.nasdaq.com/calendar"),
-            now=dt.datetime(2026, 9, 11, 14, 0, tzinfo=dt.timezone.utc),
-        )
-
-        self.assertEqual(resolved["earnings_event_at"], "2026-10-29")
-        self.assertEqual(resolved["earnings_date_status"], "confirmed")
 
     def test_resolver_confirms_past_trusted_date_as_previous(self):
         resolved = earnings_calendar.resolve_candidate_earnings(
