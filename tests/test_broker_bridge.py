@@ -79,6 +79,32 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["summary"]["spy_day_return_pct"])
         self.assertIsNone(result["summary"]["day_excess_pct"])
 
+    async def test_portfolio_balance_uses_account_fields_independently_of_day_baseline(self):
+        cases = (
+            ("nested_no_baseline", {"equity": "10100.12", "cash": "9800.12", "long_market_value": "320", "short_market_value": "-20", "buying_power": "90000"}, (10100.12, 9800.12, 300.0, 0.0)),
+            ("zero", {"equity": 0, "cash": 0, "long_market_value": 0, "short_market_value": 0}, (0.0, 0.0, 0.0, 0.0)),
+            ("difference", {"equity": 100, "cash": 50, "long_market_value": 40, "short_market_value": 0}, (100.0, 50.0, 40.0, 10.0)),
+            ("cash_only", {"cash": "25"}, (None, 25.0, None, None)),
+            ("missing", {}, (None, None, None, None)),
+            ("missing_short", {"equity": 100, "cash": 50, "long_market_value": 50}, (100.0, 50.0, None, None)),
+            ("unsigned_short", {"equity": 100, "cash": 50, "long_market_value": 60, "short_market_value": 10}, (100.0, 50.0, None, None)),
+            ("overflow_sum", {"long_market_value": "1e308", "short_market_value": 0, "cash": "1e308", "equity": 100}, (100.0, 1e308, 1e308, None)),
+        ) + tuple((f"invalid_{value!r}", {key: value for key in ("equity", "cash", "long_market_value", "short_market_value")}, (None, None, None, None)) for value in (None, "", "bad", "nan", "inf", "-inf", True, False, [], {}))
+        for label, account, expected in cases:
+            with self.subTest(case=label):
+                class BalanceAlpaca:
+                    async def call(self, name, values=None):
+                        return {"get_account_info": {"data": {"account": {"id": "private-id", **account}}},
+                                "get_all_positions": [{"symbol": "FILTERED", "market_value": "999999"}],
+                                "get_stock_snapshot": {}}[name]
+                result = await broker_mcp_bridge.operation(BalanceAlpaca(), "portfolio", {})
+                summary = result["summary"]
+                self.assertIn("total_balance_usd", summary)
+                self.assertEqual(tuple(summary[key] for key in ("total_balance_usd", "cash_usd", "positions_value_usd", "balance_reconciliation_difference_usd")), expected)
+                self.assertIsNone(summary["day_return_pct"])
+                self.assertEqual(result["holdings"], [])
+                self.assertNotIn("private", str(result))
+
     async def test_snapshot_uses_massive_volume_and_explicit_provenance(self):
         bars = [{"volume": 12_000_000}]
         with patch("broker_mcp_bridge.consolidated_daily_bars", return_value=bars):

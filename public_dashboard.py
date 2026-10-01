@@ -2,6 +2,7 @@
 """Build the sanitized, public paper-trading dashboard."""
 from __future__ import annotations
 import json
+import math
 import statistics
 import subprocess
 from pathlib import Path
@@ -15,7 +16,7 @@ HORIZONS=(1,3,5,10)
 SAFE_OUTCOME={"candidate_id","symbol","traded"}|{f"{prefix}_{h}s_pct" for prefix in ("return","spy_return","excess") for h in HORIZONS}
 SAFE_DIAG_MEASURED={"bid","ask","midpoint","spread_bps","limit_price","reference_price","reference_side","deviation_bps","risk_reward","earnings_status","earnings_sessions_away","average_volume","quote_age_seconds","cash","buying_power","dollar_basis","planned_risk_usd","current_position_value","quote_feed","allowed_quote_feeds"}
 SAFE_DIAG_THRESHOLD={"max_spread_bps","max_limit_deviation_bps","min_reward_risk","earnings_blackout_sessions","min_average_volume","max_quote_age_seconds","max_position_usd","max_planned_risk_per_trade_usd"}
-SAFE_PORTFOLIO_SUMMARY={"day_pl_usd","day_return_pct","spy_day_return_pct","day_excess_pct"}
+SAFE_PORTFOLIO_SUMMARY={"total_balance_usd","cash_usd","positions_value_usd","balance_reconciliation_difference_usd","day_pl_usd","day_return_pct","spy_day_return_pct","day_excess_pct"}
 SAFE_HOLDING={"symbol","quantity","average_entry_price","current_price","market_value","cost_basis","unrealized_pl_usd","unrealized_return_pct","day_pl_usd","day_return_pct"}
 DIAG_STAGE_SUMMARIES={
     "precheck":"A deterministic desk gate blocked the candidate before independent review.",
@@ -115,6 +116,11 @@ def sanitize_diagnostics_row(row:dict[str,Any])->dict[str,Any]:
 def sanitize_portfolio_snapshot(snapshot:dict[str,Any]|None)->dict[str,Any]:
     source=snapshot if isinstance(snapshot,dict) else {}
     summary=source.get("summary") if isinstance(source.get("summary"),dict) else {}
+    safe_summary={k:summary[k] for k in SAFE_PORTFOLIO_SUMMARY if k in summary}
+    for key in ("total_balance_usd","cash_usd","positions_value_usd","balance_reconciliation_difference_usd"):
+        value=summary.get(key)
+        try:safe_summary[key]=value if type(value) in (int,float) and math.isfinite(value) else None
+        except OverflowError:safe_summary[key]=None
     holdings=[]
     for row in source.get("holdings") or []:
         if not isinstance(row,dict):continue
@@ -123,7 +129,7 @@ def sanitize_portfolio_snapshot(snapshot:dict[str,Any]|None)->dict[str,Any]:
     return {
         "captured_at":source.get("captured_at") if isinstance(source.get("captured_at"),str) else None,
         "feed":"alpaca_paper_iex" if source.get("feed")=="alpaca_paper_iex" else None,
-        "summary":{k:summary[k] for k in SAFE_PORTFOLIO_SUMMARY if k in summary},
+        "summary":safe_summary,
         "holdings":holdings,
     }
 
@@ -182,6 +188,7 @@ def html_template()->str:
 *{box-sizing:border-box}html{background:var(--paper);color:var(--ink);font-family:var(--sans)}body{margin:0}.shell{max-width:1180px;margin:auto;padding:24px 28px 64px}
 header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:8px 0 24px;border-bottom:1px solid var(--line)}.brand{font-weight:750;font-size:20px;letter-spacing:-.025em}.eyebrow{font:700 11px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}.status-line{display:flex;align-items:center;gap:9px;font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px var(--green-soft)}
 .lede{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.55fr);gap:44px;padding:34px 0 28px}.lede h1{font-size:clamp(30px,4vw,42px);line-height:1;letter-spacing:-.05em;margin:7px 0 15px;max-width:750px}.lede p{font-size:16px;line-height:1.55;color:var(--muted);max-width:660px;margin:0}.status-panel{border-top:2px solid var(--ink);padding-top:14px}.status-row{display:flex;justify-content:space-between;gap:24px;padding:11px 0;border-bottom:1px solid var(--line);font-size:13px}.status-row b{font:700 13px var(--mono)}
+.balance-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px;padding:24px;margin-bottom:24px}.balance-panel strong{display:block;font:700 clamp(28px,5vw,46px) var(--mono);letter-spacing:-.045em;margin:10px 0;overflow-wrap:anywhere}.balance-panel p,.balance-panel small{color:var(--muted);font-size:12px;line-height:1.5}.balance-breakdown b{overflow-wrap:anywhere}.balance-panel p{margin:10px 0}.balance-panel .status-row{padding-top:0;margin-bottom:12px}@media(max-width:800px){.balance-panel{grid-template-columns:1fr;gap:18px}}
 .metric-strip{display:grid;grid-template-columns:repeat(4,1fr);border-block:1px solid var(--line);margin-bottom:48px}.metric{padding:20px 20px 20px 0}.metric+.metric{border-left:1px solid var(--line);padding-left:20px}.metric strong{display:block;font:700 clamp(27px,4vw,40px) var(--mono);letter-spacing:-.055em;margin:9px 0 6px}.metric small{color:var(--muted);line-height:1.4}
 .section{margin-top:52px}.section-head{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:18px}.section h2{font-size:24px;letter-spacing:-.035em;margin:0}.section-head p{margin:0;color:var(--muted);font-size:13px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:4px}
 .funnel{display:grid;grid-template-columns:repeat(5,1fr)}.funnel-step{padding:22px;min-height:124px}.funnel-step+.funnel-step{border-left:1px solid var(--line)}.funnel-step span{font-size:12px;color:var(--muted)}.funnel-step b{display:block;font:700 28px var(--mono);margin:12px 0 4px}.funnel-step small{font-size:12px;color:var(--muted)}.candidate-card{margin-top:12px}.candidate-card>summary{display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:17px 22px;font-size:13px;font-weight:700;list-style-position:inside}.candidate-card>summary em{font:11px var(--mono);font-style:normal;color:var(--muted)}.candidate-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:360px;overflow-y:auto;border-top:1px solid var(--line);padding:8px 22px 18px}.candidate-event{display:grid;grid-template-columns:105px 60px minmax(0,1fr);gap:12px;padding:13px 10px 13px 0;border-bottom:1px solid var(--line);align-items:center}.candidate-event time{font:11px var(--mono);color:var(--muted)}.candidate-event b{font:700 11px var(--mono)}.candidate-event span{font-size:12px;color:var(--muted);line-height:1.4}
@@ -198,6 +205,7 @@ footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=value=>Number(value??0).toLocaleString('en-US');
 const money=value=>value==null?'—':`$${Number(value).toLocaleString('en-US')}`;
+const balanceMoney=value=>typeof value!=='number'||!Number.isFinite(value)?'—':`$${value.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const excess=value=>value==null?'—':`${value>0?'+':''}${Number(value).toFixed(2)}%`;
 const signedMoney=value=>value==null?'—':`${value>0?'+':''}$${Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const tone=value=>value==null?'':value>=0?'positive':'negative';
@@ -218,6 +226,7 @@ fetch('dashboard.json').then(response=>{if(!response.ok)throw new Error('Dashboa
  document.querySelector('#app').innerHTML=`
  <header><div class="brand">Tradey Desk</div><div class="status-line"><i class="dot"></i><span>${s.enabled?'Autonomous':'Paused'} · ${esc(s.broker_mode||'paper')} mode</span></div></header>
  <section class="lede"><div><div class="eyebrow">Paper trading · public audit</div><h1>Paper desk overview</h1><p>What the desk considered, what independent reviewers agreed on, and whether those choices added value versus the S&amp;P 500.</p></div><aside class="status-panel" aria-label="Desk status"><div class="eyebrow">Desk status</div><div class="status-row"><span>Operating mode</span><b>${s.enabled?'RUNNING':'PAUSED'} / ${esc((s.broker_mode||'paper').toUpperCase())}</b></div><div class="status-row"><span>Managed exposure cap</span><b>${money(s.account_cap_usd)}</b></div><div class="status-row"><span>Maximum position</span><b>${money(s.max_position_usd)}</b></div><div class="status-row"><span>Daily order limit</span><b>${number(s.max_daily_orders)}</b></div><div class="status-row"><span>Last public activity</span><b>${shortTime(d.last_activity_at)}</b></div></aside></section>
+ <section class="panel balance-panel" aria-label="Current balance"><div><div class="eyebrow">Current balance</div><strong>${balanceMoney(live.total_balance_usd)}</strong><p>Broker account equity · USD · not the managed exposure cap or buying power.</p><small>Snapshot <time datetime="${esc(portfolio.captured_at||'')}">${portfolio.captured_at?shortTime(portfolio.captured_at):'Unavailable'}</time></small></div><div class="balance-breakdown"><div class="status-row"><span>Cash</span><b>${balanceMoney(live.cash_usd)}</b></div><div class="status-row"><span>Positions value</span><b>${balanceMoney(live.positions_value_usd)}</b></div><p>Account-wide net market value (long plus signed short); not a sum of displayed holdings. ${live.balance_reconciliation_difference_usd==null?'Reconciliation unavailable.':`Equity less cash and positions: ${signedMoney(live.balance_reconciliation_difference_usd)}. Broker adjustments may differ; equity remains authoritative.`}</p></div></section>
  <section class="metric-strip" aria-label="Top metrics"><div class="metric"><div class="eyebrow">Live portfolio vs SPY</div><strong class="${tone(live.day_excess_pct)}">${excess(live.day_excess_pct)}</strong><small>Today's whole-account return minus SPY; cash drag included.</small></div><div class="metric"><div class="eyebrow">Portfolio today</div><strong class="${tone(live.day_return_pct)}">${excess(live.day_return_pct)}</strong><small>${signedMoney(live.day_pl_usd)} across the paper account.</small></div><div class="metric"><div class="eyebrow">SPY today</div><strong class="${tone(live.spy_day_return_pct)}">${excess(live.spy_day_return_pct)}</strong><small>IEX benchmark snapshot.</small></div><div class="metric"><div class="eyebrow">Open positions</div><strong>${number(holdings.length)}</strong><small>Broker-confirmed Alpaca holdings.</small></div></section>
  <section class="section"><div class="section-head"><div><div class="eyebrow">Broker-confirmed exposure</div><h2>Current Alpaca holdings</h2></div><p>Snapshot ${shortTime(portfolio.captured_at)} · paper account · IEX marks</p></div><div class="panel portfolio-panel">${portfolioRows(holdings)}<div class="portfolio-note">Total gain is measured from each position's average entry. “Today” is intraday unrealized P&amp;L. The headline benchmark compares the whole paper account—including cash—with SPY for the current session; it is not a since-inception comparison.</div></div></section>
  <section class="section"><div class="section-head"><div><div class="eyebrow">From signal to fill</div><h2>Decision funnel</h2></div><p>More rejection is expected; the desk is not paid for activity.</p></div><div class="panel funnel"><div class="funnel-step"><span>01 · researched</span><b>${number(p.qualified_candidates)}</b><small>qualified candidates</small></div><div class="funnel-step"><span>02 · dual reviewed</span><b>${number(v.total_dual_model_reviews)}</b><small>independent review pairs</small></div><div class="funnel-step"><span>03 · agreed</span><b>${number(v.agreements)}</b><small>matching executable plans</small></div><div class="funnel-step"><span>04 · disagreed</span><b>${number(v.disagreements)}</b><small>safely blocked</small></div><div class="funnel-step"><span>05 · filled</span><b>${number(p.confirmed_trades)}</b><small>broker-confirmed trades</small></div></div><details class="panel candidate-card"><summary><span>View researched candidates</span><em>${number((d.researched_candidates||[]).length)} sanitized records</em></summary><div class="candidate-list" id="candidate-events">${candidateRows(d.researched_candidates||[])}</div></details></section>

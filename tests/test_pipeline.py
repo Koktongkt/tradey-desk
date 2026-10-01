@@ -229,6 +229,8 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             data = public_dashboard.build_data(Path(td), portfolio_snapshot=snapshot)
         self.assertEqual(data["live_portfolio"]["summary"], {
+            "total_balance_usd": None, "cash_usd": None, "positions_value_usd": None,
+            "balance_reconciliation_difference_usd": None,
             "day_pl_usd": 20.2, "day_return_pct": 0.2021,
             "spy_day_return_pct": -0.1, "day_excess_pct": 0.3021,
         })
@@ -237,6 +239,55 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("account_number", blob)
         self.assertNotIn("asset_id", blob)
         self.assertNotIn("private_equity", blob)
+
+    def test_dashboard_balance_flows_from_broker_to_public_render(self):
+        import asyncio
+        import broker_mcp_bridge
+
+        cases = (
+            ("balance", {"equity": "10100.12", "cash": "9800.12", "long_market_value": "320", "short_market_value": "-20"}, (10100.12, 9800.12, 300.0, 0.0), ("$10,100.12", "$9,800.12", "$300.00")),
+            ("difference", {"equity": 100, "cash": 50, "long_market_value": 40, "short_market_value": 0}, (100.0, 50.0, 40.0, 10.0), ("$100.00", "$50.00", "$40.00", "+$10.00")),
+            ("zero", {"equity": 0, "cash": 0, "long_market_value": 0, "short_market_value": 0}, (0.0, 0.0, 0.0, 0.0), ("$0.00",)),
+            ("missing", {}, (None, None, None, None), ("—", "Reconciliation unavailable")),
+        )
+        for label, account, expected, displayed in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                class BalanceAlpaca:
+                    async def call(self, name, values=None):
+                        return {"get_account_info": {"account": {"id": "private-account", "buying_power": "90000", **account}}, "get_all_positions": [{"symbol": "FILTERED", "market_value": 999999}], "get_stock_snapshot": {}}[name]
+                snapshot = asyncio.run(broker_mcp_bridge.operation(BalanceAlpaca(), "portfolio", {}))
+                snapshot["summary"]["private_prompt"] = "private-secret"
+                root = Path(td)
+                (root / "autonomy_config.json").write_text(json.dumps({"account_cap_usd": 500}))
+                data = public_dashboard.build_data(root, portfolio_snapshot=snapshot)
+                summary = data["live_portfolio"]["summary"]
+                self.assertIn("total_balance_usd", summary)
+                self.assertEqual(tuple(summary[key] for key in ("total_balance_usd", "cash_usd", "positions_value_usd", "balance_reconciliation_difference_usd")), expected)
+                blob = json.dumps(data, allow_nan=False)
+                self.assertNotIn("private", blob)
+                self.assertNotIn("buying_power", blob)
+                script = public_dashboard.html_template().split("<script>", 1)[1].split("</script>", 1)[0]
+                harness = "const nodes={};global.document={querySelector:s=>nodes[s]||(nodes[s]={value:'today',innerHTML:'',addEventListener(){},insertAdjacentHTML(){}})};global.fetch=async()=>({ok:true,json:async()=>(" + blob + ")});\n" + script + "\nsetImmediate(()=>console.log(nodes['#app'].innerHTML));"
+                rendered = subprocess.run(["node", "-e", harness], text=True, capture_output=True, check=True).stdout
+                for text in ("Current balance", "Cash", "Positions value", "Broker account equity", "not the managed exposure cap", "Managed exposure cap", "Snapshot", *displayed):
+                    self.assertIn(text, rendered)
+                self.assertNotIn("private", rendered)
+                self.assertLess(rendered.index("Current balance"), rendered.index("Live portfolio vs SPY"))
+                self.assertIn("grid-template-columns:1fr", public_dashboard.html_template())
+                self.assertIn(snapshot["captured_at"], rendered)
+
+    def test_dashboard_balance_sanitization_rejects_non_numeric_payloads(self):
+        keys = ("total_balance_usd", "cash_usd", "positions_value_usd", "balance_reconciliation_difference_usd")
+        for value in (None, "", "100", "bad", float("nan"), float("inf"), float("-inf"), True, False, {"secret": "private-secret"}, ["private-secret"]):
+            with self.subTest(value=value):
+                safe = public_dashboard.sanitize_portfolio_snapshot({"summary": dict.fromkeys(keys, value)})
+                for key in keys:
+                    self.assertIsNone(safe["summary"][key])
+                self.assertNotIn("private", json.dumps(safe, allow_nan=False))
+        for snapshot in (None, {}, {"summary": []}):
+            with self.subTest(snapshot=snapshot):
+                safe = public_dashboard.sanitize_portfolio_snapshot(snapshot)
+                self.assertEqual({key: safe["summary"].get(key, "missing") for key in keys}, dict.fromkeys(keys))
 
     def test_dashboard_html_shows_live_holdings_and_spy_comparison(self):
         html = public_dashboard.html_template()

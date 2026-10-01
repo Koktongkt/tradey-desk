@@ -164,8 +164,17 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             a.call("get_all_positions"),
             a.call("get_stock_snapshot",{"symbol":"SPY","feed":"iex"}),
         )
-        ac=find_mapping_with_keys(account,{"equity","last_equity"})
-        equity=finite_number(ac.get("equity"),positive=True)
+        ac=next((found for key in ("equity","cash","long_market_value","short_market_value")
+                 if (found:=find_mapping_with_keys(account,{key}))),{})
+        balances={key:finite_number(ac.get(key)) if not isinstance(ac.get(key),bool) else None
+                  for key in ("equity","cash","long_market_value","short_market_value")}
+        equity=balances["equity"]
+        cash=balances["cash"]
+        long_value,short_value=balances["long_market_value"],balances["short_market_value"]
+        # Account-wide signed net market value, never a sum of filtered public holdings.
+        positions_value=finite_number(long_value+short_value) if long_value is not None and long_value>=0 and short_value is not None and short_value<=0 else None
+        difference=finite_number(equity-(cash+positions_value)) if equity is not None and cash is not None and positions_value is not None else None
+        if difference is not None:difference=round(difference,4)
         last_equity=finite_number(ac.get("last_equity"),positive=True)
         day_return=round((equity/last_equity-1)*100,4) if equity is not None and last_equity is not None else None
         day_pl=round(equity-last_equity,4) if equity is not None and last_equity is not None else None
@@ -179,6 +188,8 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         return {
             "captured_at":now.isoformat().replace("+00:00","Z"),"feed":"alpaca_paper_iex",
             "summary":{
+                "total_balance_usd":equity,"cash_usd":cash,"positions_value_usd":positions_value,
+                "balance_reconciliation_difference_usd":difference,
                 "day_pl_usd":day_pl,"day_return_pct":day_return,"spy_day_return_pct":spy_return,
                 "day_excess_pct":round(day_return-spy_return,4) if day_return is not None and spy_return is not None else None,
             },
