@@ -440,7 +440,7 @@ def synthesis_command()->list[str]:
 
 
 def focused_retrieval_command()->list[str]:
-    return research_subprocess_command("web",max_turns=3,run_budget=90)
+    return research_subprocess_command("web",max_turns=4,run_budget=90)
 
 def focused_retrieval_prompt(candidates:list[dict[str,Any]])->str:
     targets=[{"symbol":str(c.get("symbol") or "").upper(),"catalyst":str(c.get("catalyst") or "")[:500],"event_date":str(c.get("event_date") or "")} for c in candidates[:5]]

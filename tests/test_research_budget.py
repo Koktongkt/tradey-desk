@@ -152,7 +152,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
     def test_focused_retrieval_has_bounded_tool_budget_and_timeout(self):
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
             command=alpha_radar.focused_retrieval_command()
-        self.assertEqual(command[command.index("--max-turns")+1],"3")
+        self.assertEqual(command[command.index("--max-turns")+1],"4")
         self.assertEqual(command[command.index("--run-budget")+1],"90")
         source=(alpha_radar.ROOT/"alpha_radar.py").read_text()
         self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",source)
