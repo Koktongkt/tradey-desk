@@ -358,6 +358,13 @@ class GatewayFallbackGuardTests(unittest.TestCase):
     through the provider gateway and extracted pages direct fetching could
     not (verified 2026-09-09: businesswire.com article recovered)."""
 
+    def setUp(self):
+        alpha_radar.configured_default_model.cache_clear()
+        self.addCleanup(alpha_radar.configured_default_model.cache_clear)
+        loader = patch.object(alpha_radar, 'load_configured_default_model', return_value=('fixture-provider', 'fixture-model'))
+        self.addCleanup(loader.stop)
+        loader.start()
+
     def test_gather_evidence_falls_back_on_timeout_after_retry(self):
         calls = []
 

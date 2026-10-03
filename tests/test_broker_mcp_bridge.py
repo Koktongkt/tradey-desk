@@ -6,6 +6,15 @@ from unittest.mock import patch
 import broker_mcp_bridge
 
 
+class _AcceptingAlpaca:
+    def __init__(self):
+        self.calls = []
+
+    async def call(self, name, arguments=None):
+        self.calls.append((name, arguments))
+        return {"status": "accepted"}
+
+
 class BrokerMcpConfigTests(unittest.IsolatedAsyncioTestCase):
     async def test_readback_orders_normalizes_nested_status_and_fallback_in_reference_order(self):
         class ReadOnlyAlpaca:
@@ -114,15 +123,7 @@ class BrokerMcpConfigTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_fractional_quantity_is_forwarded_unchanged_to_paper_order_tool(self):
-        class FakeAlpaca:
-            def __init__(self):
-                self.calls = []
-
-            async def call(self, name, arguments=None):
-                self.calls.append((name, arguments))
-                return {"status": "accepted"}
-
-        alpaca = FakeAlpaca()
+        alpaca = _AcceptingAlpaca()
         order = {
             "action": "BUY", "symbol": "NVDA", "quantity": 0.5,
             "limit_price": 200.0, "target": 220.0, "stop": 190.0,
@@ -137,15 +138,7 @@ class BrokerMcpConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["time_in_force"], "gtc")
 
     async def test_existing_position_protection_uses_gtc_oco(self):
-        class FakeAlpaca:
-            def __init__(self):
-                self.calls = []
-
-            async def call(self, name, arguments=None):
-                self.calls.append((name, arguments))
-                return {"status": "accepted"}
-
-        alpaca = FakeAlpaca()
+        alpaca = _AcceptingAlpaca()
         await broker_mcp_bridge.operation(alpaca, "protect", {
             "symbol": "ZS", "quantity": 3, "target": 184.37,
             "stop": 151.24, "client_order_id": "tradey-protect-test",

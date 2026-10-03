@@ -105,47 +105,27 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["holdings"], [])
                 self.assertNotIn("private", str(result))
 
-    async def test_snapshot_uses_massive_volume_and_explicit_provenance(self):
-        bars = [{"volume": 12_000_000}]
-        with patch("broker_mcp_bridge.consolidated_daily_bars", return_value=bars):
-            result = await broker_mcp_bridge.operation(_FakeAlpaca(), "snapshot", {"symbol": "AAPL", "earnings_sessions_away": 8})
-        self.assertEqual(result["average_volume"], 12_000_000)
-        self.assertEqual(result["volume_feed"], "massive_consolidated")
-        self.assertEqual(result["quote_feed"], "alpaca_iex")
-
-    async def test_snapshot_returns_completed_consolidated_technical_bars(self):
-        bars = [
-            {"open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1_000_000.0, "timestamp": 1}
-        ]
-        with patch("broker_mcp_bridge.consolidated_daily_bars", return_value=bars):
-            result = await broker_mcp_bridge.operation(_FakeAlpaca(), "snapshot", {"symbol": "AAPL"})
-        self.assertEqual(result["technical_bars"], bars)
-        self.assertEqual(result["average_volume"], 1_000_000.0)
-        self.assertEqual(result["technical_bars_feed"], "massive_consolidated_completed_daily")
-
-    async def test_snapshot_returns_exchange_sessions_through_planned_exit(self):
-        with patch("broker_mcp_bridge.datetime", _FixedDateTime), patch(
-            "broker_mcp_bridge.consolidated_daily_bars", return_value=[{"volume": 12_000_000}]
-        ):
-            result = await broker_mcp_bridge.operation(
-                _FakeAlpaca(), "snapshot", {
-                    "symbol": "AAPL", "planned_exit_at": "2026-09-03T20:00:00Z",
-                    "earnings_event_at": "2026-09-01T20:05:00Z",
-                },
-            )
-        self.assertEqual(result["trading_sessions"], ["2026-09-01", "2026-09-02", "2026-09-03"])
-
-    async def test_snapshot_accepts_date_only_earnings_and_counts_exchange_sessions(self):
-        with patch("broker_mcp_bridge.datetime", _FixedDateTime), patch(
-            "broker_mcp_bridge.consolidated_daily_bars", return_value=[{"volume": 12_000_000}]
-        ):
-            result = await broker_mcp_bridge.operation(
-                _FakeAlpaca(), "snapshot", {
-                    "symbol": "AAPL", "earnings_event_at": "2026-09-03",
-                },
-            )
-        self.assertEqual(result["earnings_status"], "upcoming")
-        self.assertEqual(result["earnings_sessions_away"], 2)
+    async def test_snapshot_projection_cases(self):
+        technical = [{"open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0, "volume": 1_000_000.0, "timestamp": 1}]
+        cases = (
+            ("test_snapshot_uses_massive_volume_and_explicit_provenance", {"symbol": "AAPL", "earnings_sessions_away": 8}, [{"volume": 12_000_000}], False,
+             {"average_volume": 12_000_000, "volume_feed": "massive_consolidated", "quote_feed": "alpaca_iex"}),
+            ("test_snapshot_returns_completed_consolidated_technical_bars", {"symbol": "AAPL"}, technical, False,
+             {"technical_bars": technical, "average_volume": 1_000_000.0, "technical_bars_feed": "massive_consolidated_completed_daily"}),
+            ("test_snapshot_returns_exchange_sessions_through_planned_exit", {"symbol": "AAPL", "planned_exit_at": "2026-09-03T20:00:00Z", "earnings_event_at": "2026-09-01T20:05:00Z"}, [{"volume": 12_000_000}], True,
+             {"trading_sessions": ["2026-09-01", "2026-09-02", "2026-09-03"]}),
+            ("test_snapshot_accepts_date_only_earnings_and_counts_exchange_sessions", {"symbol": "AAPL", "earnings_event_at": "2026-09-03"}, [{"volume": 12_000_000}], True,
+             {"earnings_status": "upcoming", "earnings_sessions_away": 2}),
+        )
+        from contextlib import nullcontext
+        from copy import deepcopy
+        for name, payload, bars, fixed, expected in cases:
+            with self.subTest(case=name), patch("broker_mcp_bridge.consolidated_daily_bars", return_value=deepcopy(bars)), (
+                patch("broker_mcp_bridge.datetime", _FixedDateTime) if fixed else nullcontext()
+            ):
+                result = await broker_mcp_bridge.operation(_FakeAlpaca(), "snapshot", deepcopy(payload))
+                for field, value in expected.items():
+                    self.assertEqual(result[field], value)
 
     def test_earnings_state_distinguishes_reported_same_day_and_upcoming(self):
         cases = (

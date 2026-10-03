@@ -39,54 +39,35 @@ class BridgeCommandTests(unittest.TestCase):
 
 
 class BridgeFailureDiagnosticsTests(unittest.TestCase):
-    def test_failure_raises_typed_error_and_records_private_diagnostics(self):
-        with tempfile.TemporaryDirectory() as td:
-            fake_private = Path(td)
-            with patch.object(autotrader, "PRIVATE_DIR", fake_private), patch(
-                "autotrader.subprocess.run", return_value=_fail_process("server crashed\n")
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    autotrader._broker_bridge("snapshot", {"symbol": "AAPL"})
-            self.assertIn("broker_mcp_failure", str(ctx.exception))
-            rows = [json.loads(line) for line in (fake_private / "bridge_diagnostics.jsonl").read_text().splitlines() if line.strip()]
-            self.assertEqual(len(rows), 1)
-            row = rows[0]
-            self.assertEqual(row["operation"], "snapshot")
-            self.assertEqual(row["returncode"], 3)
-            self.assertIn("server crashed", row["stderr_tail"])
-            self.assertTrue(row["attempts_made"] >= 1)
-            self.assertIn("duration_ms", row)
-
-    def test_diagnostics_never_reach_public_stdout_path(self):
-        with tempfile.TemporaryDirectory() as td:
-            fake_private = Path(td)
-            with patch.object(autotrader, "PRIVATE_DIR", fake_private), patch(
-                "autotrader.subprocess.run", return_value=_fail_process("secret-ish stderr")
-            ):
-                with self.assertRaises(RuntimeError):
-                    autotrader._broker_bridge("snapshot", {"symbol": "AAPL"})
-            self.assertTrue((fake_private / "bridge_diagnostics.jsonl").exists())
-
-    def test_unparseable_success_stdout_is_typed_failure_with_diagnostics(self):
-        with tempfile.TemporaryDirectory() as td:
-            fake_private = Path(td)
-            with patch.object(autotrader, "PRIVATE_DIR", fake_private), patch(
-                "autotrader.subprocess.run", return_value=_ok_process("not json at all")
-            ):
-                with self.assertRaises(RuntimeError):
-                    autotrader._broker_bridge("snapshot", {"symbol": "AAPL"})
-            rows = [json.loads(line) for line in (fake_private / "bridge_diagnostics.jsonl").read_text().splitlines() if line.strip()]
-            self.assertEqual(rows[0]["failure_class"], "unparseable_output")
-
-    def test_zero_exit_provider_rejection_is_typed_failure(self):
-        rejected = json.dumps({"data": {"error": {"message": "API rejected the order"}}})
-        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch(
-            "autotrader.subprocess.run", return_value=_ok_process(rejected)
-        ):
-            with self.assertRaisesRegex(RuntimeError, "broker_mcp_failure"):
-                autotrader._broker_bridge("place", {"order": {}})
-            rows = [json.loads(line) for line in (Path(td) / "bridge_diagnostics.jsonl").read_text().splitlines()]
-        self.assertEqual(rows[0]["failure_class"], "provider_error")
+    def test_bridge_failure_diagnostics_cases(self):
+        cases = (
+            ("test_failure_raises_typed_error_and_records_private_diagnostics", _fail_process("server crashed\n"), "snapshot", {"symbol": "AAPL"}, "rich"),
+            ("test_diagnostics_never_reach_public_stdout_path", _fail_process("secret-ish stderr"), "snapshot", {"symbol": "AAPL"}, "exists"),
+            ("test_unparseable_success_stdout_is_typed_failure_with_diagnostics", _ok_process("not json at all"), "snapshot", {"symbol": "AAPL"}, "unparseable_output"),
+            ("test_zero_exit_provider_rejection_is_typed_failure", _ok_process(json.dumps({"data": {"error": {"message": "API rejected the order"}}})), "place", {"order": {}}, "provider_error"),
+        )
+        for name, response, operation, payload, checks in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "bridge_diagnostics.jsonl"
+                with patch.object(autotrader, "PRIVATE_DIR", Path(td)), patch("autotrader.subprocess.run", return_value=response):
+                    context = self.assertRaisesRegex(RuntimeError, "broker_mcp_failure") if checks == "provider_error" else self.assertRaises(RuntimeError)
+                    with context as ctx:
+                        autotrader._broker_bridge(operation, payload)
+                if checks == "exists":
+                    self.assertTrue(path.exists())
+                    continue
+                rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                if checks == "rich":
+                    self.assertIn("broker_mcp_failure", str(ctx.exception))
+                    self.assertEqual(len(rows), 1)
+                    row = rows[0]
+                    self.assertEqual(row["operation"], "snapshot")
+                    self.assertEqual(row["returncode"], 3)
+                    self.assertIn("server crashed", row["stderr_tail"])
+                    self.assertTrue(row["attempts_made"] >= 1)
+                    self.assertIn("duration_ms", row)
+                else:
+                    self.assertEqual(rows[0]["failure_class"], checks)
 
 
 class BridgeRetryTests(unittest.TestCase):
@@ -191,80 +172,31 @@ class RadarReuseFirstTests(unittest.TestCase):
             self.assertIsNotNone(reused)
             self.assertEqual(reused["symbol"], "DELL")
 
-    def test_reuse_is_blocked_once_a_later_review_exists(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            candidate = {
-                "symbol": "DELL",
-                "researched_at": "2026-09-05T13:00:00Z",
-                "sources_verified_at": "2026-09-05T13:01:00Z",
-                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
-                "price": 100.0,
-                "spy_price": 500.0,
-                "instrument_type": "cash_equity",
-                "setup_type": "breakout",
-                "earnings_event_at": "2026-09-10T20:00:00Z",
-                "planned_exit_at": "2026-09-18T20:00:00Z",
-                "horizon_rationale": "swing",
-            }
-            (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
-            (root / "autonomy_config.json").write_text(json.dumps({"min_price_usd": 10, "max_position_usd": 500}))
-            reviews = root / "private" / "reviews.jsonl"
-            reviews.parent.mkdir(parents=True)
-            reviews.write_text(json.dumps({"timestamp": "2026-09-05T13:20:00Z", "reviews": [None, None]}) + "\n")
-            with patch.object(alpha_radar, "ROOT", root):
-                self.assertIsNone(
-                    alpha_radar.reusable_fresh_candidate(root / "candidates.jsonl", reviews)
-                )
-
-    def test_stale_candidate_is_not_reused(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            candidate = {
-                "symbol": "DELL",
-                "researched_at": "2026-09-05T13:00:00Z",
-                "sources_verified_at": "2026-09-05T13:01:00Z",  # > 60 min old at 14:30
-                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
-                "price": 100.0,
-                "spy_price": 500.0,
-                "instrument_type": "cash_equity",
-                "setup_type": "breakout",
-                "earnings_event_at": "2026-09-10T20:00:00Z",
-                "planned_exit_at": "2026-09-18T20:00:00Z",
-                "horizon_rationale": "swing",
-            }
-            (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
-            (root / "autonomy_config.json").write_text(json.dumps({"min_price_usd": 10, "max_position_usd": 500}))
-            now = alpha_radar.dt.datetime(2026, 9, 5, 14, 30, tzinfo=alpha_radar.dt.timezone.utc)
-            with patch.object(alpha_radar, "ROOT", root):
-                self.assertIsNone(
-                    alpha_radar.reusable_fresh_candidate(
-                        root / "candidates.jsonl", root / "private" / "reviews.jsonl", now=now
-                    )
-                )
-
-    def test_candidate_that_will_expire_before_consumer_is_not_reused(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            candidates = root / "candidates.jsonl"
-            candidate = {
-                "symbol": "DELL", "researched_at": "2026-09-05T13:35:00Z",
-                "sources_verified_at": "2026-09-05T13:35:00Z",
-                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
-                "price": 100.0, "spy_price": 500.0, "instrument_type": "cash_equity",
-                "setup_type": "breakout", "earnings_event_at": "2026-09-10T20:00:00Z",
-                "planned_exit_at": "2026-09-18T20:00:00Z", "horizon_rationale": "swing",
-            }
-            candidates.write_text(json.dumps(candidate) + "\n")
-            (root / "autonomy_config.json").write_text(json.dumps({
-                "min_price_usd": 10, "max_position_usd": 500,
-                "max_research_age_minutes": 60,
-            }))
-            now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
-            with patch.object(alpha_radar, "ROOT", root):
-                self.assertIsNone(alpha_radar.reusable_fresh_candidate(
-                    candidates, root / "private" / "reviews.jsonl", now=now,
-                ))
+    def test_reusable_candidate_rejection_cases(self):
+        cases = (
+            ("test_reuse_is_blocked_once_a_later_review_exists", "2026-09-05T13:00:00Z", "2026-09-05T13:01:00Z", True, {}),
+            ("test_stale_candidate_is_not_reused", "2026-09-05T13:00:00Z", "2026-09-05T13:01:00Z", False, {}),
+            ("test_candidate_that_will_expire_before_consumer_is_not_reused", "2026-09-05T13:35:00Z", "2026-09-05T13:35:00Z", False, {"max_research_age_minutes": 60}),
+        )
+        for name, researched, verified, reviewed, config in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                candidate = {
+                    "symbol": "DELL", "researched_at": researched, "sources_verified_at": verified,
+                    "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
+                    "price": 100.0, "spy_price": 500.0, "instrument_type": "cash_equity",
+                    "setup_type": "breakout", "earnings_event_at": "2026-09-10T20:00:00Z",
+                    "planned_exit_at": "2026-09-18T20:00:00Z", "horizon_rationale": "swing",
+                }
+                (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+                (root / "autonomy_config.json").write_text(json.dumps({"min_price_usd": 10, "max_position_usd": 500, **config}))
+                reviews = root / "private" / "reviews.jsonl"
+                if reviewed:
+                    reviews.parent.mkdir(parents=True)
+                    reviews.write_text(json.dumps({"timestamp": "2026-09-05T13:20:00Z", "reviews": [None, None]}) + "\n")
+                clock = {} if reviewed else {"now": dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)}
+                with patch.object(alpha_radar, "ROOT", root):
+                    self.assertIsNone(alpha_radar.reusable_fresh_candidate(root / "candidates.jsonl", reviews, **clock))
 
     def test_main_reuses_before_running_research(self):
         with tempfile.TemporaryDirectory() as td:

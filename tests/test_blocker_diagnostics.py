@@ -193,7 +193,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             self.assertEqual(spread_row["symbol"], "DELL")
             self.assertEqual(spread_row["action"], "BUY")
             self.assertIn("timestamp", spread_row)
-            self.assertEqual(spread_row["measured"]["spread_bps"], spread_row["measured"]["spread_bps"])
+
             self.assertGreater(spread_row["measured"]["spread_bps"], 0)
             self.assertEqual(spread_row["threshold"]["max_spread_bps"], 600)
 

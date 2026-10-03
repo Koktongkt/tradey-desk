@@ -75,7 +75,19 @@ def _persistable_candidate(*, researched_at="2026-09-09T14:00:00Z", receipt_coun
     }
 
 
+def _isolate_model_config(self):
+    alpha_radar.configured_default_model.cache_clear()
+    self.addCleanup(alpha_radar.configured_default_model.cache_clear)
+    if self._testMethodName.startswith('test_configured_default_model_'):
+        return  # These methods exercise the real loader with explicit fake runners.
+    loader = patch.object(alpha_radar, 'load_configured_default_model', return_value=('fixture-provider', 'fixture-model'))
+    self.addCleanup(loader.stop)
+    loader.start()
+
+
 class AlphaRadarTests(unittest.TestCase):
+    setUp = _isolate_model_config
+
     def test_research_is_two_stage_with_bounded_scout_and_tool_free_synthesis(self):
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
             scout = alpha_radar.discovery_command()
@@ -1033,6 +1045,8 @@ class AlphaRadarTests(unittest.TestCase):
 
 
 class BundleRescueTests(unittest.TestCase):
+    setUp = _isolate_model_config
+
     def test_rescue_primary_lane_uses_exact_cik_submissions(self):
         tickers={"0":{"cik_str":1636282,"ticker":"SYRE","title":"Spyre Therapeutics"}}
         submissions={"filings":{"recent":{
@@ -1558,6 +1572,8 @@ def _bad_response():
 
 
 class FocusedRetrievalRerankTests(unittest.TestCase):
+    setUp = _isolate_model_config
+
     def test_focused_retrieval_prompt_searches_all_three_lanes_for_all_candidates(self):
         prompt=alpha_radar.focused_retrieval_prompt([
             {"symbol":"AAA","catalyst":"dated change","event_date":"2026-09-14","urls":["https://a.example/1"]},
@@ -1680,6 +1696,8 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
 
 
 class RetrievalHardeningTests(unittest.TestCase):
+    setUp = _isolate_model_config
+
     def test_public_url_policy_rejects_internal_targets_and_unsafe_ports(self):
         public=lambda host,port,*args,**kwargs:[(2,1,6,"",("93.184.216.34",port))]
         private=lambda host,port,*args,**kwargs:[(2,1,6,"",("169.254.169.254",port))]

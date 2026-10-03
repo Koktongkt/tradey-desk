@@ -4,22 +4,11 @@ from __future__ import annotations
 import json
 import subprocess
 from typing import Any
+from mcp_config_process import read_mcp_env_process
 
 
 def configured_alpaca_env() -> dict[str, str]:
-    completed = subprocess.run(
-        [
-            "/opt/hermes/bin/hermes",
-            "config",
-            "get",
-            "--raw",
-            "--json",
-            "mcp_servers.alpaca.env",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    completed = read_mcp_env_process("alpaca", timeout=30, run=subprocess.run)
     if completed.returncode != 0:
         raise RuntimeError("alpaca_mcp_config_unavailable")
     value: Any = json.loads(completed.stdout)

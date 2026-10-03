@@ -26,6 +26,9 @@ class CandidateAlternativesTests(unittest.TestCase):
         def response(value):
             return subprocess.CompletedProcess([],0,json.dumps(value),'')
         with tempfile.TemporaryDirectory() as td, contextlib.ExitStack() as stack:
+            radar.configured_default_model.cache_clear()
+            stack.callback(radar.configured_default_model.cache_clear)
+            stack.enter_context(patch.object(radar,'load_configured_default_model',return_value=('fixture-provider','fixture-model')))
             root=Path(td)
             cfg={'min_price_usd':1,'max_position_usd':500,'focused_retrieval_enabled':True}
             (root/'autonomy_config.json').write_text(json.dumps(cfg))
@@ -38,6 +41,24 @@ class CandidateAlternativesTests(unittest.TestCase):
             fetch=stack.enter_context(patch.object(radar,'gather_evidence',return_value=pages))
             calls=stack.enter_context(patch.object(radar.subprocess,'run',side_effect=[response({'candidates':candidates})]+[response(r) if isinstance(r,dict) else r for r in responses]))
             yield cfg, root, calls, fetch, market
+
+    def test_research_fixture_isolates_model_cache_without_process_launches(self):
+        with patch.object(subprocess,'Popen',side_effect=AssertionError('REAL_PROCESS_BOUNDARY_BLOCKED')) as launch:
+            for warm in (False,True):
+                with self.subTest(warm=warm):
+                    radar.configured_default_model.cache_clear()
+                    if warm:
+                        with patch.object(radar,'load_configured_default_model',return_value=('other-provider','other-model')):
+                            radar.configured_default_model()
+                    with self.assertRaisesRegex(RuntimeError,'fixture exit'):
+                        with self.research_fixture([]) as (_,_,calls,_,_):
+                            command=radar.discovery_command()
+                            self.assertEqual(command[command.index('--provider')+1],'fixture-provider')
+                            self.assertEqual(command[command.index('-m')+1],'fixture-model')
+                            calls.assert_not_called()
+                            raise RuntimeError('fixture exit')
+                    self.assertEqual(radar.configured_default_model.cache_info().currsize,0)
+            launch.assert_not_called()
 
     def candidate(self,symbol='BBB',**changes):
         now=dt.datetime.now(dt.timezone.utc)

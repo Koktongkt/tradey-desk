@@ -54,6 +54,31 @@ class _PayloadResponse(_GroupedResponse):
 
 
 class MarketDataTests(unittest.TestCase):
+    def test_massive_json_reads_authenticated_response_and_closes_on_decode_failure(self):
+        helper = getattr(market_data, "_massive_json", None)
+        self.assertTrue(callable(helper), "missing authenticated HTTP seam")
+        from unittest.mock import MagicMock
+        for raw, expected in ((b'{"ok":1}', {"ok": 1}), (b'bad', None)):
+            with self.subTest(raw=raw), patch("market_data.configured_massive_key", return_value="secret"), patch(
+                "market_data.urllib.request.urlopen", return_value=MagicMock()
+            ) as open_url, patch("market_data.read_http_response", return_value=raw):
+                response = open_url.return_value
+                if expected is None:
+                    with self.assertRaises(json.JSONDecodeError):
+                        helper("https://fixture.example/")
+                else:
+                    self.assertEqual(helper("https://fixture.example/"), expected)
+                self.assertEqual(open_url.call_args.args[0].headers["Authorization"], "Bearer secret")
+                response.__exit__.assert_called_once()
+        error = OSError('ordinary transport failure')
+        with patch('market_data.configured_massive_key', return_value='secret'), patch(
+            'market_data.urllib.request.urlopen', side_effect=error
+        ), patch('market_data.raise_if_expired_timeout') as classify:
+            with self.assertRaises(OSError) as caught:
+                helper('https://fixture.example/')
+            self.assertIs(caught.exception, error)
+            classify.assert_called_once_with(error)
+
     def test_configured_massive_key_uses_unmasked_hermes_config(self):
         configured = {"MASSIVE_API_KEY": "actual-key"}
         completed = subprocess.CompletedProcess([], 0, json.dumps(configured), "")

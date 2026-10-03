@@ -1069,11 +1069,7 @@ def reconcile_managed_exits(
     updates: list[dict[str, Any]] = []
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        latest: dict[str, str] = {}
-        for ledger_row in read_jsonl(ledger_path):
-            ledger_ref = ledger_row.get("client_order_id")
-            if ledger_ref:
-                latest[str(ledger_ref)] = str(ledger_row.get("status") or "")
+        latest = _latest_order_statuses(read_jsonl(ledger_path))
         known_closures = {
             str(journal_row.get("closure_key"))
             for journal_row in read_jsonl(journal_path) if journal_row.get("closure_key")

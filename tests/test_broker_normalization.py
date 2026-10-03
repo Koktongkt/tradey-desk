@@ -4,6 +4,14 @@ import broker_normalization as norm
 
 
 class BrokerNormalizationTests(unittest.TestCase):
+    def test_tool_arguments_choose_first_alias_and_reject_unsupported_fields(self):
+        properties = {key: {} for key in ("symbol", "symbols", "type", "order_type", "qty")}
+        self.assertEqual(norm.tool_arguments(properties, {"symbol": "AAPL", "type": "limit", "qty": 2}),
+                         {"symbol": "AAPL", "type": "limit", "qty": "2"})
+        self.assertEqual(norm.tool_arguments({"symbol_or_symbols": {}}, {"symbol": "AAPL"}), {"symbol_or_symbols": "AAPL"})
+        with self.assertRaisesRegex(RuntimeError, "^unsupported_tool_parameter:feed$"):
+            norm.tool_arguments(properties, {"symbol": "AAPL", "feed": "iex"})
+
     def test_finds_nested_account_mapping(self):
         raw = {"result": {"account": {"buying_power": "1000.50", "cash": "900.25"}}}
         account = norm.find_mapping_with_keys(raw, {"buying_power", "cash"})

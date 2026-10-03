@@ -12,23 +12,12 @@ from research_budget import remaining, read_http_response, raise_if_expired_time
 from zoneinfo import ZoneInfo
 
 from broker_normalization import average_volume, massive_daily_bars
+from mcp_config_process import read_mcp_env_process
 
 
 def configured_massive_key() -> str:
     try:
-        completed = subprocess.run(
-            [
-                "/opt/hermes/bin/hermes",
-                "config",
-                "get",
-                "--raw",
-                "--json",
-                "mcp_servers.massive.env",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=remaining(30),
-        )
+        completed = read_mcp_env_process("massive", timeout=remaining(30), run=subprocess.run)
     except subprocess.TimeoutExpired as error:
         raise_if_expired_timeout(error)
         raise
@@ -39,6 +28,19 @@ def configured_massive_key() -> str:
     if not key:
         raise RuntimeError("massive_credentials_unavailable")
     return str(key)
+
+
+def _massive_json(url: str):
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=remaining(30)) as response:
+            return json.loads(read_http_response(response))
+    except OSError as error:
+        raise_if_expired_timeout(error)
+        raise
 
 
 def synchronized_completed_close_prices(symbol: str, now_ms: int | None = None) -> dict[str, float | str]:
@@ -62,16 +64,7 @@ def synchronized_completed_close_prices(symbol: str, now_ms: int | None = None) 
             continue
         query = urllib.parse.urlencode({"adjusted": "true"})
         url = f"https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{session_date.isoformat()}?{query}"
-        request = urllib.request.Request(
-            url,
-            headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=remaining(30)) as response:
-                payload = json.loads(read_http_response(response))
-        except OSError as error:
-            raise_if_expired_timeout(error)
-            raise
+        payload = _massive_json(url)
         rows = {
             row.get("T"): row
             for row in payload.get("results", [])
@@ -115,16 +108,7 @@ def consolidated_daily_bars(symbol: str, now_ms: int | None = None) -> list[dict
     end = now.date().isoformat()
     query = urllib.parse.urlencode({"adjusted": "true", "sort": "desc", "limit": 40})
     url = f"https://api.massive.com/v2/aggs/ticker/{normalized}/range/1/day/{start}/{end}?{query}"
-    request = urllib.request.Request(
-        url,
-        headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=remaining(30)) as response:
-            payload = json.loads(read_http_response(response))
-    except OSError as error:
-        raise_if_expired_timeout(error)
-        raise
+    payload = _massive_json(url)
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     current_complete = market_now.weekday() < 5 and (market_now.hour, market_now.minute) >= (16, 15)
     completed = []

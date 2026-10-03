@@ -12,6 +12,13 @@ import alpha_radar as radar
 
 
 class RetrievalImprovements(unittest.TestCase):
+    def setUp(self):
+        radar.configured_default_model.cache_clear()
+        self.addCleanup(radar.configured_default_model.cache_clear)
+        loader = patch.object(radar, 'load_configured_default_model', return_value=('fixture-provider', 'fixture-model'))
+        self.addCleanup(loader.stop)
+        loader.start()
+
     def test_unhealthy_scout_url_kept_but_healthy_distinct_publishers_fetched_first(self):
         scout = ["https://www.globenewswire.com/a"]
         focused = ["https://www.reuters.com/a", "https://www.prnewswire.com/a", "https://www.cnbc.com/a"]

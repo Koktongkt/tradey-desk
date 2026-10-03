@@ -15,13 +15,11 @@ def tool_arguments(properties: dict[str, Any], values: dict[str, Any]) -> dict[s
     numeric_strings = {"qty", "limit_price", "take_profit_limit_price", "stop_loss_stop_price"}
     arguments: dict[str, Any] = {}
     for logical, value in values.items():
-        supported = False
         for parameter in aliases.get(logical, [logical]):
             if parameter in properties:
                 arguments[parameter] = str(value) if logical in numeric_strings else value
-                supported = True
                 break
-        if not supported:
+        else:
             raise RuntimeError(f"unsupported_tool_parameter:{logical}")
     return arguments
 
