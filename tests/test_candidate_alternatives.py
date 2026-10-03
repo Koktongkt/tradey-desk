@@ -46,6 +46,140 @@ class CandidateAlternativesTests(unittest.TestCase):
                      'earnings_event_at':(now-dt.timedelta(days=2)).date().isoformat(),
                      'horizon_rationale':'Post event follow-through','sources':[{'url':f'https://{d}.example/{symbol}'} for d in ('one','two')]},**changes)
 
+    def test_oct2_replay_borrows_for_second_synthesis_without_burning_enrichment(self):
+        for upstream,expected_timeouts in ((0,[60,52]),(400,[60,35])):
+            clock=[0.0]
+            with self.subTest(upstream=upstream), self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,fetch,market):
+                original=calls.side_effect
+                def model(*args,**kwargs):
+                    response=next(original)
+                    if calls.call_count>1:clock[0]+=30
+                    return response
+                calls.side_effect=model
+                pages=fetch.return_value
+                def evidence(*args,**kwargs):
+                    clock[0]=upstream
+                    return pages
+                fetch.side_effect=evidence
+                def prices(symbol):
+                    clock[0]+=8
+                    return {'price':100,'spy_price':500}
+                market.side_effect=prices
+                prepare=radar.prepare_candidate
+                def intake(candidate,cfg):
+                    if candidate['symbol']=='AAA':raise radar.CandidateRejection('candidate_failed_qualification')
+                    return prepare(candidate,cfg)
+                with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=intake):
+                    result=radar.live_research(cfg)
+                self.assertEqual(result['symbol'],'BBB')
+                self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],expected_timeouts)
+                self.assertEqual(clock[0],upstream+76)
+                fetch.assert_called_once()
+                self.assertEqual(calls.call_count,3)
+                self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_prompt_preparation_exhaustion_preserves_rejection_but_model_timeout_does_not(self):
+        for prompt_exhausts,expected in ((True,'candidate_failed_qualification'),(False,'research_synthesis_timeout')):
+            clock=[0.0]
+            with self.subTest(prompt_exhausts=prompt_exhausts), self.research_fixture([self.candidate('AAA'),subprocess.TimeoutExpired('synthesis',30)],symbols=('AAA','BBB')) as (cfg,root,calls,_,_):
+                prompt=radar.synthesis_prompt
+                def prepare_prompt(*args,**kwargs):
+                    if kwargs.get('candidate_hint',{}).get('symbol')=='BBB' and prompt_exhausts:
+                        clock[0]+=0.01
+                    return prompt(*args,**kwargs)
+                def reject_first(candidate,cfg):
+                    clock[0]=60.0
+                    raise radar.CandidateRejection('candidate_failed_qualification')
+                with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesis_prompt',side_effect=prepare_prompt), patch.object(radar,'prepare_candidate',side_effect=reject_first):
+                    with self.assertRaises(radar.ResearchFailure) as caught:
+                        radar.live_research(cfg)
+                self.assertEqual(caught.exception.code,expected)
+                self.assertEqual(calls.call_count,2 if prompt_exhausts else 3)
+                self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_near_global_cap_reserves_all_remaining_enrichment(self):
+        clock=[0.0]
+        none={'status':'none','none_reason':'no_fresh_setup'}
+        with self.research_fixture([none],symbols=('AAA',)) as (cfg,_,calls,fetch,_):
+            pages=fetch.return_value
+            def delayed_fetch(*args,**kwargs):
+                clock[0]=435.0
+                return pages
+            fetch.side_effect=delayed_fetch
+            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]):
+                self.assertEqual(radar.live_research(cfg)['status'],'none')
+            self.assertEqual(calls.call_args_list[-1].kwargs['timeout'],30)
+            self.assertEqual(calls.call_count,2)
+
+    def test_subminimum_window_never_launches_initial_or_alternative(self):
+        none={'status':'none','none_reason':'no_fresh_setup'}
+        for initial,first in ((436,None),(0,none),(0,self.candidate('AAA'))):
+            with self.subTest(initial=initial,first=first), self.research_fixture([first or none,none],symbols=('AAA','BBB')) as (cfg,root,calls,fetch,_):
+                clock=[0.0]
+                pages=fetch.return_value
+                def fetch_late(*args,**kwargs):
+                    clock[0]=initial
+                    return pages
+                fetch.side_effect=fetch_late
+                responses=calls.side_effect
+                def model(*args,**kwargs):
+                    result=next(responses)
+                    if calls.call_count>1 and not initial:clock[0]=61
+                    return result
+                calls.side_effect=model
+                with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=radar.CandidateRejection('candidate_failed_qualification')):
+                    with self.assertRaises(radar.ResearchFailure) as caught:radar.live_research(cfg)
+                self.assertEqual(caught.exception.code,'candidate_failed_qualification' if first and first.get('symbol') else 'research_synthesis_timeout')
+                self.assertEqual(calls.call_count,1 if initial else 2)
+                self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_deferred_rescue_reserves_enrichment_and_original_phase_window(self):
+        clock=[0.0]
+        none={'status':'none','none_reason':'no_fresh_setup'}
+        with self.research_fixture([],symbols=('AAA','BBB')) as (cfg,_,calls,fetch,_):
+            pages=fetch.return_value
+            fetch.return_value=pages[:3]
+            def late_focused(*args,**kwargs):
+                clock[0]=400
+                return {s:[f'https://two.example/{s}'] for s in ('AAA','BBB')}
+            deadlines=[]
+            def synth(cfg,selected,evidence,deadline,**kwargs):
+                deadlines.append(deadline)
+                clock[0]+=15
+                return none
+            def rescue(selected,accepted,**kwargs):
+                self.assertEqual(kwargs['deadline'],435)
+                clock[0]=435
+                return accepted+[pages[3]]
+            with patch.object(radar,'focused_retrieval',side_effect=late_focused), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue) as rescued:
+                self.assertEqual(radar.live_research(cfg)['status'],'none')
+            self.assertEqual(deadlines,[490,490])
+            rescued.assert_called_once()
+            self.assertEqual(calls.call_count,1)
+
+    def test_cumulative_enrichment_is_45_active_seconds_even_after_rejected_io(self):
+        clock=[0.0]
+        with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')],symbols=('AAA','BBB')) as (cfg,root,calls,_,market):
+            responses=calls.side_effect
+            def model(*args,**kwargs):
+                result=next(responses)
+                if calls.call_count>1:clock[0]+=10
+                return result
+            calls.side_effect=model
+            def prices(symbol):
+                clock[0]+=20 if symbol=='AAA' else 26
+                if symbol=='AAA':raise ValueError('invalid_symbol')
+                return {'price':100,'spy_price':500}
+            market.side_effect=prices
+            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'active_deadline',wraps=radar.active_deadline) as deadlines:
+                with self.assertRaises(radar.ResearchFailure) as caught:radar.live_research(cfg)
+            self.assertEqual(caught.exception.code,'research_enrichment_timeout')
+            self.assertEqual([call.args[0] for call in deadlines.call_args_list],[55,65])
+            self.assertEqual(clock[0],66)
+            self.assertEqual(calls.call_count,3)
+            self.assertEqual(market.call_count,2)
+            self.assertFalse((root/'candidates.jsonl').exists())
+
     def test_none_advances_to_second_candidate_and_persists_once(self):
         with self.research_fixture([{'status':'none','none_reason':'no_fresh_setup'},self.candidate()]) as (_,root,calls,fetch,market):
             output=io.StringIO()
@@ -59,13 +193,14 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(fetch.call_count,1)
             self.assertEqual(market.call_count,1)
 
-    def test_shared_enrichment_deadline_stops_next_candidate_before_network(self):
+    def test_shared_enrichment_active_budget_stops_next_candidate_before_network(self):
         with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,_,market):
             clock=[0.0]
-            def reject_first(candidate,cfg):
+            def expired_prices(symbol):
                 clock[0]=46.0
-                raise radar.CandidateRejection('candidate_failed_qualification')
-            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=reject_first):
+                return {'price':100,'spy_price':500}
+            market.side_effect=expired_prices
+            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]):
                 with self.assertRaises(radar.ResearchFailure) as caught:
                     radar.live_research(cfg)
             self.assertEqual(caught.exception.code,'research_enrichment_timeout')
@@ -91,11 +226,11 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual([p.split('SELECTED SYMBOL: ')[1].split('.')[0] for p in prompts],['AAA','BBB','CCC'])
             fetch.assert_called_once()
 
-    def test_alternatives_share_one_monotonic_60_second_budget(self):
+    def test_alternatives_share_one_monotonic_90_second_budget(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
         with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda: {1:0,2:30,3:55}.get(calls.call_count,0)):
             radar.live_research(cfg)
-            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[60,30,5])
+            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[60,60,35])
 
     def test_exhausted_budget_never_starts_another_subprocess(self):
         none={'status':'none','none_reason':'no_fresh_setup'}

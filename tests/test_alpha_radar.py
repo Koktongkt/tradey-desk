@@ -1444,8 +1444,8 @@ class BundleRescueTests(unittest.TestCase):
             alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue):
             result=alpha_radar.live_research({},intake=lambda c:c)
         self.assertEqual(result["symbol"],"AAA")
-        self.assertEqual(synth_deadlines,[160.0,160.0])
-        self.assertEqual(rescue_deadlines,[130.0])
+        self.assertEqual(synth_deadlines,[190.0,190.0])
+        self.assertEqual(rescue_deadlines,[160.0])
 
     def test_live_research_rescues_after_intake_rejection_without_resetting_deadline(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",

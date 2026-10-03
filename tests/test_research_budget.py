@@ -128,17 +128,20 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
         self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=", source)
         self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
-        self.assertIn("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_BUDGET_SECONDS)", source)
+        self.assertIn("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)", source)
         self.assertIn("timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT", source)
 
-    def test_nine_minute_budget_covers_all_stage_caps_and_reserve(self):
+    def test_nine_minute_budget_clips_adaptive_caps_and_preserves_reserve(self):
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 510)
         self.assertEqual(alpha_radar.DISCOVERY_TIMEOUT_SECONDS, 165)
         self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 120)
         self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS, 120)
         self.assertEqual(alpha_radar.SYNTHESIS_BUDGET_SECONDS, 60)
+        self.assertEqual(alpha_radar.SYNTHESIS_PHASE_BUDGET_SECONDS, 90)
+        self.assertEqual(alpha_radar.MIN_SYNTHESIS_WINDOW_SECONDS, 30)
         self.assertEqual(alpha_radar.ENRICHMENT_BUDGET_SECONDS, 45)
-        self.assertEqual(sum((165, 120, 120, 60, 45, 30)), 540)
+        # The extra 30 seconds is borrowed from unused upstream caps, not additive.
+        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS+30,540)
         self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
 
     def test_scout_run_budget_bounds_discovery(self):
@@ -158,8 +161,9 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",source)
 
     def test_cycle_budget_covers_serialized_worst_case(self):
-        # 165 scout + 120 focused retrieval + 120 shared rescue/fetch
-        # + 60 synthesis + 45 shared enrichment + 30 reserve = 540.
+        # Earlier caps remain 165/120/120. Synthesis phase can borrow up to 90,
+        # but launches reserve remaining shared enrichment inside active 510.
+        # These adaptive caps cannot all be added; outer 540 keeps final 30.
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
         self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS,120)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()

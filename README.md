@@ -35,6 +35,44 @@ If a successful reviewer process returns no parseable JSON, the same isolated mo
 - `short_1_5`: catalyst 30%, price/volume confirmation 25%, technical structure 20%, market regime 10%, fundamental trajectory 10%, valuation expectations 5%.
 - `swing_6_30`: catalyst 20%, price/volume confirmation 20%, technical structure 20%, market regime 10%, fundamental trajectory 20%, valuation expectations 10%.
 
+## Adaptive research budgets
+
+Premarket/radar retains its **540-second outer timeout**, with an active deadline
+of **510 seconds** and **30 seconds reserved for final overhead**. Discovery stays
+capped at 165 seconds, focused retrieval at 120 seconds (four model turns), and
+the shared evidence fetch/rescue pipeline at 120 seconds. There is one discovery
+and at most three distinct candidate attempts; qualification, source receipts,
+earnings, and execution-risk gates are unchanged.
+
+Synthesis alternatives share one **90-second monotonic phase window**, rather
+than resetting a per-candidate phase allowance. Intermediate enrichment, intake,
+and deferred rescue advance this clock. Each synthesis subprocess still has a
+60-second ceiling and the unchanged model flags `--run-budget 45 --max-turns 1`.
+Before every launch, its timeout is clipped to the smaller of the phase time left
+and the active time left **minus remaining enrichment**. If fewer than 30 seconds
+remain, no subprocess is launched: the last candidate-local rejection is preserved,
+or `research_synthesis_timeout` is returned if there is no such rejection.
+Deferred rescue also reserves this viable launch window and remaining enrichment;
+it never resets the original phase deadline.
+
+Enrichment retains **45 cumulative active seconds across all candidates**. Each
+earnings/market-data section uses `min(active_deadline, now + remaining_enrichment)`
+and deducts elapsed time even on exceptions. Later synthesis does not consume the
+enrichment allotment; final enrichment remains bounded by the active deadline.
+These adaptive caps are **not additive**: the extra synthesis opportunity borrows
+unused earlier-stage headroom. Launch and enrichment deadline clipping retain the
+510-second active envelope and the 30-second final overhead reservation; the outer
+540-second process timeout remains the hard backstop. A pre-existing limitation
+remains in SEC metadata helpers: socket timeouts do not impose an absolute deadline
+on trickling HTTP body reads, so the overhead reserve is not an unconditional
+whole-pipeline guarantee. This change does not alter those source adapters.
+
+Regression verification uses deterministic mocked subprocesses and local fixture
+roots, including a 30-second synthesis + 8-second enrichment + rejection followed
+by a successful second 30-second synthesis, global clipping, minimum-window
+no-launch, shared deferred-rescue deadlines, and cumulative enrichment exhaustion.
+Do not validate these budgets with live research or broker calls.
+
 ## Shadow calibration
 
 Every real review cycle also writes a private, no-execution shadow decision under `test_artifacts/shadow/`. It records the exact hypothetical canonical entry, stop, target, quantity, proposal hash, rubric, both reviewer scores, and whether the proposal would have traded. Fixture and live dry runs do not enter this dataset.

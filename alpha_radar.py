@@ -28,7 +28,9 @@ RESEARCH_ACTIVE_BUDGET_SECONDS=510
 DISCOVERY_TIMEOUT_SECONDS=165
 FOCUSED_RETRIEVAL_TIMEOUT_SECONDS=120
 EVIDENCE_PIPELINE_BUDGET_SECONDS=120
-SYNTHESIS_BUDGET_SECONDS=60
+SYNTHESIS_BUDGET_SECONDS=60  # Per subprocess; model effort stays 45 seconds / one turn.
+SYNTHESIS_PHASE_BUDGET_SECONDS=90  # Shared wall clock, including deferred rescue/enrichment.
+MIN_SYNTHESIS_WINDOW_SECONDS=30
 ENRICHMENT_BUDGET_SECONDS=45
 _timing_enabled:ContextVar[bool]=ContextVar("radar_timing_enabled",default=False)
 
@@ -1341,6 +1343,10 @@ class CandidateRejection(ResearchFailure):
     """A deterministic candidate-local intake rejection, never an I/O fault."""
 
 
+class SynthesisWindowExhausted(ResearchFailure):
+    """No model launched: preserve a prior candidate rejection when available."""
+
+
 def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:bool=True)->dict[str,Any]:
     """Shared one-attempt intake predicates; persistence belongs to the caller."""
     c=ensure_researched_at(normalize_candidate(candidate))
@@ -1460,21 +1466,26 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             candidate_urls=blocker_urls,
             fetched_urls=[str(page.get("url") or "") for page in filtered_evidence],
         ))
-    synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_BUDGET_SECONDS)
-    enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"deadline":None}
+    synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)
+    enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"remaining":ENRICHMENT_BUDGET_SECONDS}
     last_rejection=None
     attempted_symbols=set()
     # Reserve a viable synthesis window after deferred rescue within the original deadline.
-    deferred_synthesis_reserve=30
+    deferred_synthesis_reserve=MIN_SYNTHESIS_WINDOW_SECONDS
     deferred_rescue_deadline=min(evidence_deadline,synthesis_deadline-deferred_synthesis_reserve)
     for batch in range(2):
         for selected,evidence in ranked:
             symbol=str(selected.get("symbol") or "").upper()
             if symbol in attempted_symbols:continue
-            if len(attempted_symbols)>=3 or (batch and monotonic()>=synthesis_deadline):break
+            if len(attempted_symbols)>=3:break
+            now=monotonic()
+            launch_remaining=min(synthesis_deadline-now,overall_deadline-now-float(enrichment_budget["remaining"] or 0.0))
+            if launch_remaining<MIN_SYNTHESIS_WINDOW_SECONDS:
+                if last_rejection is not None:raise last_rejection
+                raise ResearchFailure("research_synthesis_timeout")
             attempted_symbols.add(symbol)
             try:
-                if enrichment_budget["deadline"] is not None and monotonic()>=enrichment_budget["deadline"]:
+                if float(enrichment_budget["remaining"] or 0)<=0 or monotonic()>=overall_deadline:
                     raise ResearchFailure("research_enrichment_timeout")
                 candidate=synthesize_candidate(cfg,selected,evidence,synthesis_deadline,enrichment_budget=enrichment_budget)
                 if candidate.get("status")=="none":
@@ -1482,6 +1493,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                     continue
                 return intake(candidate)
             except CandidateRejection as error:last_rejection=error
+            except SynthesisWindowExhausted:
+                if last_rejection is not None:raise last_rejection
+                raise
+        deferred_rescue_deadline=min(deferred_rescue_deadline,overall_deadline-float(enrichment_budget["remaining"] or 0.0)-deferred_synthesis_reserve)
         if batch or not initially_ranked or len(attempted_symbols)>=3 or monotonic()>=deferred_rescue_deadline:break
         diagnostics_before=len(source_diagnostics)
         urls_before=set(accepted_urls)
@@ -1499,7 +1514,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
 def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,Any],evidence:list[dict[str,Any]],deadline:float,enrichment_budget:dict[str,float|None]|None=None)->dict[str,Any]:
     synthesis_prompt_text=synthesis_prompt("",evidence,cfg,candidate_hint=_selected_scout_candidate)
     remaining=deadline-monotonic()
-    if remaining<=0:raise ResearchFailure("research_synthesis_timeout")
+    if enrichment_budget is not None:
+        remaining=min(remaining,float(enrichment_budget["overall"] or 0.0)-monotonic()-float(enrichment_budget["remaining"] or 0.0))
+    if remaining<MIN_SYNTHESIS_WINDOW_SECONDS:raise SynthesisWindowExhausted("research_synthesis_timeout")
     try:
         with timed_research_stage("synthesis"):
             synth=subprocess.run(synthesis_command(),input=synthesis_prompt_text,capture_output=True,text=True,timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT)
@@ -1543,11 +1560,11 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
                 horizon_end=max(horizon_end,parsed_exit.astimezone(dt.timezone.utc).date())
         except ValueError:
             pass
-    if enrichment_budget is None:enrichment_budget={"overall":monotonic()+ENRICHMENT_BUDGET_SECONDS,"deadline":None}
-    if enrichment_budget["deadline"] is None:
-        enrichment_budget["deadline"]=min(float(enrichment_budget["overall"] or 0.0),monotonic()+ENRICHMENT_BUDGET_SECONDS)
+    enrichment_started=monotonic()
+    if enrichment_budget is None:enrichment_budget={"overall":enrichment_started+ENRICHMENT_BUDGET_SECONDS,"remaining":ENRICHMENT_BUDGET_SECONDS}
+    enrichment_deadline=min(float(enrichment_budget["overall"] or 0.0),enrichment_started+float(enrichment_budget["remaining"] or 0.0))
     try:
-        with timed_research_stage("enrichment"), active_deadline(float(enrichment_budget["deadline"])):
+        with timed_research_stage("enrichment"), active_deadline(enrichment_deadline):
             budget_remaining(ENRICHMENT_BUDGET_SECONDS)
             candidate=resolve_candidate_earnings(
                 candidate,
@@ -1567,6 +1584,8 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
             budget_remaining(ENRICHMENT_BUDGET_SECONDS)
     except ResearchDeadlineExceeded as error:
         raise ResearchFailure("research_enrichment_timeout") from error
+    finally:
+        enrichment_budget["remaining"]=max(0.0,float(enrichment_budget["remaining"] or 0.0)-max(0.0,monotonic()-enrichment_started))
     return candidate
 
 
