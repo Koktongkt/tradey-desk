@@ -1,0 +1,554 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Tradey Desk \u2014 Research to Protected Paper Execution",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "output": "docs/process-flow/tradey-desk.html",
+    "repository": {
+      "url": "https://github.com/Koktongkt/tradey-desk.git",
+      "revision": "4e007c379e4adbdb8e816e2abe1786a371cda5ed"
+    }
+  },
+  "lanes": [
+    {
+      "id": "research",
+      "label": "1  Research only"
+    },
+    {
+      "id": "decision",
+      "label": "2  Deterministic plan + review"
+    },
+    {
+      "id": "exceptions",
+      "label": "Exception  No new order",
+      "variant": "exception"
+    },
+    {
+      "id": "execution",
+      "label": "3  Paper execution + broker truth"
+    },
+    {
+      "id": "reporting",
+      "label": "4  Measurement + publication"
+    }
+  ],
+  "mainPath": [
+    "schedule",
+    "scout",
+    "evidence",
+    "synthesis",
+    "qualify",
+    "dossier"
+  ],
+  "nodes": [
+    {
+      "id": "schedule",
+      "lane": "research",
+      "col": 0,
+      "type": "messagebus",
+      "label": "NY-time scheduler",
+      "sublabel": "Premarket + radar",
+      "width": 144,
+      "sources": [
+        {
+          "path": "run_cycle.py",
+          "line": 201,
+          "end_line": 219
+        }
+      ]
+    },
+    {
+      "id": "scout",
+      "lane": "research",
+      "col": 1,
+      "type": "backend",
+      "label": "Discover ideas",
+      "sublabel": "Bounded web scouting",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 1375,
+          "end_line": 1407
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "lane": "research",
+      "col": 2,
+      "type": "cloud",
+      "label": "Fetch evidence",
+      "sublabel": "Freshness + source rescue",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 1408,
+          "end_line": 1468
+        }
+      ]
+    },
+    {
+      "id": "synthesis",
+      "lane": "research",
+      "col": 3,
+      "type": "backend",
+      "label": "Synthesize thesis",
+      "sublabel": "Tool-free evidence analysis",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 1469,
+          "end_line": 1495
+        }
+      ]
+    },
+    {
+      "id": "qualify",
+      "lane": "research",
+      "col": 4,
+      "type": "security",
+      "label": "Qualify candidate",
+      "sublabel": "Sources + earnings + intake",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 1685,
+          "end_line": 1710
+        }
+      ]
+    },
+    {
+      "id": "dossier",
+      "lane": "research",
+      "col": 5,
+      "type": "database",
+      "label": "Hashed dossier",
+      "sublabel": "Verified research, age <=60m",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 1710,
+          "end_line": 1715
+        }
+      ]
+    },
+    {
+      "id": "reconcile",
+      "lane": "decision",
+      "col": 0,
+      "type": "security",
+      "label": "Reconcile first",
+      "sublabel": "Pending fills + protection",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1282,
+          "end_line": 1327
+        }
+      ]
+    },
+    {
+      "id": "truth",
+      "lane": "decision",
+      "col": 1,
+      "type": "cloud",
+      "label": "Broker + market truth",
+      "sublabel": "Alpaca IEX / Massive bars",
+      "width": 144,
+      "sources": [
+        {
+          "path": "broker_mcp_bridge.py",
+          "line": 233,
+          "end_line": 248
+        }
+      ]
+    },
+    {
+      "id": "proposal",
+      "lane": "decision",
+      "col": 2,
+      "type": "backend",
+      "label": "Canonical BUY plan",
+      "sublabel": "Ask, levels, shares + hash",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 304,
+          "end_line": 343
+        }
+      ]
+    },
+    {
+      "id": "reviews",
+      "lane": "decision",
+      "col": 3,
+      "type": "backend",
+      "label": "Parallel reviewers",
+      "sublabel": "DeepSeek + GLM; no tools",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 800,
+          "end_line": 872
+        }
+      ]
+    },
+    {
+      "id": "consensus",
+      "lane": "decision",
+      "col": 4,
+      "type": "security",
+      "label": "Consensus gate",
+      "sublabel": "Both approve; lower score",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 353,
+          "end_line": 372
+        }
+      ],
+      "tag": "score >=0.55"
+    },
+    {
+      "id": "final",
+      "lane": "decision",
+      "col": 5,
+      "type": "security",
+      "label": "Fresh safety checks",
+      "sublabel": "Cash, risk, quote + earnings",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1362,
+          "end_line": 1393
+        }
+      ],
+      "tag": "R/R >=1.6"
+    },
+    {
+      "id": "submit",
+      "lane": "execution",
+      "col": 5,
+      "type": "security",
+      "label": "Paper limit bracket",
+      "sublabel": "GTC + attached stop/target",
+      "width": 144,
+      "sources": [
+        {
+          "path": "broker_mcp_bridge.py",
+          "line": 250,
+          "end_line": 252
+        }
+      ]
+    },
+    {
+      "id": "readback",
+      "lane": "execution",
+      "col": 3,
+      "type": "cloud",
+      "label": "Broker readback",
+      "sublabel": "Acceptance is not a fill",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1401,
+          "end_line": 1412
+        }
+      ]
+    },
+    {
+      "id": "journal",
+      "lane": "execution",
+      "col": 2,
+      "type": "database",
+      "label": "Durable journals",
+      "sublabel": "Only confirmed fills count",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1403,
+          "end_line": 1407
+        }
+      ]
+    },
+    {
+      "id": "outcomes",
+      "lane": "reporting",
+      "col": 2,
+      "type": "backend",
+      "label": "Post-close outcomes",
+      "sublabel": "Candidate returns vs SPY",
+      "width": 144,
+      "sources": [
+        {
+          "path": "candidate_outcomes.py",
+          "line": 11,
+          "end_line": 39
+        }
+      ]
+    },
+    {
+      "id": "shadow",
+      "lane": "reporting",
+      "col": 3,
+      "type": "database",
+      "label": "Shadow calibration",
+      "sublabel": "Separate; never actual P/L",
+      "width": 144,
+      "sources": [
+        {
+          "path": "README.md",
+          "line": 76,
+          "end_line": 80
+        }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "lane": "reporting",
+      "col": 4,
+      "type": "frontend",
+      "label": "Sanitized dashboard",
+      "sublabel": "Allowlisted public metrics",
+      "width": 144,
+      "sources": [
+        {
+          "path": "public_dashboard.py",
+          "line": 13,
+          "end_line": 25
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "lane": "reporting",
+      "col": 5,
+      "type": "cloud",
+      "label": "Dashboard deployment",
+      "sublabel": "Separate scheduled mode",
+      "width": 144,
+      "sources": [
+        {
+          "path": "run_cycle.py",
+          "line": 220,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "stop",
+      "lane": "exceptions",
+      "col": 4,
+      "type": "security",
+      "label": "Fail closed / HOLD",
+      "sublabel": "No new order submitted",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1355,
+          "end_line": 1361
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "schedule-scout",
+      "to": "scout",
+      "variant": "default",
+      "role": "main",
+      "from": "schedule"
+    },
+    {
+      "id": "scout-evidence",
+      "to": "evidence",
+      "variant": "default",
+      "role": "main",
+      "from": "scout"
+    },
+    {
+      "id": "evidence-synthesis",
+      "to": "synthesis",
+      "variant": "default",
+      "role": "main",
+      "from": "evidence"
+    },
+    {
+      "id": "synthesis-qualify",
+      "to": "qualify",
+      "variant": "default",
+      "role": "main",
+      "from": "synthesis"
+    },
+    {
+      "id": "qualify-dossier",
+      "to": "dossier",
+      "variant": "security",
+      "role": "main",
+      "from": "qualify",
+      "label": "passes intake"
+    },
+    {
+      "id": "dossier-reconcile",
+      "to": "reconcile",
+      "variant": "default",
+      "role": "async",
+      "from": "dossier",
+      "label": "next trader slot"
+    },
+    {
+      "id": "reconcile-truth",
+      "to": "truth",
+      "variant": "default",
+      "role": "main",
+      "from": "reconcile"
+    },
+    {
+      "id": "truth-proposal",
+      "to": "proposal",
+      "variant": "default",
+      "role": "main",
+      "from": "truth"
+    },
+    {
+      "id": "proposal-reviews",
+      "to": "reviews",
+      "variant": "default",
+      "role": "main",
+      "from": "proposal",
+      "label": "precheck passes"
+    },
+    {
+      "id": "reviews-consensus",
+      "to": "consensus",
+      "variant": "default",
+      "role": "main",
+      "from": "reviews"
+    },
+    {
+      "id": "consensus-final",
+      "to": "final",
+      "variant": "security",
+      "role": "main",
+      "from": "consensus",
+      "label": "both approve"
+    },
+    {
+      "id": "final-submit",
+      "to": "submit",
+      "variant": "security",
+      "role": "main",
+      "from": "final",
+      "label": "all gates pass",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "submit-readback",
+      "to": "readback",
+      "variant": "default",
+      "role": "main",
+      "from": "submit"
+    },
+    {
+      "id": "readback-journal",
+      "to": "journal",
+      "variant": "default",
+      "role": "main",
+      "from": "readback",
+      "label": "broker-confirmed state"
+    },
+    {
+      "id": "consensus-stop",
+      "to": "stop",
+      "variant": "security",
+      "role": "error",
+      "from": "consensus",
+      "label": "veto / invalid / low score",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "journal-outcomes",
+      "to": "outcomes",
+      "variant": "dashed",
+      "role": "async",
+      "from": "journal",
+      "label": "post-close"
+    },
+    {
+      "id": "outcomes-shadow",
+      "to": "shadow",
+      "variant": "dashed",
+      "role": "main",
+      "from": "outcomes"
+    },
+    {
+      "id": "shadow-dashboard",
+      "to": "dashboard",
+      "variant": "default",
+      "role": "main",
+      "from": "shadow"
+    },
+    {
+      "id": "dashboard-publish",
+      "to": "publish",
+      "variant": "default",
+      "role": "main",
+      "from": "dashboard"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Producer / consumer cadence \u2022 New York time",
+      "items": [
+        "Premarket: 09:00. Radar: 10:00\u201315:40 at :00 / :20 / :40.",
+        "Autotrader: 09:40, then 10:10\u201315:50 at :10 / :30 / :50.",
+        "Verified eligible dossiers can be reused within 60 minutes; already-reviewed dossiers are normally skipped. Research qualification is not trade approval."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Execution controls \u2022 checked-in configuration",
+      "items": [
+        "Paper only; enabled flag and kill switch checked. $10,000 managed exposure; $500 per position; two orders/day; whole shares only.",
+        "Planned stop risk <=$40; IEX spread <=600 bps; limit deviation <=150 bps; quote age <=120 seconds; upcoming earnings blackout: two sessions.",
+        "Every required gate is fail-closed. Unknown submission state is reconciled, not blindly resubmitted. Stops bound planned risk, not guaranteed loss."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Independent decision, not model-selected order fields",
+      "items": [
+        "Python counts exchange sessions: 1\u20135 short; 6\u201330 swing. Completed Massive bars determine technical levels; fresh IEX ask determines BUY limit.",
+        "Both isolated tool-free reviewers receive the same hashed proposal. They cannot change its order fields. The lower rubric score must be >=0.55.",
+        "Conviction is uncalibrated, not win probability. Shadow calibration is separate from actual paper fills."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Code takes precedence over stale documentation",
+      "items": [
+        "Bridge sends GTC brackets; README says DAY. Configuration uses $40 planned risk; README says $25. Configuration spread cap is 600 bps.",
+        "SQLite transactional journals have JSONL compatibility projections. Broker orders and fills remain authoritative.",
+        "This is a source-backed workflow snapshot, not an account-status audit. No trading controls or orders were changed."
+      ]
+    }
+  ]
+}

@@ -18,6 +18,10 @@ A fail-closed, paper-first Alpaca trading desk. It is **disabled by default** an
 - Reward/risk is recomputed from the exact final limit, stop, and target. Model-stated ratios are overwritten, and final limit prices must remain close to the fresh permitted quote.
 - Only confirmed fills enter `trade_journal.jsonl`; every proposal/rejection/placement/fill/failure enters `order_ledger.jsonl`.
 
+## Process flow diagram
+
+See the [Archify process flow](docs/process-flow/README.md) for the interactive, source-pinned research-to-paper-execution workflow and editable specification. Download the HTML to view it interactively; GitHub shows HTML as source. The diagram documents observed configuration/README discrepancies without changing trading controls.
+
 ## Simplified decision workflow
 
 1. **Research:** the radar proposes a sourced thesis, catalyst, setup type, exact `planned_exit_at`, and horizon rationale. It does not choose an executable limit, stop, target, quantity, confidence, or reward/risk.
