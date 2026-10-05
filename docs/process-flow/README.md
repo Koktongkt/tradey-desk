@@ -2,7 +2,7 @@
 
 [Download / open the interactive Archify diagram](tradey-desk.html) · [Editable workflow specification](tradey-desk.workflow.json)
 
-GitHub displays HTML as source, not as an interactive page. Download `tradey-desk.html` and open it in a browser; the page is standalone and has no external script dependencies.
+GitHub displays HTML as source, not as an interactive page. The root README embeds [a static PNG preview](tradey-desk-preview.png) rendered from the HTML's embedded SVG (system fonts; decorative grid omitted). Download `tradey-desk.html` and open it in a browser for interaction; the page is standalone and has no external script dependencies. The preview was visually inspected for legibility and clipping; it is not proof that the interactive browser gate passed.
 
 ## Scope and evidence
 

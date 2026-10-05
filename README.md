@@ -20,7 +20,11 @@ A fail-closed, paper-first Alpaca trading desk. It is **disabled by default** an
 
 ## Process flow diagram
 
-See the [Archify process flow](docs/process-flow/README.md) for the interactive, source-pinned research-to-paper-execution workflow and editable specification. Download the HTML to view it interactively; GitHub shows HTML as source. The diagram documents observed configuration/README discrepancies without changing trading controls.
+![Tradey Desk research-to-protected-paper-execution workflow](docs/process-flow/tradey-desk-preview.png)
+
+[View full-size workflow preview](docs/process-flow/tradey-desk-preview.png) · [Interactive HTML and editable specification](docs/process-flow/README.md)
+
+The preview is rendered from the source-pinned workflow HTML. GitHub READMEs cannot run interactive HTML or JavaScript; download [the standalone HTML](docs/process-flow/tradey-desk.html) and open it in a browser for interactive exploration. The diagram documents observed configuration/README discrepancies without changing trading controls.
 
 ## Simplified decision workflow
 
