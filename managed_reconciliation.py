@@ -14,6 +14,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from durable_jsonl import append_jsonl, read_jsonl
+from private_lineage import private_lineage, confirmed_fill_metadata
 
 
 class ReconciliationBlocked(RuntimeError):
@@ -247,7 +248,7 @@ def reconcile_detailed(root: Path, broker):
                 continue
             fill = fills[0]
             key = hashlib.sha256(f"{ref}|{fill['client_order_id']}|{fill['filled_at']}".encode()).hexdigest()
-            updates.append(dict(timestamp=fill['filled_at'], symbol=plan['symbol'], action='SELL', entry=float(fill['filled_avg_price']), quantity=float(fill['filled_qty']), dollar_basis=float(Decimal(fill['filled_avg_price']) * Decimal(fill['filled_qty'])), stop=plan['stop'], target=plan['target'], status='filled', parent_client_order_id=ref, exit_client_order_id=fill['client_order_id'], closure_key=key, exit_reason='protective_stop' if fill['type'] == 'stop' else 'take_profit'))
+            updates.append(dict(timestamp=fill['filled_at'], symbol=plan['symbol'], action='SELL', entry=float(fill['filled_avg_price']), quantity=float(fill['filled_qty']), dollar_basis=float(Decimal(fill['filled_avg_price']) * Decimal(fill['filled_qty'])), stop=plan['stop'], target=plan['target'], status='filled', parent_client_order_id=ref, exit_client_order_id=fill['client_order_id'], closure_key=key, exit_reason='protective_stop' if fill['type'] == 'stop' else 'take_profit', **confirmed_fill_metadata(fill, {k: v for k, v in private_lineage(intent).items() if k != 'parent_client_order_id'})))
         known = {r.get('closure_key') for r in journal}
         if updates:
             snapshot = broker('reconciliation_snapshot', {'client_order_ids': []})
@@ -264,7 +265,7 @@ def reconcile_detailed(root: Path, broker):
             if row['closure_key'] not in known:
                 append_jsonl(root / 'trade_journal.jsonl', row)
                 written.append(row)
-            append_jsonl(root / 'order_ledger.jsonl', dict(timestamp=row['timestamp'], client_order_id=row['parent_client_order_id'], status='closed', symbol=row['symbol'], action='SELL', quantity=row['quantity'], closure_key=row['closure_key'], exit_client_order_id=row['exit_client_order_id']))
+            append_jsonl(root / 'order_ledger.jsonl', dict(timestamp=row['timestamp'], client_order_id=row['parent_client_order_id'], status='closed', symbol=row['symbol'], action='SELL', quantity=row['quantity'], closure_key=row['closure_key'], exit_client_order_id=row['exit_client_order_id'], **private_lineage(row)))
         positions = {}
         for position in (snapshot.get('positions') or []):
             if isinstance(position, dict):

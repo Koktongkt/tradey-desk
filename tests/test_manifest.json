@@ -21,7 +21,8 @@
       "test_sqlite_ledger",
       "test_test_architecture",
       "test_watchdog_operational",
-      "test_watchdog_broker"
+      "test_watchdog_broker",
+      "test_watchdog_lineage"
     ],
     "scenario": [
       "test_autotrader_reconciliation",
@@ -31,7 +32,8 @@
       "test_order_notifications",
       "test_pipeline",
       "test_reconciliation_cli",
-      "test_w2_w4"
+      "test_w2_w4",
+      "test_watchdog_forward_lineage"
     ],
     "full_only": [
       "test_alpha_radar",

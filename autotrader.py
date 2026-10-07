@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
 import managed_reconciliation
 from durable_jsonl import append_jsonl, read_jsonl
+from private_lineage import private_lineage, confirmed_fill_metadata
 
 ROOT = Path(__file__).resolve().parent
 PRIVATE_DIR = ROOT / "private"
@@ -637,14 +638,14 @@ def idempotency_ref(order: dict[str, Any], trading_date: str) -> str:
     return "tradey-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
-def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[str, Any]) -> None:
+def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[str, Any], lineage: dict[str, Any] | None = None) -> None:
     if broker_order.get("status") != "filled":
         return
     qty = float(broker_order.get("filled_qty") or 0)
     entry = float(broker_order.get("filled_avg_price") or 0)
     if qty <= 0 or entry <= 0:
         return
-    append_jsonl(path, {"timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled"})
+    append_jsonl(path, {"timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled", **confirmed_fill_metadata(broker_order, lineage)})
 
 
 BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "filled"}
@@ -1056,6 +1057,7 @@ def reconcile_managed_exits(
             "horizon": plan.get("horizon"), "confidence": plan.get("confidence"),
             "thesis": plan.get("thesis"), "status": "filled",
             "exit_reason": exit_reason, "closure_key": closure_key,
+            **confirmed_fill_metadata(leg, private_lineage(intent)),
             "parent_client_order_id": ref,
         }
         closures.append({
@@ -1086,6 +1088,7 @@ def reconcile_managed_exits(
             append_jsonl(ledger_path, {
                 "timestamp": closure["filled_at"], "client_order_id": ref, "status": "closed",
                 "symbol": closure["symbol"], "action": "SELL", "quantity": closure["quantity"],
+                **private_lineage(closure["row"]),
             })
             latest[ref] = "closed"
     return updates
@@ -1104,14 +1107,14 @@ def reconcile_pending_orders(
         order = bridge("reconcile", {"client_order_id": ref})
         if broker_order_notification_line(ref, plan, order, broker_mode) is None:
             raise RuntimeError("broker_reconciliation_invalid")
-        validated.append((ref, plan, order))
+        validated.append((ref, plan, order, private_lineage(intent)))
     updates = []
-    for ref, plan, order in validated:
+    for ref, plan, order, lineage in validated:
         status = str(order["status"]).lower()
         row = {"timestamp": utcnow(), "client_order_id": ref, "status": status,
-               "symbol": plan.get("symbol"), "action": plan.get("action")}
+               "symbol": plan.get("symbol"), "action": plan.get("action"), **lineage}
         append_jsonl(ledger_path, row)
-        journal_confirmed_fill(journal_path, plan, order)
+        journal_confirmed_fill(journal_path, plan, order, lineage)
         updates.append(row | {
             "filled_avg_price": order.get("filled_avg_price"),
             "_plan": plan, "_broker_order": order,
@@ -1204,6 +1207,7 @@ def note_pre_submission_retryable(reviews_path: Path, candidate: dict[str, Any],
         append_jsonl(reviews_path, {
             "timestamp": utcnow(), "dossier_hash": candidate.get("dossier_hash"),
             "evidence_id": evidence_id, "reviews": [{"decision": "execution_retryable"}],
+            **private_lineage({k: candidate.get(k) for k in ('candidate_id', 'dossier_hash')}),
         })
     except Exception:
         pass  # Without the marker, the previous approval remains spent.
@@ -1223,6 +1227,7 @@ def note_reconciliation_blocked(reviews_path: Path) -> None:
         append_jsonl(reviews_path, {
             "timestamp": utcnow(), "dossier_hash": dossier_hash,
             "reviews": [{"decision": "reconciliation_blocked"}],
+            **private_lineage({k: candidates[-1].get(k) for k in ('candidate_id', 'dossier_hash')}),
         })
 
 
@@ -1352,18 +1357,20 @@ def run(args: argparse.Namespace) -> int:
         reviews=independent_reviews(review_bundle,cfg)
     else:
         reviews=[{**review,"proposal_hash":proposal["proposal_hash"]} for review in reviews]
-    append_jsonl(reviews_path, {"timestamp":utcnow(),"dossier_hash":candidate.get("dossier_hash"),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews})
+    lineage=private_lineage({"candidate_id":candidate.get("candidate_id"),"dossier_hash":candidate.get("dossier_hash"),"proposal_hash":proposal["proposal_hash"]})
+    append_jsonl(reviews_path, {"timestamp":utcnow(),"dossier_hash":candidate.get("dossier_hash"),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews,**lineage})
     con=aggregate_proposal_reviews(proposal,reviews,cfg)
     record_shadow_if_live(args,candidate,proposal,con,utcnow())
     if not con["approved"]:
         row={"timestamp":utcnow(),"status":"rejected","reason":con["reason"],"evidence_id":private_id,"symbol":proposal["symbol"],"action":proposal["action"],"reviews":[_sanitize_review(x) for x in reviews]}
-        append_jsonl(ledger,row); append_jsonl(disagreements_path,row)
+        append_jsonl(ledger,{**row,**lineage}); append_jsonl(disagreements_path,row)
         print("BLOCKER " + con["reason"]); return 2
     plan=normalize_order_metrics({k:con["order"].get(k) for k in con["order"] if k not in BROKER_FIELDS})
     daily=_daily_order_count(ledger)
     errors,final_details=post_review_validation(plan,snapshot,cfg,daily,exposure,preexisting_symbols,scope_errors)
     ref=idempotency_ref(plan,dt.datetime.now(dt.timezone.utc).date().isoformat())
-    proposed={"timestamp":utcnow(),"status":"proposed","client_order_id":ref,"symbol":plan.get("symbol"),"action":plan.get("action"),"quantity":plan.get("quantity"),"order_type":plan.get("order_type"),"limit_price":plan.get("limit_price"),"evidence_id":private_id}
+    lineage={**lineage,"parent_client_order_id":ref}
+    proposed={"timestamp":utcnow(),"status":"proposed","client_order_id":ref,"symbol":plan.get("symbol"),"action":plan.get("action"),"quantity":plan.get("quantity"),"order_type":plan.get("order_type"),"limit_price":plan.get("limit_price"),"evidence_id":private_id,**lineage}
     append_jsonl(ledger,proposed)
     blockers=runtime_blockers(cfg)
     if errors or blockers or args.dry_run_fixture or args.live_dry_run:
@@ -1389,7 +1396,7 @@ def run(args: argparse.Namespace) -> int:
             if set(fresh_errors) <= RETRYABLE_EXECUTION_REASONS:
                 note_pre_submission_retryable(reviews_path,candidate,private_id)
             print("BLOCKER broker_review:"+",".join(fresh_errors)); return 2
-        append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan})
+        append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan,**lineage})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
         submission_started=True
         try:
@@ -1404,7 +1411,7 @@ def run(args: argparse.Namespace) -> int:
         if broker_order_notification_line(ref, plan, reconciled, cfg.get("broker_mode")) is None:
             print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":reconciled["status"]})
-        journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled)
+        journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled,lineage)
         return 0
     except Exception:
         failure_status="submission_unknown" if submission_started else "failed"
