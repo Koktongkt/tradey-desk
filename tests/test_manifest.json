@@ -19,7 +19,8 @@
       "test_safety",
       "test_shadow",
       "test_sqlite_ledger",
-      "test_test_architecture"
+      "test_test_architecture",
+      "test_watchdog_operational"
     ],
     "scenario": [
       "test_autotrader_reconciliation",
