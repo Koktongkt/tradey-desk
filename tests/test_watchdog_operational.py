@@ -10,7 +10,7 @@ from sqlite_ledger import DEFAULT_STREAMS
 
 class OperationalTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / 'private').mkdir()
@@ -60,6 +60,83 @@ class OperationalTests(unittest.TestCase):
                 before = self.state()
                 self.assertFalse(read_operational(self.root).complete)
                 self.assertEqual(before, self.state())
+
+    def test_zeroed_equal_shm_never_mutates_source(self):
+        from watchdog.operational import read_operational
+        writer = sqlite3.connect(self.db)
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.close()
+        Path(str(self.db) + '-wal').write_bytes(b'')
+        for raw in (bytes(136), b'x' * 32768, b'bad'):
+            with self.subTest(shm_size=len(raw)):
+                Path(str(self.db) + '-shm').write_bytes(raw)
+                before = self.state()
+                result = read_operational(self.root)
+                self.assertTrue(result.complete, result.reasons)
+                self.assertEqual(before, self.state())
+
+    def test_baseline_case_normalization_preserves_genuine_strings(self):
+        from watchdog.operational import read_operational
+        baseline = self.root / 'private/broker_baseline.json'
+        baseline.write_text(json.dumps({'preexisting_symbols': ['aapl', 'MsFt', 'AAPL', 'éx']}))
+        before = self.state()
+        result = read_operational(self.root)
+        self.assertTrue(result.complete, result.reasons)
+        self.assertEqual(result.baseline_symbols, frozenset({'AAPL', 'MSFT', 'ÉX'}))
+        self.assertEqual(before, self.state())
+        for value in (True, 123, None, {}, [], '', 'BRK.B', ' AAPL'):
+            with self.subTest(value=value):
+                baseline.write_text(json.dumps({'preexisting_symbols': [value]}))
+                before = self.state()
+                self.assertFalse(read_operational(self.root).complete)
+                self.assertEqual(before, self.state())
+
+    def test_orphaned_valid_sidecars_are_read_without_source_attachment(self):
+        from unittest.mock import patch
+        from watchdog.operational import read_operational
+        writer = sqlite3.connect(self.db)
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute("UPDATE ledger_entries SET appended_at='orphan'")
+        writer.commit()
+        sidecars = {suffix: Path(str(self.db) + suffix).read_bytes() for suffix in ('-wal', '-shm')}
+        writer.close()
+        for suffix, raw in sidecars.items():
+            Path(str(self.db) + suffix).write_bytes(raw)
+        before = self.state()
+        scratch = Path('/opt/data/cache/scratch')
+        prior = set(scratch.glob('watchdog-*'))
+        connect = sqlite3.connect
+        targets = []
+        def local_connect(database, **kwargs):
+            targets.append(database)
+            self.assertTrue(database.startswith(scratch.as_uri() + '/watchdog-'), database)
+            self.assertTrue(database.endswith('?mode=ro'), database)
+            return connect(database, **kwargs)
+        with patch('watchdog.operational.sqlite3.connect', side_effect=local_connect):
+            result = read_operational(self.root)
+        self.assertTrue(result.complete, result.reasons)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(before, self.state())
+        self.assertEqual(prior, set(scratch.glob('watchdog-*')))
+
+    def test_normal_ledger_writer_lifecycle_produces_complete_snapshots(self):
+        from sqlite_ledger import migrate_jsonl, append_jsonl
+        from watchdog.operational import read_operational
+        # Real writer schema, migration and append; every connection closes
+        # before watchdog starts, just like production. No live storage involved.
+        self.db.unlink()
+        migrate_jsonl(self.root)
+        for index in range(3):
+            row = {'symbol': 'ABC', 'iteration': index}
+            append_jsonl(self.root / 'order_ledger.jsonl', row)
+            before = self.state()
+            first = read_operational(self.root)
+            second = read_operational(self.root)
+            self.assertTrue(first.complete, first.reasons)
+            self.assertTrue(second.complete, second.reasons)
+            self.assertEqual(first.streams['order_ledger.jsonl'][-1], row)
+            self.assertEqual(first.streams, second.streams)
+            self.assertEqual(before, self.state())
 
     def test_money_and_timestamp_contracts(self):
         from datetime import datetime, timezone
@@ -111,8 +188,7 @@ class OperationalTests(unittest.TestCase):
         conn.close()
         before = self.state()
         snapshot = read_operational(self.root)
-        self.assertFalse(snapshot.complete)
-        self.assertIn('operational_wal_unavailable', snapshot.reasons)
+        self.assertTrue(snapshot.complete, snapshot.reasons)
         self.assertEqual(before, self.state())
 
     def test_concurrent_projection_change_is_retryable(self):
@@ -136,13 +212,16 @@ class OperationalTests(unittest.TestCase):
         from unittest.mock import patch
         from watchdog.operational import read_operational
         before = self.state()
+        scratch = Path('/opt/data/cache/scratch')
+        prior = set(scratch.glob('watchdog-*'))
         with patch('watchdog.operational.sqlite3.connect', side_effect=sqlite3.OperationalError('secret path')):
             snapshot = read_operational(self.root)
         self.assertFalse(snapshot.complete)
         self.assertNotIn('secret', str(snapshot.reasons))
+        self.assertEqual(prior, set(scratch.glob('watchdog-*')))
         self.assertEqual(before, self.state())
 
-    def test_unusable_wal_shm_is_incomplete_without_open(self):
+    def test_undersized_shm_is_ignored_without_source_writes(self):
         from watchdog.operational import read_operational
         with sqlite3.connect(self.db) as writer:
             writer.execute('PRAGMA journal_mode=WAL')
@@ -151,8 +230,7 @@ class OperationalTests(unittest.TestCase):
         Path(str(self.db) + '-shm').write_bytes(b'bad')
         before = self.state()
         result = read_operational(self.root)
-        self.assertFalse(result.complete)
-        self.assertIn('operational_wal_unavailable', result.reasons)
+        self.assertTrue(result.complete, result.reasons)
         self.assertEqual(before, self.state())
 
     def test_unsupported_schema_is_incomplete(self):
@@ -182,8 +260,7 @@ class OperationalTests(unittest.TestCase):
         writer.commit()
         before = self.state()
         result = read_operational(self.root)
-        self.assertFalse(result.complete)
-        self.assertIn('operational_wal_unavailable', result.reasons)
+        self.assertTrue(result.complete, result.reasons)
         self.assertEqual(before, self.state())
 
     def test_existing_writer_lock_is_retryable_without_modification(self):
@@ -198,7 +275,7 @@ class OperationalTests(unittest.TestCase):
         self.assertEqual(before, self.state())
 
     def state(self):
-        return {str(p.relative_to(self.root)): (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_size) for p in self.root.rglob('*') if p.is_file()}
+        return {str(p.relative_to(self.root)): (p.read_bytes(), (p.stat().st_dev, p.stat().st_ino, p.stat().st_mtime_ns, p.stat().st_ctime_ns), p.stat().st_size) for p in self.root.rglob('*') if p.is_file()}
 
     def test_read_does_not_repair_or_create_files(self):
         from watchdog.operational import read_operational

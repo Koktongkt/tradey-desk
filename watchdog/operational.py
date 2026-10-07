@@ -1,12 +1,13 @@
 """Read SQLite authority and compatibility projections without sync/repair."""
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
-import struct
+import shutil
+import tempfile
 
 from sqlite_ledger import DEFAULT_STREAMS, SCHEMA_VERSION
 from .types import OperationalSnapshot
@@ -42,34 +43,36 @@ def _metadata(paths):
     return result
 
 
-def _wal_ready(db):
-    # SQLite may CREATE sidecars even with mode=ro. Refuse before opening it.
-    with db.open('rb') as handle:
-        header = handle.read(100)
-    if header[18:20] == b'\x02\x02':
-        for suffix in ('-wal', '-shm'):
-            sidecar = Path(str(db) + suffix)
-            with sidecar.open('rb') as handle:
-                if suffix == '-shm':
-                    index = handle.read(136)
-                    if len(index) < 136 or index[:48] != index[48:96]:
-                        return False
-                    # mode=ro can still WRITE a new WAL read mark. Only use an
-                    # existing mark; otherwise declare coverage unavailable.
-                    frame = struct.unpack_from('=I', index, 16)[0]
-                    marks = struct.unpack_from('=5I', index, 100)
-                    if frame and frame not in marks[1:]:
-                        return False
-        return True
-    return True
+@contextmanager
+def _copied_database(db):
+    """Only byte reads touch the source; SQLite VFS sees disposable copies.
+
+    Caller holds the existing shared ledger lock throughout copy and validation.
+    WAL is authority; SHM is a rebuildable index, never trusted or copied. A
+    closed/checkpointed WAL database needs no source sidecars. Journal recovery,
+    if required, fails closed with the readonly local connection.
+    """
+    with tempfile.TemporaryDirectory(prefix='watchdog-', dir='/opt/data/cache/scratch') as scratch:
+        local = Path(scratch) / db.name
+        shutil.copyfile(db, local)
+        for suffix in ('-wal', '-journal'):
+            source = Path(str(db) + suffix)
+            try:
+                with source.open('rb') as incoming, Path(str(local) + suffix).open('wb') as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            except FileNotFoundError:
+                pass
+        yield local
+
 
 
 def read_operational(root: Path) -> OperationalSnapshot:
     """Root is the storage root, never a ledger file or inferred live checkout.
 
     Use only the existing writer lock, opened rb: no lock creation or repair.
-    Cooperating durable-ledger writers cannot remove WAL prerequisites between
-    validation and the read transaction. Contention is a retryable observation.
+    Cooperating durable-ledger writers cannot change authoritative bytes while
+    they are copied and checked. SQLite opens only the disposable local copy;
+    it never attaches to source DB/WAL/SHM. Contention is retryable.
     """
     root = Path(root).resolve()
     try:
@@ -93,19 +96,12 @@ def _read_operational(root: Path) -> OperationalSnapshot:
     before = None
     try:
         before = _metadata(paths)
-        try:
-            if not _wal_ready(db):
-                raise OSError('unusable shm')
-        except OSError:
-            if db.is_file():
-                reasons.append('operational_wal_unavailable')
-            raise
         baseline = _loads((root / 'private/broker_baseline.json').read_text())
         values = baseline['preexisting_symbols']
-        if not isinstance(values, list) or not all(isinstance(symbol, str) and symbol and symbol.isascii() and symbol.isalpha() and symbol == symbol.upper() for symbol in values):
+        if not isinstance(values, list) or not all(isinstance(symbol, str) and symbol and symbol.isalpha() for symbol in values):
             raise ValueError('invalid baseline symbols')
-        symbols = frozenset(values)
-        with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=1)) as connection:
+        symbols = frozenset(symbol.upper() for symbol in values)
+        with _copied_database(db) as local, closing(sqlite3.connect(local.as_uri() + '?mode=ro', uri=True, timeout=1)) as connection:
             connection.execute('PRAGMA query_only=ON')
             connection.execute('BEGIN')
             if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
