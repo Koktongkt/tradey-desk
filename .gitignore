@@ -24,4 +24,3 @@ __pycache__/
 
 # Isolated development checkouts (never a second live deployment).
 /.worktrees/
-
