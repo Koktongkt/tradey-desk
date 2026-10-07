@@ -1,12 +1,12 @@
 # Read-only Position & Portfolio Watchdog with Attribution
 
 Date: 2026-10-07
-Status: Conversational design approved; written specification awaiting user review.
+Status: Written specification approved; primary strategy capital and secondary full-account reporting confirmed by user. Implementation-plan review pending.
 Source baseline: 89ac62764391c67f6a4248be473b9ff1f4e19455
 
 ## 1. Purpose and approved scope
 
-Extend Tradey Desk with an observational plane that answers what the automation owns, why it owns it, whether protection and holding horizons remain valid, what collective exposures exist, and how actual activity differs from research and hypothetical decisions. The user approved hourly mechanical checks during the trading session and one after-close thesis/attribution report. This approval permits this design document, not implementation before written-spec and implementation-plan review.
+Extend Tradey Desk with an observational plane that answers what the automation owns, why it owns it, whether protection and holding horizons remain valid, what collective exposures exist, and how actual activity differs from research and hypothetical decisions. The user approved hourly mechanical checks during the trading session and one after-close thesis/attribution report. The written specification is approved, including a $10,000 initial strategy allocation as the primary scorecard and entire Alpaca account equity as a separately labeled secondary view. Implementation still requires implementation-plan review and execution-method selection.
 
 Success means auditable, evidence-backed monitoring and accounting without acquiring trading authority. No performance improvement is claimed merely from deploying the watchdog.
 
@@ -85,6 +85,8 @@ Separate:
 FIFO allocation within an exactly linked managed position is the accounting convention for partial exits; never allocate across ambiguous legacy/managed lots. Split adjustments and cash distributions require verified corporate-action/activity evidence. Reconcile remaining quantities and mark value to broker truth. Never count repeated observations of cumulative fills as new executions. Unsupported fees, distributions, or corporate actions produce explicit coverage limitations rather than fabricated zeros or silently complete totals.
 
 For prospectively measured sleeve performance, use a disclosed $10,000 analytical starting capital matching the current managed exposure cap, explicitly not the full broker account equity or buying power. The remaining virtual cash is starting capital less confirmed managed purchases plus confirmed sale proceeds and verified distributions, less verified costs. The capital basis does not change automatically if the trading cap later changes. A new basis/external sleeve cash flow requires explicit versioned documentation; do not infer sleeve cash flows from unrelated account deposits.
+
+The $10,000 is initial allocation, not a fixed current-equity denominator: marked sleeve equity and performance evolve with profits and losses. Retain the entire Alpaca account's broker-reported equity and cash as a secondary account-overview snapshot, including legacy/manual positions. Account-level return and drawdown require a separate verified baseline and external deposits/withdrawals; when those cash flows are unavailable, publish equity observations but withhold flow-adjusted performance claims. Full-account gains are never attributed wholly to Tradey. Protection/thesis monitoring remains scoped to automation-managed positions; account-level visibility does not authorize managing legacy holdings or increasing the exposure cap.
 
 Start the equity curve only at a defensible complete baseline. If historical completeness is proven, earlier performance may be reconstructed with a visible methodology; otherwise report historical trade P&L separately and start prospective reporting at the first verified baseline. Unknown cost/distribution coverage means incomplete total-return coverage.
 
