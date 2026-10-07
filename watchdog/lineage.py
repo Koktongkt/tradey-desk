@@ -28,7 +28,21 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
     candidates = streams.get('candidates.jsonl', [])
     reviews = streams.get('private/reviews.jsonl', [])
     ledger = streams.get('order_ledger.jsonl', [])
-    intents = streams.get('private/order_intents.jsonl', [])
+    intents = []
+    for row in streams.get('private/order_intents.jsonl', []):
+        ref = row.get('client_order_id')
+        plan = row.get('plan')
+        # Reject incomplete identity evidence before graph/hash operations or
+        # duplicate-plan checks; never stringify it into an invented identity.
+        if (not isinstance(ref, str) or not ref or not isinstance(plan, dict)
+                or any(field in row and (not isinstance(row[field], str) or not row[field])
+                       for field in IDENTITY_FIELDS + ('parent_client_order_id',))
+                or ('proposal_hash' in plan and
+                    (not isinstance(plan['proposal_hash'], str) or not plan['proposal_hash']))
+                or not (plan.get('proposal_hash') or row.get('proposal_hash'))):
+            reasons.append('intent_lineage_unknown')
+            continue
+        intents.append(row)
     # Candidate/model rows establish research identity only. Execution tokens
     # belong to the durable review/ledger/intent envelopes, never the model.
     for row in candidates:

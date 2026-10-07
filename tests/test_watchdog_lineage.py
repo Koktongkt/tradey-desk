@@ -33,6 +33,76 @@ class LineageTests(unittest.TestCase):
         self.assertEqual(result.positions[0]['entry_quantity'], D('2'))
         self.assertEqual((op, broker), before)
 
+    def test_invalid_intent_client_ids_do_not_contaminate_valid_attribution(self):
+        from watchdog.lineage import build_lineage
+        for value in ('missing', None, '', 7, False, [], {}):
+            for invalid_first in (False, True):
+                with self.subTest(value=value, invalid_first=invalid_first):
+                    op, broker = snapshots()
+                    baseline = build_lineage(op, broker)
+                    invalid = copy.deepcopy(op.streams['private/order_intents.jsonl'][0])
+                    if value == 'missing':
+                        del invalid['client_order_id']
+                    else:
+                        invalid['client_order_id'] = value
+                    op.streams['private/order_intents.jsonl'].insert(0 if invalid_first else 1, invalid)
+                    before = copy.deepcopy((op, broker))
+                    result = build_lineage(op, broker)
+                    self.assertEqual(result.positions, baseline.positions)
+                    self.assertEqual(result.decisions, baseline.decisions)
+                    self.assertEqual(result.decisions[0]['client_order_ids'], ['parent'])
+                    self.assertEqual(result.coverage['status'], 'unknown')
+                    self.assertIn('intent_lineage_unknown', result.reasons)
+                    self.assertEqual((op, broker), before)
+
+    def test_malformed_intent_identity_fields_remain_unknown_without_graph_edges(self):
+        from watchdog.lineage import build_lineage
+        for field in ('proposal_hash', 'plan_proposal_hash', 'candidate_id', 'dossier_hash',
+                      'evidence_id', 'parent_client_order_id', 'plan'):
+            for value in (None, '', 7, False, [], {'bad': 'value'}):
+                with self.subTest(field=field, value=value):
+                    op, broker = snapshots()
+                    baseline = build_lineage(op, broker)
+                    invalid = copy.deepcopy(op.streams['private/order_intents.jsonl'][0])
+                    if field == 'plan_proposal_hash':
+                        invalid['plan']['proposal_hash'] = value
+                    else:
+                        invalid[field] = value
+                    op.streams['private/order_intents.jsonl'].insert(0, invalid)
+                    before = copy.deepcopy((op, broker))
+                    result = build_lineage(op, broker)
+                    self.assertEqual(result.positions, baseline.positions)
+                    self.assertEqual(result.decisions, baseline.decisions)
+                    self.assertEqual(result.coverage['status'], 'unknown')
+                    self.assertIn('intent_lineage_unknown', result.reasons)
+                    self.assertEqual((op, broker), before)
+
+    def test_incomplete_intent_alone_cannot_fabricate_order_identity(self):
+        from watchdog.lineage import build_lineage
+        for missing in ('client_order_id', 'proposal_hash', 'plan'):
+            with self.subTest(missing=missing):
+                op, broker = snapshots()
+                intent = op.streams['private/order_intents.jsonl'][0]
+                if missing == 'proposal_hash':
+                    del intent['plan']['proposal_hash']
+                else:
+                    del intent[missing]
+                result = build_lineage(op, broker)
+                self.assertEqual(result.positions, [])
+                self.assertEqual(result.decisions[0]['client_order_ids'], [])
+                self.assertEqual(result.coverage['status'], 'unknown')
+                self.assertIn('intent_lineage_unknown', result.reasons)
+
+    def test_valid_envelope_proposal_without_plan_proposal_remains_attributable(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        intent = op.streams['private/order_intents.jsonl'][0]
+        intent['proposal_hash'] = intent['plan'].pop('proposal_hash')
+        result = build_lineage(op, broker)
+        self.assertEqual(result.coverage['status'], 'complete')
+        self.assertEqual(result.positions[0]['proposal_hash'], 'pa')
+        self.assertEqual(result.positions[0]['candidate_id'], 'idea-a')
+
     def test_candidate_execution_tokens_cannot_complete_missing_chain(self):
         from watchdog.lineage import build_lineage
         for missing in ('review', 'plan_proposal'):
