@@ -269,6 +269,44 @@ def observed_fields(value):
     return value
 
 
+def reconcile_orders(rows):
+    """Validate the entire identity forest, then coalesce without losing edges.
+
+    Rebuild transactionally: a contradictory observation cannot partially append
+    another execution. Provenance differs between reads, not observed facts.
+    """
+    nodes, clients, children, parents = {}, {}, {}, {}
+    for row in order_tree(rows):
+        identity, client = row['id'], row['client_order_id']
+        facts = observed_fields({key: value for key, value in row.items() if key != 'legs'})
+        child_ids = list(dict.fromkeys(leg['id'] for leg in row['legs']))
+        if (client in clients and clients[client] != identity
+                or identity in nodes and (observed_fields(nodes[identity]) != facts
+                                          or set(children[identity]) != set(child_ids))):
+            raise ValueError('broker_order_identity_conflict')
+        if identity not in nodes:
+            nodes[identity] = {key: deepcopy(value) for key, value in row.items() if key != 'legs'}
+            children[identity] = child_ids
+        clients[client] = identity
+        for child in child_ids:
+            if child in parents and parents[child] != identity:
+                raise ValueError('broker_order_parent_conflict')
+            parents[child] = identity
+
+    visited = set()
+    def build(identity, ancestors):
+        if identity in ancestors:
+            raise ValueError('broker_order_cycle')
+        visited.add(identity)
+        return {**nodes[identity], 'legs': [build(child, ancestors | {identity})
+                                          for child in children[identity]]}
+
+    forest = [build(identity, set()) for identity in nodes if identity not in parents]
+    if len(visited) != len(nodes):
+        raise ValueError('broker_order_cycle')
+    return forest
+
+
 def validate_collection_input(refs, start, end):
     if (not isinstance(refs, list) or len(refs) > 500
             or any(not isinstance(ref, str) or not ref or len(ref) > 128 for ref in refs)):
@@ -297,7 +335,7 @@ async def collect_broker(reader: ReadOnlyAlpaca, refs: list[str], start: str, en
         if remaining <= 0:
             raise TimeoutError('broker_read_deadline')
         raw = await asyncio.wait_for(reader.call(name, args), timeout=min(15, remaining))
-        return response_payload(raw, collection, now=captured)
+        return response_payload(raw, collection, now=utc_now())
 
     async def read(key, name, args, normalize, collection=None) -> Any:
         try:
@@ -317,9 +355,12 @@ async def collect_broker(reader: ReadOnlyAlpaca, refs: list[str], start: str, en
                     raise ValueError('broker_page_oversize')
                 batch = [normalize(row) for row in payload]
                 ids = [row['id'] for row in batch]
-                if len(set(ids)) != len(ids) or seen.intersection(ids):
+                if (seen.intersection(ids)
+                        or key != 'orders' and len(set(ids)) != len(ids)):
                     raise ValueError('broker_pagination_repeated')
-                rows.extend(batch)
+                # Order duplicates within a response are validated tree-wide.
+                # Repeated root IDs across pages still invalidate pagination.
+                rows.extend(reconcile_orders(batch) if key == 'orders' else batch)
                 seen.update(ids)
                 if len(batch) < page_size:
                     return rows
@@ -334,16 +375,20 @@ async def collect_broker(reader: ReadOnlyAlpaca, refs: list[str], start: str, en
     orders = await pages('orders', 'get_orders',
                          {'status': 'open', 'nested': True, 'limit': 500, 'direction': 'desc'},
                          lambda row: normalize_order(row, 'get_orders'), 500, 'before_order_id')
+    try:
+        orders = reconcile_orders(orders)
+    except ValueError:
+        unknown('orders')
+        orders = []
     for ref in dict.fromkeys(refs):
         row = await read('references', 'get_order_by_client_id', {'client_order_id': ref},
                          lambda row: normalize_order(row, 'get_order_by_client_id'))
         if row.get('client_order_id') != ref:
             unknown('references')
             continue
-        existing = next((item for item in order_tree(orders) if item['id'] == row['id']), None)
-        if existing is None:
-            orders.append(row)
-        elif observed_fields(existing) != observed_fields(row):
+        try:
+            orders = reconcile_orders([*orders, row])
+        except ValueError:
             unknown('references')
     sessions = await read('calendar', 'get_calendar', {'start': start, 'end': end, 'date_type': 'TRADING'},
                           normalize_session, 'calendar')

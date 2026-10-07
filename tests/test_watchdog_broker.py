@@ -1,4 +1,5 @@
 """Offline boundary/coverage tests. Schemas captured by list_tools, not invented."""
+import asyncio
 import copy
 import json
 from pathlib import Path
@@ -45,6 +46,8 @@ class Transport:
         self.responses = responses or {}
 
     async def call_tool(self, name, args):
+        # Offline responses cooperate like real awaited I/O; keep debug enabled.
+        await asyncio.sleep(0)
         self.calls.append((name, copy.deepcopy(args)))
         return self.responses.get(name, {})
 
@@ -52,12 +55,77 @@ class Transport:
 class PaginatedTransport(Transport):
     async def call_tool(self, name, args):
         if callable(self.responses.get(name)):
+            await asyncio.sleep(0)
             self.calls.append((name, copy.deepcopy(args)))
             return self.responses[name](args)
         return await super().call_tool(name, args)
 
 
 class BrokerSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reference_identity_mapping_is_bidirectional_over_nested_tree(self):
+        cases = (
+            ([order()], order(id='different-broker-id'), ['owned']),
+            ([order()], order('other', id='broker-owned'), ['other']),
+            ([order(legs=[order('leg')])], order('leg', id='different-leg'), ['leg']),
+            ([order(legs=[order('leg')])], order('other', id='broker-leg'), ['other']),
+            ([order(legs=[order('leg')])], order(legs=[order('leg', filled_qty='3')]), ['owned']),
+            ([order(legs=[order('leg')])], order('new', legs=[order('leg', filled_qty='3')]), ['new']),
+            ([order(legs=[order('leg')])], order('new', legs=[order('leg')]), ['new']),
+            ([order()], order('new', legs=[order(id='different-broker-id')]), ['new']),
+            ([], lambda args: (
+                order('first', legs=[order('shared')]) if args['client_order_id'] == 'first'
+                else order('first-alias', legs=[order('shared', id='different-shared')])),
+             ['first', 'first-alias']),
+        )
+        for roots, exact, refs in cases:
+            data = responses()
+            data['get_orders'] = roots
+            data['get_order_by_client_id'] = exact
+            client = PaginatedTransport(data)
+            with self.subTest(refs=refs, exact=exact), patch('watchdog.broker.utc_now', return_value=NOW):
+                result = await collect_broker(ReadOnlyAlpaca(client, SCHEMAS), refs, START, END)
+                self.assertFalse(result.complete)
+                self.assertEqual(result.coverage['references'], 'unknown')
+                self.assertEqual(len(result.orders), len(roots) if roots else 1)
+
+    async def test_tree_duplicates_coalesce_at_parent_across_roots_and_observations(self):
+        leg = order('leg')
+        parent = order(legs=[leg])
+        cases = (
+            ([parent, copy.deepcopy(parent)], leg, ['leg']),
+            ([order(legs=[leg, copy.deepcopy(leg)])], leg, ['leg']),
+            ([leg, parent], leg, ['leg']),
+            ([parent, leg], leg, ['leg']),
+            ([leg], parent, ['owned']),
+            ([parent], order(legs=[leg, copy.deepcopy(leg)]), ['owned']),
+        )
+        for roots, exact, refs in cases:
+            data = responses()
+            data['get_orders'], data['get_order_by_client_id'] = roots, exact
+            with self.subTest(roots=roots):
+                result, _ = await self.collect(data, refs=refs)
+                self.assertTrue(result.complete, result.coverage)
+                self.assertEqual(len(result.orders), 1)
+                self.assertEqual(result.orders[0]['id'], 'broker-owned')
+                self.assertEqual([row['id'] for row in result.orders[0]['legs']], ['broker-leg'])
+                self.assertEqual(result.orders[0]['legs'][0]['filled_qty'], Decimal('2'))
+
+    async def test_conflicting_tree_duplicates_make_orders_unknown(self):
+        leg = order('leg')
+        for roots in (
+            [order(legs=[leg, order('leg', filled_qty='3')])],
+            [order(legs=[leg]), order('leg', filled_qty='3')],
+            [order(legs=[leg]), order('other', legs=[leg])],
+            [order(), order('other', id='broker-owned')],
+            [order(), order(id='different-owned')],
+        ):
+            data = responses()
+            data['get_orders'] = roots
+            with self.subTest(roots=roots):
+                result, _ = await self.collect(data, refs=[])
+                self.assertFalse(result.complete)
+                self.assertEqual(result.coverage['orders'], 'unknown')
+
     async def test_declared_totals_and_error_envelopes_cannot_claim_completeness(self):
         for extra in ({'total': 1}, {'count': 1}, {'isError': True}, {'is_error': True}):
             data = responses()
@@ -198,6 +266,22 @@ class BrokerSnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.complete)
             self.assertEqual(result.coverage['references'], 'unknown')
 
+    async def test_source_timestamp_is_checked_at_response_receipt(self):
+        receipt = datetime(2026, 10, 7, 10, 0, 2, tzinfo=timezone.utc)
+        for source, expected in (('2026-10-07T10:00:01Z', 'complete'),
+                                 ('2026-10-07T10:00:03Z', 'unknown')):
+            data = responses()
+            data['get_all_positions'] = {'positions': data['get_all_positions'], 'captured_at': source}
+            # Sweep start, account receipt, positions receipt, remaining reads,
+            # and final sweep-age check. No exact-reference reads in this case.
+            with self.subTest(source=source), patch('watchdog.broker.utc_now',
+                    side_effect=[NOW, NOW, receipt, receipt, receipt, receipt, receipt]):
+                result = await collect_broker(ReadOnlyAlpaca(Transport(data), SCHEMAS), [], START, END)
+                self.assertEqual(result.coverage['positions'], expected)
+                self.assertEqual(result.complete, expected == 'complete')
+                self.assertEqual(result.captured_at, NOW.isoformat())
+                self.assertNotIn('broker_snapshot_stale', result.coverage['reasons'])
+
     async def test_snapshot_timestamp_numeric_stale_future_and_slow_are_unknown(self):
         for timestamp in (12345, True, '2026-10-07T09:00:00Z', '2026-10-07T11:00:00Z'):
             data = responses()
@@ -208,7 +292,7 @@ class BrokerSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.coverage['positions'], 'unknown')
         from watchdog.broker import ReadOnlyAlpaca, collect_broker
         later = datetime(2026, 10, 7, 10, 2, tzinfo=timezone.utc)
-        with patch('watchdog.broker.utc_now', side_effect=[NOW, later]):
+        with patch('watchdog.broker.utc_now', side_effect=[NOW] + [later] * 6):
             result = await collect_broker(ReadOnlyAlpaca(Transport(responses()), SCHEMAS), [], START, END)
         self.assertFalse(result.complete)
         self.assertIn('broker_snapshot_stale', result.coverage['reasons'])
