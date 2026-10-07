@@ -205,3 +205,98 @@ Remaining concerns are explicit integration/release boundaries, not waived requi
 4. Metadata remains private. No public allowlists were broadened; reporting must continue explicit sanitization. Review-only `approved` is an observed verdict, never fresh policy authorization.
 5. All operational writer behavior remains unchanged except additive fields. Existing historical closure keys and entry-fill journal semantics were not rewritten; watchdog accounting must not sum repeated journal observations as new fills.
 6. Before deployment, the controller must inventory/pause the affected autotrader, original-bracket and shared/replacement reconciliation writers, verify pause states, deploy/review/smoke, then restore approved states. No operational pause or schedule action was taken here.
+
+## Fix round 1/5 — authoritative graph, intent consistency, journal corroboration
+
+**DONE_WITH_CONCERNS: all three Important review blockers repaired and self-reviewed; parent scoped re-review remains required.**
+
+- Fix base verified: `cbeb233470891cdd4d752373b26729c8b82c96e8`; clean starting worktree.
+- Source/test commit: `e28cbc18229c49d00f22b9798775aadd27c1b017` (`fix(watchdog): require authoritative corroborated lineage identities`). This report is appended in a separate documentation commit.
+- Modified only `watchdog/lineage.py`, `tests/test_watchdog_lineage.py`, `tests/test_watchdog_forward_lineage.py`, and this report. No new files. No subagents, controller-ledger edits, live reads/calls, historical rewrites, deployment, push, operational writes or control changes.
+- Loaded TDD and systematic-debugging skills. Read the Task 3 brief first, global context, entire existing report/review, relevant source/tests and worktree AGENTS rules. Root causes matched the review: non-authoritative candidate tokens in construction and matching, union without envelope consistency, and first-success journal fallback that ignored remaining identifiers.
+
+### Repairs and schema invariants
+
+1. Stream-specific graph construction: candidates contribute only candidate/dossier identity; reviews contribute research/proposal/evidence identities, not client-order edges; authoritative ledger rows contribute their recorded execution relationships. Intents contribute only proposal-to-client edges for already recorded proposals. Proposal provenance is frozen before intent edges are connected, preventing an intent or client ledger path from inventing its proposal's owner. Candidate matching also ignores candidate-supplied proposal/client/evidence tokens. Candidate-only identity cannot substitute for missing review/proposed provenance or a missing intent proposal.
+2. Every intent is checked before projection: envelope proposal hash equals nested-plan proposal hash whenever both are supplied; a BUY envelope parent equals its actual client-order ID. Supplied candidate/dossier identities must corroborate the authoritative chain. Contradictory refs are counted ambiguous, excluded from positions/trusted observations and shown as unknown decisions. Multiple valid proposals on separate intents for one candidate remain supported; this is not a global one-proposal restriction.
+3. All journal broker/client/exit tokens must resolve to the same owned execution order; a supplied parent must equal that order's owned entry parent. No unresolved broker ID can fall back to a valid client token. Supplied candidate/dossier/proposal identities must match that position, and supplied evidence must be recorded for that exact entry proposal, not merely somewhere in the candidate component. Contradictions increment unattributed rows and surface `journal_lineage_unknown`/unknown top-level coverage. They never change broker-derived quantities, notionals, order ownership or activity events.
+4. No new schema keys, persistence fields, migrations or reason codes. Existing coverage counters/reasons are reused. Position `evidence_ids` is now exact-proposal-specific; decision `evidence_ids` remains candidate-wide. Broker-local observation trust remains distinct from journal/domain coverage: consumers must still honor top-level unknown coverage. No ticker/time identity fallback was added.
+5. No execution writer/helper was changed in this fix. Existing forward-only persistence, plans, proposal hashes, reviewer bundles, broker payloads, dry-run isolation and private/public boundaries remain unchanged. The new isolated workflow test runs real `autotrader.run` with controlled broker/reviewer boundaries, proves generated envelopes project completely, then proves the real intent plus model-injected tokens cannot replace removed review/ledger provenance.
+
+### Exact RED/GREEN commands and observed results
+
+All commands ran from `/opt/data/projects/tradey-desk/.worktrees/position-watchdog`. RED failures were assertion failures for wrong attribution, not syntax/import/setup errors. Subtest failure counts are distinguished from unittest test-method counts. Safety-positive controls that already passed are not claimed as RED behavior changes.
+
+```sh
+# R1: candidate execution tokens, six missing-chain variants
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_candidate_execution_tokens_cannot_complete_missing_chain -v
+# RED: 1 test method; 3 subtest failures (review missing + proposal/client injection;
+# plan proposal missing + client injection). Remaining negative variants already safe.
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage -v
+# GREEN: 22 tests; OK.
+
+# R2: intent's own candidate/dossier metadata cannot create missing proposal provenance
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_intent_identity_without_authoritative_proposal_chain_is_unknown -v
+# RED: 1 test; 1 failure (incorrect emitted verified position).
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage -q
+# GREEN: 23 tests; OK.
+
+# R3: internal contradictions, including another legitimate proposal of same candidate
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_contradictory_intent_envelopes_cannot_be_rescued_by_union test_watchdog_lineage.LineageTests.test_separate_valid_proposals_for_same_candidate_remain_owned -v
+# RED: 2 test methods; 2 contradictory-envelope subtest failures;
+# separate-valid-proposals positive control passed.
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage -q
+# GREEN: 25 tests; OK.
+
+# R4: independently conflicting journal identifiers, with valid exit-parent control
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_journal_every_supplied_identity_must_corroborate_exact_order test_watchdog_lineage.LineageTests.test_journal_exit_identifiers_corroborate_parent_without_being_same_order -v
+# RED: 2 test methods; 7 subtest failures (candidate, dossier, proposal, evidence,
+# nonexistent broker ID, client ID, exit ID). Parent conflict and valid-exit controls passed.
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# GREEN: 36 tests; OK.
+
+# R5: evidence from another proposal of the same candidate cannot corroborate this entry
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_journal_evidence_must_belong_to_entry_proposal_not_just_candidate -v
+# RED: 1 test; 1 failure (unattributed was 0 rather than 1).
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# GREEN: 37 tests; OK. git diff --check also clean.
+
+# R6: ledger client identity cannot replace absent intent proposal
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_client_ledger_identity_cannot_replace_missing_intent_proposal -v
+# RED: 1 test; 1 failure (emitted position with proposal_hash=None).
+# Applied the missing-proposal guard, then added the next focused provenance counterexample.
+
+# R7: ledger client path cannot validate an unrecorded intent proposal
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_unreviewed_intent_proposal_cannot_join_via_ledger_client -v
+# RED: 1 test; 1 failure (emitted verified position for unrecorded proposal).
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# GREEN for R6/R7: 39 tests; OK.
+```
+
+R6's first guard was not separately executed GREEN before R7 was added; both guards were actually verified by the combined 39-test run. This sequencing deviation is disclosed rather than claiming an unrun command. Added post-fix preservation controls for a real conflicting broker ID versus client ID and the isolated real-persistence projection; no further product changes were needed for those controls.
+
+Final verification (after all source/test edits):
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -v
+# Ran 40 tests in 0.410s; OK (30 pure + 10 workflow).
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python tests/run_tests.py fast
+# 21 modules; Ran 304 tests in 10.634s; failures=0 errors=0 skipped=0.
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python tests/run_tests.py scenario
+# 9 modules; Ran 162 tests in 5.574s; failures=0 errors=0 skipped=0.
+git diff --check
+# Clean.
+python3 -m py_compile watchdog/lineage.py tests/test_watchdog_lineage.py tests/test_watchdog_forward_lineage.py
+# Exit 0.
+```
+
+Both tiers passed operational-isolation checks (no `OPERATIONAL_ISOLATION_FAILURE`). Existing fast fixture stdout `BLOCKER dry_run_no_execution` remains explicitly deferred as directed; it is not a failed test. Full-only suite/release smoke was not run.
+
+### Self-review and concerns
+
+- Reviewed the entire source/test diff before explicit-path commit; verified only projection and tests changed. Checked stream trust boundaries, metadata contradiction ordering before position creation, frozen proposal provenance, per-proposal journal evidence, exact exit/parent semantics and no journal-to-broker total mutation. Tests assert snapshots are not modified.
+- Self-review found two additional union-rescue variants (missing intent proposal despite valid client ledger and unrecorded intent proposal joined through ledger client); both reproduced RED and were repaired with frozen provenance checks. It also found same-candidate cross-proposal evidence overreach, reproduced RED and narrowed position evidence to the actual proposal.
+- Existing payload/hash/reviewer/public/dry-run safety tests all remain green. Execution writers and serializers are byte-unchanged in the fix commit; no new operational path exists.
+- **Concern: fresh parent scoped re-review is still required; this is not release approval.** Existing downstream requirements to honor unknown coverage/initial deltas, production writer pause/readback and deployment smoke remain unchanged controller responsibilities.
+- **Concern: intentionally conservative attribution.** Incomplete authoritative proposal/evidence metadata remains unknown/unattributed rather than rescued by candidate fields, order aliases or ticker/time. Journal contradictions do not erase otherwise valid broker-local cumulative evidence; consumers must not interpret that local evidence as complete journal/lifetime accounting coverage.
+- No blocking tool/install/network failure encountered. No unrelated refactor or fixture-output cleanup was performed.
