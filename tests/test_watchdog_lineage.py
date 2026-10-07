@@ -33,6 +33,51 @@ class LineageTests(unittest.TestCase):
         self.assertEqual(result.positions[0]['entry_quantity'], D('2'))
         self.assertEqual((op, broker), before)
 
+    def test_candidate_execution_tokens_cannot_complete_missing_chain(self):
+        from watchdog.lineage import build_lineage
+        for missing in ('review', 'plan_proposal'):
+            for field, value in (('proposal_hash', 'pa'), ('client_order_id', 'parent'), ('evidence_id', 'ea')):
+                with self.subTest(missing=missing, field=field):
+                    op, broker = snapshots()
+                    op.streams['candidates.jsonl'][0][field] = value
+                    if missing == 'review':
+                        op.streams['private/reviews.jsonl'] = []
+                    else:
+                        del op.streams['private/order_intents.jsonl'][0]['plan']['proposal_hash']
+                    result = build_lineage(op, broker)
+                    self.assertEqual(result.positions, [])
+                    self.assertEqual(result.coverage['status'], 'unknown')
+                    self.assertIn('intent_lineage_unknown', result.reasons)
+
+    def test_intent_identity_without_authoritative_proposal_chain_is_unknown(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        op.streams['private/reviews.jsonl'] = []
+        op.streams['private/order_intents.jsonl'][0].update(candidate_id='idea-a', dossier_hash='da')
+        result = build_lineage(op, broker)
+        self.assertEqual(result.positions, [])
+        self.assertIn('intent_lineage_unknown', result.reasons)
+
+    def test_client_ledger_identity_cannot_replace_missing_intent_proposal(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        del op.streams['private/order_intents.jsonl'][0]['plan']['proposal_hash']
+        op.streams['order_ledger.jsonl'] = [dict(candidate_id='idea-a', dossier_hash='da',
+            proposal_hash='pa', client_order_id='parent', status='proposed')]
+        result = build_lineage(op, broker)
+        self.assertEqual(result.positions, [])
+        self.assertIn('intent_lineage_unknown', result.reasons)
+
+    def test_unreviewed_intent_proposal_cannot_join_via_ledger_client(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        op.streams['order_ledger.jsonl'] = [dict(candidate_id='idea-a', dossier_hash='da',
+            proposal_hash='pa', client_order_id='parent', status='proposed')]
+        op.streams['private/order_intents.jsonl'][0]['plan']['proposal_hash'] = 'not-recorded'
+        result = build_lineage(op, broker)
+        self.assertEqual(result.positions, [])
+        self.assertIn('intent_lineage_unknown', result.reasons)
+
     def test_conflicting_candidate_links_are_unknown(self):
         from watchdog.lineage import build_lineage
         op, broker = snapshots()
@@ -122,6 +167,54 @@ class LineageTests(unittest.TestCase):
         self.assertEqual(result.coverage['status'], 'unknown')
         self.assertIn('referenced_order_missing', result.reasons)
 
+    def test_journal_every_supplied_identity_must_corroborate_exact_order(self):
+        from watchdog.lineage import build_lineage
+        conflicts = [('candidate_id', 'idea-b'), ('dossier_hash', 'db'), ('proposal_hash', 'other-proposal'),
+                     ('evidence_id', 'other-evidence'), ('broker_order_id', 'missing-broker'),
+                     ('broker_order_id', 'exit-id'), ('client_order_id', 'exit'),
+                     ('exit_client_order_id', 'exit'), ('parent_client_order_id', 'exit')]
+        for field, value in conflicts:
+            with self.subTest(field=field, value=value):
+                op, broker = snapshots()
+                broker.orders[0]['legs'] = [dict(id='exit-id', client_order_id='exit', symbol='ABC', side='sell',
+                    filled_qty=D('0'), filled_avg_price=D('0'), status='new', legs=[])]
+                row = dict(broker_order_id='broker-parent', client_order_id='parent',
+                           parent_client_order_id='parent', candidate_id='idea-a', dossier_hash='da', proposal_hash='pa')
+                row[field] = value
+                op.streams['trade_journal.jsonl'] = [row]
+                before = copy.deepcopy((op, broker))
+                result = build_lineage(op, broker)
+                self.assertEqual(result.coverage['unattributed_journal_rows'], 1)
+                self.assertEqual(result.coverage['status'], 'unknown')
+                self.assertIn('journal_lineage_unknown', result.reasons)
+                self.assertEqual(result.positions[0]['entry_quantity'], D('2'))
+                self.assertEqual(result.positions[0]['entry_notional'], D('20'))
+                self.assertEqual((op, broker), before)
+
+    def test_journal_evidence_must_belong_to_entry_proposal_not_just_candidate(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        op.streams['private/reviews.jsonl'].append(dict(dossier_hash='da', proposal_hash='other-proposal', evidence_id='other-evidence'))
+        op.streams['trade_journal.jsonl'] = [dict(broker_order_id='broker-parent', evidence_id='other-evidence')]
+        result = build_lineage(op, broker)
+        self.assertEqual(result.coverage['unattributed_journal_rows'], 1)
+        self.assertEqual(result.coverage['status'], 'unknown')
+        self.assertEqual(result.positions[0]['entry_notional'], D('20'))
+
+    def test_journal_exit_identifiers_corroborate_parent_without_being_same_order(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        broker.orders[0]['legs'] = [dict(id='exit-id', client_order_id='exit', symbol='ABC', side='sell',
+            filled_qty=D('1'), filled_avg_price=D('12'), status='filled', legs=[])]
+        broker.positions[0]['qty'] = D('1')
+        op.streams['trade_journal.jsonl'] = [dict(broker_order_id='exit-id', client_order_id='exit',
+            exit_client_order_id='exit', parent_client_order_id='parent', candidate_id='idea-a',
+            dossier_hash='da', proposal_hash='pa', evidence_id='ea')]
+        result = build_lineage(op, broker)
+        self.assertEqual(result.coverage['status'], 'complete')
+        self.assertEqual(result.coverage['unattributed_journal_rows'], 0)
+        self.assertEqual(result.positions[0]['exit_notional'], D('12'))
+
     def test_same_cumulative_quantity_with_different_notional_is_conflict(self):
         from watchdog.lineage import build_lineage
         op, broker = snapshots()
@@ -156,6 +249,36 @@ class LineageTests(unittest.TestCase):
         result = build_lineage(op, broker)
         self.assertEqual(result.positions[0]['ownership'], 'unknown')
         self.assertFalse(result.positions[0]['fill_observations'][0]['trusted'])
+
+    def test_contradictory_intent_envelopes_cannot_be_rescued_by_union(self):
+        from watchdog.lineage import build_lineage
+        for field, value in (('proposal_hash', 'other-proposal'), ('parent_client_order_id', 'other-parent')):
+            with self.subTest(field=field):
+                op, broker = snapshots()
+                # Both proposals legitimately belong to this candidate, but
+                # not to the same envelope/plan pair.
+                op.streams['private/reviews.jsonl'].append(dict(dossier_hash='da', proposal_hash='other-proposal'))
+                op.streams['private/order_intents.jsonl'][0][field] = value
+                result = build_lineage(op, broker)
+                self.assertEqual(result.positions, [])
+                self.assertEqual(result.coverage['ambiguous_order_refs'], 1)
+                self.assertEqual(result.decisions[0]['coverage'], 'unknown')
+                self.assertIn('lineage_contradictory', result.reasons)
+
+    def test_separate_valid_proposals_for_same_candidate_remain_owned(self):
+        from watchdog.lineage import build_lineage
+        op, broker = snapshots()
+        op.streams['private/reviews.jsonl'].append(dict(dossier_hash='da', proposal_hash='other-proposal'))
+        intent = copy.deepcopy(op.streams['private/order_intents.jsonl'][0])
+        intent.update(client_order_id='second', parent_client_order_id='second', proposal_hash='other-proposal')
+        intent['plan']['proposal_hash'] = 'other-proposal'
+        op.streams['private/order_intents.jsonl'].append(intent)
+        broker.orders.append(dict(broker.orders[0], id='broker-second', client_order_id='second'))
+        broker.positions[0]['qty'] = D('4')
+        result = build_lineage(op, broker)
+        self.assertEqual(len(result.positions), 2)
+        self.assertEqual(result.coverage['status'], 'complete')
+        self.assertEqual({p['proposal_hash'] for p in result.positions}, {'pa', 'other-proposal'})
 
     def test_conflicting_intent_plans_do_not_choose_first(self):
         from watchdog.lineage import build_lineage

@@ -100,6 +100,39 @@ class ForwardLineageTests(unittest.TestCase):
             self.assertEqual(a.read_jsonl(root / 'trade_journal.jsonl')[0]['candidate_id'], intent['candidate_id'])
             self.assertTrue(all(r['proposal_hash'] == proposal['proposal_hash'] for r in a.read_jsonl(root / 'order_ledger.jsonl')))
 
+    def test_persisted_execution_envelopes_form_authoritative_projection(self):
+        from decimal import Decimal
+        from watchdog.lineage import build_lineage
+        from watchdog.types import OperationalSnapshot, BrokerSnapshot
+        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+            root = Path(td)
+            status, fixture, proposal, plan, *rest = self.run_isolated(root)
+            self.assertEqual(status, 0)
+            assert plan is not None
+            streams = {name: a.read_jsonl(root / name) for name in (
+                'candidates.jsonl', 'private/reviews.jsonl', 'order_ledger.jsonl',
+                'private/order_intents.jsonl', 'trade_journal.jsonl')}
+            ref = streams['private/order_intents.jsonl'][0]['client_order_id']
+            qty, price = Decimal(str(plan['quantity'])), Decimal(str(plan['limit_price']))
+            op = OperationalSnapshot(streams, frozenset(), fixture['snapshot']['captured_at'], True, [])
+            broker = BrokerSnapshot({}, [dict(symbol=plan['symbol'], qty=qty)],
+                [dict(id='broker-id', client_order_id=ref, symbol=plan['symbol'], side='buy',
+                      filled_qty=qty, filled_avg_price=price, status='filled', legs=[])], [], [],
+                op.captured_at, True, dict(orders='complete', references='complete', activities='complete'))
+            result = build_lineage(op, broker)
+            self.assertEqual(result.coverage['status'], 'complete')
+            self.assertEqual(result.positions[0]['proposal_hash'], proposal['proposal_hash'])
+            self.assertEqual(result.coverage['unattributed_journal_rows'], 0)
+            # The same real intent cannot invent its own review/proposal chain.
+            streams['private/reviews.jsonl'] = []
+            streams['order_ledger.jsonl'] = []
+            streams['candidates.jsonl'][0].update(proposal_hash=proposal['proposal_hash'],
+                                                 client_order_id=ref, evidence_id='injected')
+            rejected = build_lineage(op, broker)
+            self.assertEqual(rejected.positions, [])
+            self.assertEqual(rejected.coverage['unattributed_journal_rows'], 1)
+            self.assertIn('intent_lineage_unknown', rejected.reasons)
+
     def test_dry_run_linkage_stays_in_test_artifacts(self):
         with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
             root = Path(td)

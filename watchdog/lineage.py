@@ -29,10 +29,21 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
     reviews = streams.get('private/reviews.jsonl', [])
     ledger = streams.get('order_ledger.jsonl', [])
     intents = streams.get('private/order_intents.jsonl', [])
-    for row in candidates + reviews + ledger:
+    # Candidate/model rows establish research identity only. Execution tokens
+    # belong to the durable review/ledger/intent envelopes, never the model.
+    for row in candidates:
+        connect([node for node in tokens(row) if node[0] in ('candidate_id', 'dossier_hash')])
+    for row in reviews:
+        connect([node for node in tokens(row) if node[0] != 'client_order_id'])
+    for row in ledger:
         connect(tokens(row))
-    for row in intents:
-        connect(tokens(row) + tokens(row.get('plan') or {}))
+
+    def proposal_evidence(proposal):
+        # A candidate may have multiple proposals. Evidence for one is not
+        # automatically evidence for every proposal in its graph component.
+        return sorted({row['evidence_id'] for row in reviews + ledger
+                       if row.get('proposal_hash') == proposal
+                       and isinstance(row.get('evidence_id'), str) and row['evidence_id']})
 
     def component(node):
         found, pending = set(), [node]
@@ -42,6 +53,14 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
                 found.add(current)
                 pending.extend(graph.get(current, set()) - found)
         return found
+
+    # Freeze proposal provenance before intent edges can merge components.
+    # An intent corroborates a recorded proposal; it cannot create its owner.
+    proposal_links = {value: component((field, value)) for field, value in graph if field == 'proposal_hash'}
+    for row in intents:
+        proposal = (row.get('plan') or {}).get('proposal_hash') or row.get('proposal_hash')
+        if proposal in proposal_links:
+            connect([('proposal_hash', proposal), ('client_order_id', row.get('client_order_id'))])
 
     def candidate_key(row):
         for key in ('candidate_id', 'dossier_hash'):
@@ -53,7 +72,8 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
 
     def resolve(ref):
         links = component(('client_order_id', ref))
-        matches = {candidate_key(row) for row in candidates if set(tokens(row)) & links}
+        matches = {candidate_key(row) for row in candidates
+                   if {node for node in tokens(row) if node[0] in ('candidate_id', 'dossier_hash')} & links}
         ids = {v for k, v in links if k == 'candidate_id'}
         dossiers = {v for k, v in links if k == 'dossier_hash'}
         if len(matches) != 1 or len(ids) > 1 or len(dossiers) > 1:
@@ -71,6 +91,17 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
     for ref in refs:
         links = component(('client_order_id', ref))
         if any(len({v for k, v in links if k == field}) > 1 for field in ('candidate_id', 'dossier_hash')):
+            ambiguous_refs.add(ref)
+    for intent in intents:
+        ref = intent.get('client_order_id')
+        links = component(('client_order_id', ref))
+        plan = intent.get('plan') or {}
+        proposal_conflict = ('proposal_hash' in intent and 'proposal_hash' in plan
+                             and intent['proposal_hash'] != plan['proposal_hash'])
+        parent_conflict = (plan.get('action') == 'BUY' and 'parent_client_order_id' in intent
+                           and intent['parent_client_order_id'] != ref)
+        if proposal_conflict or parent_conflict or any(
+                node not in links for node in tokens(intent) if node[0] in ('candidate_id', 'dossier_hash')):
             ambiguous_refs.add(ref)
     if ambiguous_refs:
         reasons.append('lineage_contradictory')
@@ -124,7 +155,8 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
         if any((other.get('plan') or {}) != plan for other in intents if other.get('client_order_id') == ref):
             ambiguous_refs.add(ref)
             reasons.append('intent_plan_conflict')
-        if key is None or ref in ambiguous_refs:
+        proposal = plan.get('proposal_hash') or intent.get('proposal_hash')
+        if key is None or ref in ambiguous_refs or key not in proposal_links.get(proposal, set()):
             reasons.append('intent_lineage_unknown')
             continue
         if plan.get('action') != 'BUY':
@@ -163,7 +195,7 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
                         for o in owned_orders]
         positions.append(dict(position_id=ref, candidate_id=candidate.get('candidate_id'),
             dossier_hash=candidate.get('dossier_hash'), proposal_hash=plan.get('proposal_hash') or intent.get('proposal_hash'),
-            evidence_ids=sorted(v for k, v in links if k == 'evidence_id'), parent_client_order_id=ref,
+            evidence_ids=proposal_evidence(plan.get('proposal_hash') or intent.get('proposal_hash')), parent_client_order_id=ref,
             broker_order_id=order['id'], symbol=order['symbol'], entry_quantity=quantity,
             entry_notional=quantity * money(order['filled_avg_price']), exit_quantity=exit_quantity,
             exit_notional=exit_notional, remaining_quantity=remaining, ownership=ownership,
@@ -202,11 +234,24 @@ def build_lineage(op: OperationalSnapshot, broker: BrokerSnapshot) -> LineageRes
                 timestamp=activity['transaction_time']))
 
     observations, duplicates, unattributed = {}, 0, 0
+    positions_by_ref = {p['position_id']: p for p in positions}
     for row in streams.get('trade_journal.jsonl', []):
-        ref = row.get('parent_client_order_id') or row.get('client_order_id')
-        exact_order = by_id.get(row.get('broker_order_id')) or by_ref.get(row.get('exit_client_order_id')) or by_ref.get(ref)
+        # Every explicit order token must resolve, and execution tokens must
+        # name the SAME order. The parent is contextual, not an exit alias.
+        supplied_orders = [index.get(row[field]) for field, index in (
+            ('broker_order_id', by_id), ('client_order_id', by_ref), ('exit_client_order_id', by_ref))
+            if field in row]
+        exact_order = supplied_orders[0] if supplied_orders else by_ref.get(row.get('parent_client_order_id'))
         owner_ref = order_owners.get(exact_order['id']) if exact_order else None
-        if not owner_ref or (ref and ref != owner_ref and ref != exact_order['client_order_id']):
+        position = positions_by_ref.get(owner_ref)
+        corroborated = position is not None and exact_order is not None and all(
+            order is not None and order['id'] == exact_order['id'] for order in supplied_orders)
+        if position:
+            corroborated = corroborated and all(
+                field not in row or row[field] == position[field]
+                for field in ('candidate_id', 'dossier_hash', 'proposal_hash', 'parent_client_order_id'))
+            corroborated = corroborated and ('evidence_id' not in row or row['evidence_id'] in position['evidence_ids'])
+        if not corroborated:
             unattributed += 1
         if row.get('broker_order_id') and row.get('cumulative_filled_quantity') is not None:
             try:
