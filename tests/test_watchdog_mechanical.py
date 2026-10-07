@@ -94,6 +94,9 @@ class MechanicalTests(unittest.TestCase):
         self.assertEqual(observations[0]['protection_status'], 'unprotected')
         self.assertEqual(observations[0]['protection_coverage_quantity'], D('0'))
         self.assertIn('protection_order_cancelled', observations[0]['reasons'])
+        # The leg resolved structurally: the stop exists but is not live, so
+        # 'protection_stop_missing' would be a factually wrong reason.
+        self.assertNotIn('protection_stop_missing', observations[0]['reasons'])
         self.assertEqual((op, broker), before)
 
     def test_expired_protection_is_reported(self):
@@ -142,6 +145,66 @@ class MechanicalTests(unittest.TestCase):
         self.assertIn('protection_ref_missing', observations[0]['reasons'])
         self.assertEqual(observations[0]['horizon_status'], 'unknown')
         self.assertIn('horizon_invalid', observations[0]['reasons'])
+
+    def test_missing_ref_forces_unknown_even_with_live_stops(self):
+        legs = [stop_leg(), stop_leg(ref='stop-2', leg_id='leg-stop-2')]
+        op, broker, now = base_fixture(legs=legs)
+        from watchdog.lineage import build_lineage
+        from watchdog.mechanical import observe_positions
+        lineage = build_lineage(op, broker)
+        lineage.positions[0]['protective_client_order_ids'] = ['stop-1', 'stop-2', 'gone']
+        before = copy.deepcopy((op, broker))
+        observations = observe_positions(lineage, broker, now)
+        # An unresolvable ref makes the protective set incomplete: no live stop
+        # may be combined into a 'covered' claim.
+        self.assertEqual(observations[0]['protection_status'], 'unknown')
+        self.assertIsNone(observations[0]['protection_coverage_quantity'])
+        self.assertIn('protection_ref_missing', observations[0]['reasons'])
+        self.assertEqual((op, broker), before)
+
+    def test_unrecognized_protection_leg_status_yields_unknown_with_stable_reason(self):
+        op, broker, now = base_fixture(legs=[stop_leg(status='partially_filled')])
+        observations = observe(op, broker, now)
+        self.assertEqual(observations[0]['protection_status'], 'unknown')
+        self.assertIsNone(observations[0]['protection_coverage_quantity'])
+        self.assertIn('protection_order_status_unknown', observations[0]['reasons'])
+        self.assertNotIn('protection_stop_missing', observations[0]['reasons'])
+
+    def test_unrecognized_status_forces_unknown_even_with_other_live_stop(self):
+        legs = [stop_leg(), stop_leg(ref='stop-2', leg_id='leg-stop-2', status='replaced')]
+        op, broker, now = base_fixture(legs=legs)
+        observations = observe(op, broker, now)
+        self.assertEqual(observations[0]['protection_status'], 'unknown')
+        self.assertIsNone(observations[0]['protection_coverage_quantity'])
+        self.assertIn('protection_order_status_unknown', observations[0]['reasons'])
+
+    def test_unattributed_filled_sell_is_reported_unexpected_exit(self):
+        op, broker, now = base_fixture(legs=[stop_leg()])
+        broker.orders.append(dict(id='broker-manual', client_order_id='manual-x',
+                                  symbol='ABC', side='sell', type='market', status='filled',
+                                  qty=D('1'), filled_qty=D('1'), filled_avg_price=D('11')))
+        before = copy.deepcopy((op, broker))
+        observations = observe(op, broker, now)
+        self.assertIn('unexpected_exit', observations[0]['reasons'])
+        self.assertEqual((op, broker), before)
+
+    def test_lineage_attributed_nonprotective_exit_is_not_unexpected(self):
+        # A managed exit Task 3 attributed to this position (fill_observations)
+        # but which is absent from the protective ref list is not an anomaly.
+        op, broker, now = base_fixture(legs=[stop_leg()])
+        broker.orders.append(dict(id='broker-manual', client_order_id='manual-x',
+                                  symbol='ABC', side='sell', type='market', status='filled',
+                                  qty=D('1'), filled_qty=D('1'), filled_avg_price=D('11')))
+        from watchdog.lineage import build_lineage
+        from watchdog.mechanical import observe_positions
+        lineage = build_lineage(op, broker)
+        lineage.positions[0]['fill_observations'] = (
+            lineage.positions[0]['fill_observations']
+            + [dict(broker_order_id='broker-manual', client_order_id='manual-x', side='sell',
+                    cumulative_quantity=D('1'), cumulative_notional=D('11'),
+                    captured_at=broker.captured_at, trusted=True)])
+        observations = observe_positions(lineage, broker, now)
+        self.assertNotIn('unexpected_exit', observations[0]['reasons'])
 
     def test_missing_planned_exit_without_session_evidence_stays_unknown(self):
         op, broker, now = base_fixture()

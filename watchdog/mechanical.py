@@ -16,6 +16,11 @@ STOP_TYPES = frozenset({'stop', 'stop_limit'})
 TARGET_TYPES = frozenset({'limit', 'marketable_limit'})
 
 
+TERMINAL_ORDER_STATUSES = {'canceled': 'protection_order_cancelled',
+                           'expired': 'protection_order_expired',
+                           'rejected': 'protection_order_rejected'}
+
+
 def _flatten_orders(orders):
     flat, seen = [], set()
     stack = list(orders)
@@ -64,35 +69,43 @@ def _protection_status(position, broker, reasons):
     if remaining == 0:
         return 'not_required', ZERO
     flat = {order['client_order_id']: order for order in _flatten_orders(broker.orders)}
-    live, resolved = [], True
+    live, unresolved, unrecognized = [], False, False
     for ref in dict.fromkeys(refs):
         order = flat.get(ref)
         if order is None:
             reasons.append('protection_ref_missing')
-            resolved = False
+            unresolved = True
             continue
         status = order.get('status')
-        if status == 'canceled':
-            reasons.append('protection_order_cancelled')
-        elif status == 'expired':
-            reasons.append('protection_order_expired')
-        elif status == 'rejected':
-            reasons.append('protection_order_rejected')
-        if status in LIVE_ORDER_STATUSES:
+        if status in TERMINAL_ORDER_STATUSES:
+            reasons.append(TERMINAL_ORDER_STATUSES[status])
+        elif status in LIVE_ORDER_STATUSES:
             leg = dict(kind=_leg_kind(order),
                        remaining_quantity=money(order['qty']) - money(order.get('filled_qty', 0)),
                        stop_price=order.get('stop_price'), limit_price=order.get('limit_price'))
             if leg['remaining_quantity'] != remaining:
                 reasons.append('protection_quantity_mismatch')
             live.append(leg)
+        else:
+            # A real broker status this module does not model: the protective
+            # evidence is incomplete, so the state stays unknown instead of
+            # being silently dropped as uncovered.
+            reasons.append('protection_order_status_unknown')
+            unrecognized = True
+    # An unresolvable ref or an unrecognized status makes the protective set
+    # incomplete: unknown stays unknown, no coverage claim may be combined
+    # from the remaining legs.
+    if unresolved or unrecognized:
+        return 'unknown', None
     stops = [leg for leg in live if leg['kind'] == 'stop']
     targets = [leg for leg in live if leg['kind'] == 'target']
     if len(stops) > 1 and len({leg.get('stop_price') for leg in stops}) > 1:
         reasons.append('protection_replacement_conflict')
     if not stops:
-        if not resolved:
-            return 'unknown', None
-        if refs:
+        # 'protection_stop_missing' is only accurate when live evidence exists
+        # but none of it is a stop. A resolved-but-not-live leg already carries
+        # its terminal reason; the stop is not missing, it is dead.
+        if refs and live:
             reasons.append('protection_stop_missing')
         return 'unprotected', ZERO
     stop_quantity = sum((leg['remaining_quantity'] for leg in stops), ZERO)
@@ -113,10 +126,15 @@ def _protection_status(position, broker, reasons):
 def _unexpected_exits(position, all_protective, broker, reasons):
     flat = _flatten_orders(broker.orders)
     protective = set(position.get('protective_client_order_ids') or [])
+    # Exits Task 3 attributed to this position (fill_observations carry the
+    # broker order identity) are managed activity, even when a replacement or
+    # manual flow left them outside the protective ref list.
+    attributed = {fo.get('broker_order_id') for fo in position.get('fill_observations') or []}
     for order in flat:
         if (order.get('side') == 'sell' and money(order.get('filled_qty', 0)) > 0
                 and order['client_order_id'] not in protective
                 and order['client_order_id'] not in all_protective
+                and order.get('id') not in attributed
                 and order.get('symbol') == position.get('symbol')):
             reasons.append('unexpected_exit')
             return
@@ -133,10 +151,9 @@ def observe_positions(lineage: LineageResult, broker: BrokerSnapshot, now: datet
         reasons = [] if lineage.coverage.get('status') == 'complete' else ['lineage_coverage_unknown']
         quantity_status = 'consistent'
         remaining = position.get('remaining_quantity')
-        if remaining is None or position.get('ownership') == 'discrepancy':
-            if remaining is None:
-                quantity_status = 'concurrent_quantity_change'
-                reasons.append('concurrent_quantity_change')
+        if remaining is None:
+            quantity_status = 'concurrent_quantity_change'
+            reasons.append('concurrent_quantity_change')
         _unexpected_exits(position, all_protective, broker, reasons)
         protection_status, coverage = _protection_status(position, broker, reasons)
         horizon_status = _horizon_status(position, now, reasons)
