@@ -1,0 +1,235 @@
+{
+  "get_account_info": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "get_all_positions": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "get_orders": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "open",
+          "closed",
+          "all"
+        ],
+        "example": "open",
+        "description": "Order status to be queried. open, closed or all. Defaults to open."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "The maximum number of orders in response. Defaults to 50 and max is 500."
+      },
+      "after": {
+        "type": "string",
+        "description": "The response will include only ones submitted after this timestamp (exclusive.)"
+      },
+      "until": {
+        "type": "string",
+        "description": "The response will include only ones submitted until this timestamp (exclusive.)"
+      },
+      "direction": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "description": "The chronological order of response based on the submission time. asc or desc. Defaults to desc."
+      },
+      "nested": {
+        "type": "boolean",
+        "description": "If true, the result will roll up multi-leg orders under the legs field of primary order."
+      },
+      "symbols": {
+        "type": "string",
+        "description": "A comma-separated list of symbols to filter by (ex. \"AAPL,TSLA,MSFT\"). A currency pair is required for crypto orders (ex. \"BTCUSD,BCHUSD,LTCUSD,ETCUSD\")."
+      },
+      "side": {
+        "type": "string",
+        "description": "Filters down to orders that have a matching side field set."
+      },
+      "asset_class": {
+        "items": {
+          "type": "string",
+          "enum": [
+            "us_equity",
+            "us_option",
+            "crypto",
+            "crypto_perp",
+            "treasury",
+            "corporate",
+            "global_equity",
+            "us_index",
+            "us_equity_chain",
+            "ipo",
+            "all"
+          ]
+        },
+        "type": "array",
+        "description": "A comma-separated list of asset classes, the response will include only orders in the specified asset classes. By specifying `us_option` as the class, you can query option orders by underlying symbol using the symbols parameter."
+      },
+      "before_order_id": {
+        "type": "string",
+        "description": "Return orders submitted before the order with this ID (exclusive).\nMutually exclusive with `after_order_id`. Do not combine with `after`/`until`.\n"
+      },
+      "after_order_id": {
+        "type": "string",
+        "description": "Return orders submitted after the order with this ID (exclusive).\nMutually exclusive with `before_order_id`. Do not combine with `after`/`until`.\n"
+      }
+    },
+    "required": []
+  },
+  "get_order_by_client_id": {
+    "type": "object",
+    "properties": {
+      "client_order_id": {
+        "type": "string",
+        "description": "The client-assigned order ID."
+      }
+    },
+    "required": [
+      "client_order_id"
+    ]
+  },
+  "get_calendar": {
+    "type": "object",
+    "properties": {
+      "start": {
+        "type": "string",
+        "format": "date-time",
+        "description": "The first date to retrieve data for (inclusive)."
+      },
+      "end": {
+        "type": "string",
+        "format": "date-time",
+        "description": "The last date to retrieve data for (inclusive)."
+      },
+      "date_type": {
+        "type": "string",
+        "enum": [
+          "TRADING",
+          "SETTLEMENT"
+        ],
+        "description": "Indicates what start and end mean. Default: TRADING. If TRADING is specified, returns a calendar whose trading date matches start, end. If SETTLEMENT is specified, returns the calendar whose settlement date matches start and end.\n"
+      }
+    },
+    "required": []
+  },
+  "get_account_activities": {
+    "type": "object",
+    "properties": {
+      "activity_types": {
+        "items": {
+          "type": "string",
+          "enum": [
+            "FILL",
+            "TRANS",
+            "MISC",
+            "ACATC",
+            "ACATS",
+            "CFEE",
+            "CGD",
+            "CSD",
+            "CSW",
+            "DIV",
+            "DIVCGL",
+            "DIVCGS",
+            "DIVFEE",
+            "DIVFT",
+            "DIVNRA",
+            "DIVROC",
+            "DIVTW",
+            "DIVTXEX",
+            "FEE",
+            "INT",
+            "INTNRA",
+            "INTTW",
+            "JNL",
+            "JNLC",
+            "JNLS",
+            "MA",
+            "NC",
+            "OPASN",
+            "OPCA",
+            "OPCSH",
+            "OPEXC",
+            "OPEXP",
+            "OPTRD",
+            "PTC",
+            "PTR",
+            "REO",
+            "REORG",
+            "SPIN",
+            "SPLIT",
+            "FOPT",
+            "OCT"
+          ],
+          "title": "ActivityType",
+          "description": "- FILL\n  Order fills (both partial and full fills)\n\n- TRANS\n  Cash transactions (both CSD and CSW)\n\n- MISC\n  Miscellaneous or rarely used activity types (All types except those in TRANS, DIV, or FILL)\n\n- ACATC\n  ACATS IN/OUT (Cash)\n\n- ACATS\n  ACATS IN/OUT (Securities)\n\n- CFEE\n  Crypto fee\n\n- CGD\n  Capital gain distribution\n\n- CSD\n  Cash deposit(+)\n\n- CSW\n  Cash withdrawal(-)\n\n- DIV\n  Dividends\n\n- DIVCGL\n  Dividend (capital gain long term)\n\n- DIVCGS\n  Dividend (capital gain short term)\n\n- DIVFEE\n  Dividend fee\n\n- DIVFT\n  Dividend adjusted (Foreign Tax Withheld)\n\n- DIVNRA\n  Dividend adjusted (NRA Withheld)\n\n- DIVROC\n  Dividend return of capital\n\n- DIVTW\n  Dividend adjusted (Tefra Withheld)\n\n- DIVTXEX\n  Dividend (tax exempt)\n\n- FEE\n  Fee denominated in USD\n\n- INT\n  Interest (credit/margin)\n\n- INTNRA\n  Interest adjusted (NRA Withheld)\n\n- INTTW\n  Interest adjusted (Tefra Withheld)\n\n- JNL\n  Journal entry\n\n- JNLC\n  Journal entry (cash)\n\n- JNLS\n  Journal entry (stock)\n\n- MA\n  Merger/Acquisition\n\n- NC\n  Name change\n\n- OPASN\n  Option assignment\n\n- OPCA\n  Option corporate action\n\n- OPCSH\n  Option cash deliverable for non-standard contracts\n\n- OPEXC\n  Option exercise\n\n- OPEXP\n  Option expiration\n\n- OPTRD\n  Option trade\n\n- PTC\n  Pass Thru Charge\n\n- PTR\n  Pass Thru Rebate\n\n- REO\n  Reorganization\n\n- REORG\n  Reorg CA\n\n- SPIN\n  Stock spinoff\n\n- SPLIT\n  Stock split\n\n- FOPT\n  Free of Payment Transfers\n\n- OCT\n  On chain transactions (blockchain deposits/withdrawals)",
+          "examples": [
+            "FILL"
+          ]
+        },
+        "type": "array",
+        "description": "A comma-separated list of activity types used to filter the results."
+      },
+      "category": {
+        "type": "string",
+        "enum": [
+          "trade_activity",
+          "non_trade_activity"
+        ],
+        "description": "The activity category. Cannot be used with \"activity_types\" parameter."
+      },
+      "order_id": {
+        "type": "string",
+        "format": "uuid",
+        "example": "fe060a1b-5b45-4eba-ba46-c3a3345d8255",
+        "description": "Filter activities associated with a specific order. Useful for retrieving the fills that make up a completely filled order."
+      },
+      "date": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Filter activities by their creation date (created_at), not the activity's settlement date. For non-trade activities such as fees, the creation date is typically the day after the trade date (in UTC). Both formats YYYY-MM-DD and YYYY-MM-DDTHH:MM:SSZ are supported."
+      },
+      "until": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Get activities created before this date. Both formats YYYY-MM-DD and YYYY-MM-DDTHH:MM:SSZ are supported."
+      },
+      "after": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Get activities created after this date. Both formats YYYY-MM-DD and YYYY-MM-DDTHH:MM:SSZ are supported."
+      },
+      "direction": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "default": "desc",
+        "example": "desc",
+        "description": "The chronological order of response based on the activity datetime."
+      },
+      "page_size": {
+        "type": "integer",
+        "maximum": 100.0,
+        "minimum": 1.0,
+        "default": 100,
+        "description": "The maximum number of entries to return in the response."
+      },
+      "page_token": {
+        "type": "string",
+        "description": "Token used for pagination. Provide the ID of the last activity from the last page to retrieve the next set of results."
+      }
+    },
+    "required": []
+  }
+}
