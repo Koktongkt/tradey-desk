@@ -300,3 +300,76 @@ Both tiers passed operational-isolation checks (no `OPERATIONAL_ISOLATION_FAILUR
 - **Concern: fresh parent scoped re-review is still required; this is not release approval.** Existing downstream requirements to honor unknown coverage/initial deltas, production writer pause/readback and deployment smoke remain unchanged controller responsibilities.
 - **Concern: intentionally conservative attribution.** Incomplete authoritative proposal/evidence metadata remains unknown/unattributed rather than rescued by candidate fields, order aliases or ticker/time. Journal contradictions do not erase otherwise valid broker-local cumulative evidence; consumers must not interpret that local evidence as complete journal/lifetime accounting coverage.
 - No blocking tool/install/network failure encountered. No unrelated refactor or fixture-output cleanup was performed.
+
+## Fix round 2/5 — incomplete/malformed intent identity cannot contaminate the lineage graph
+
+**DONE: the re-review Important blocker (missing intent client-ID projection crash) is repaired via TDD, self-reviewed, and committed; parent scoped re-review remains required.**
+
+- Fix base verified: `ea1fd081a9df162109ba2c57f997ea577482d95f`; clean starting worktree.
+- Source/test commit: `9667dec` (`fix(watchdog): reject incomplete intent identities before lineage graph`). This report is appended in a separate documentation commit.
+- Modified only `watchdog/lineage.py` and `tests/test_watchdog_lineage.py`. No execution writer, schema, payload, hash or policy change; no subagents, pushes, controller-ledger edits, live reads/calls, operational writes or schedule/control changes. `tests/test_watchdog_forward_lineage.py` untouched and still green.
+- Loaded TDD and systematic-debugging skills; re-read the brief, global context, prior report/review. Root cause confirmed as reviewed: intent edges connected `('client_order_id', None)`/non-string tokens into the proposal component, and heterogeneous values reached the `sorted()` at the decision stage (`lineage.py:280`), raising `TypeError`. Operational input validation does not check intent-field presence, so the projection must defend itself.
+
+### Repair
+
+`build_lineage` now pre-validates every intent row before any graph/hash/sort operation. An intent is excluded (reason `intent_lineage_unknown`; valid intents and the rest of the graph unaffected) when: `client_order_id` is absent/non-string/empty; `plan` is absent/non-dict; any present `candidate_id`/`dossier_hash`/`proposal_hash`/`evidence_id`/`client_order_id`/`parent_client_order_id` is non-string or empty; plan `proposal_hash` is present but non-string/empty; or no proposal hash exists in plan or envelope. No identity is ever stringified or fabricated from malformed data; no new schema keys, reason codes or persistence fields; no ticker/time fallback. Existing valid envelope-proposal-only intents (plan proposal absent, envelope present) remain attributable — verified by a dedicated positive-control test.
+
+### TDD evidence — exact commands and observed results
+
+All commands ran from `/opt/data/projects/tradey-desk/.worktrees/position-watchdog`.
+
+```sh
+# RED 1: regression required by review — one valid intent plus same-proposal intent with missing/None/empty/non-string client ID, either order
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_invalid_intent_client_ids_do_not_contaminate_valid_attribution -v
+# RED observed: 1 method; 12 errors (TypeError at lineage.py:280 str/None and int/str sorts;
+# unhashable list/dict at lineage.py:63) + 2 failures (empty-string '' leaked into
+# decisions[0]['client_order_ids'] as ['', 'parent']). All expected-contamination failures.
+
+# GREEN after guard
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage -q
+# Ran 31 tests; OK
+
+# RED 2: broader malformed-field sweep — proposal_hash, plan.proposal_hash, candidate_id, dossier_hash, evidence_id, parent_client_order_id, plan, each None/''/7/False/[]/{...}
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_malformed_intent_identity_fields_remain_unknown_without_graph_edges -v
+# RED observed: 40 failures (invalid envelopes silently created conflicting/extra graph state,
+# flipped coverage or changed positions/decisions) + 2 errors (AttributeError int.get at
+# lineage.py:67; TypeError unhashable dict at lineage.py:68). All expected failures.
+
+# GREEN after extended guard
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# Ran 42 tests; OK
+
+# RED 3: incomplete-intent identity pinning (client_order_id / plan.proposal_hash / plan each deleted alone) — must stay unknown, not fabricate identity
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage.LineageTests.test_incomplete_intent_alone_cannot_fabricate_order_identity test_watchdog_lineage.LineageTests.test_valid_envelope_proposal_without_plan_proposal_remains_attributable -v
+# RED observed: incomplete variants failed (decisions kept stale/empty refs, coverage not unknown);
+# envelope-proposal positive control failed (position no longer attributed). Expected failures.
+
+# GREEN
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# Ran 44 tests; OK
+```
+
+Final verification (after all edits):
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_lineage test_watchdog_forward_lineage -q
+# Ran 44 tests in 0.448s; OK
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python tests/run_tests.py fast
+# TIER_RESULT fast tests=308 failures=0 errors=0 skipped=0
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python tests/run_tests.py scenario
+# TIER_RESULT scenario tests=162 failures=0 errors=0 skipped=0
+git diff --check
+# Clean.
+python3 -m py_compile watchdog/lineage.py tests/test_watchdog_lineage.py
+# Exit 0.
+```
+
+Both tier runners reported no `OPERATIONAL_ISOLATION_FAILURE`. The known fast fixture stdout line `BLOCKER dry_run_no_execution` remains disclosed and deferred; it is not a failed test. Full-only suite/release smoke not run, unchanged from prior rounds.
+
+### Self-review, preservation and concerns
+
+- Reviewed the full diff before the explicit-path commit: only intent pre-validation and tests changed; guard runs before `connect`, `proposal_links`, ambiguity checks, position creation and decision sorting, so no malformed value can reach graph nodes, hashable sets or `sorted()`.
+- Valid attribution preserved: focused (44) and fast (308) suites include the two-ideas, separate-valid-proposals, dossier-only, exit-corroboration and real-persistence projection controls — all green. Decisions for candidates whose only intents are invalid show no fabricated client refs (`client_order_ids == []`).
+- Incomplete evidence stays explicitly unknown: every excluded intent contributes `intent_lineage_unknown`, top-level coverage `unknown`; no rescue by candidate fields, ledger paths or ticker/time.
+- Self-review initially extended the guard to require a proposal hash on every intent; the envelope-proposal positive control caught this overreach and the guard was narrowed to accept envelope-provided proposals (RED→GREEN documented above).
+- **Concern: fresh parent scoped re-review is still required; this is not release approval.** Prior round's downstream concerns (unknown-coverage/delta handling by store/accounting, writer pause before deploy, deployment smoke) remain unchanged controller responsibilities.
