@@ -21,3 +21,7 @@ __pycache__/
 .venv/
 *.log
 .DS_Store
+
+# Isolated development checkouts (never a second live deployment).
+/.worktrees/
+
