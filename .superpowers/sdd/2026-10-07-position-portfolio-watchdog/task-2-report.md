@@ -170,3 +170,76 @@ Initial staged diff check noted a blank line at EOF; removed and amended the imp
 2. Provider partial-fill metadata or nested readback shape differences conservatively yield unknown rather than inventing timestamps/legs. This is intentional, but the later smoke may identify a supported normalization extension requiring a RED fixture before change.
 3. Activity coverage is explicitly bounded by broker creation time, not proof of lifetime adjusted returns. Corporate actions require evidence beyond an activity row. Later accounting must obey these coverage limitations.
 4. Independent fresh parent review remains required. No review agents were launched because this task explicitly forbids subagents.
+
+## Fix round 1 — Important review findings
+
+Status: DONE_WITH_CONCERNS; all three Important findings repaired offline. Parent frozen-diff re-review and later authenticated read-only payload smoke remain required.
+
+- Fix base: `49ac2d8a91288da67c12bedcf4ccfa0a9038abbc`.
+- Source/test commit: `bdb9b1ec3a3d642516cadc36ccc427e10ed9431b` (`fix(watchdog): reconcile order trees and receipt timestamps`). Explicit paths: `watchdog/broker.py`, `tests/test_watchdog_broker.py`.
+- Report appended separately; final report commit is the task HEAD, avoiding a self-referential hash.
+- No push, subagents, live calls, raw broker/secret output, live checkout/control/state/schedule changes, or progress-ledger edits.
+
+### Repairs and self-review
+
+1. Bidirectional broker-ID/client-ID mapping now covers every normalized node from open orders and exact-reference readbacks. Exact requested client identity remains mandatory. Conflicting identities, cumulative facts, child membership or parent assignment produce unknown coverage; a conflicting exact response is transactionally rejected rather than appended as an independent execution. Fixtures cover both mapping directions at roots and legs, contradictions nested under a new reference, and successive exact-reference observations.
+2. A tree-wide canonical identity forest coalesces exact copies, ignoring only transport provenance, preserving the original nested parent and cumulative fill. Fixtures cover duplicate siblings, duplicate roots, root/nested overlap in both orders, standalone leg followed by exact parent readback, parent readback with repeated legs, conflicting repeated fills and conflicting parent relationships. Order-page duplicates within a response now pass only after tree-wide fact/relationship validation; repeated root IDs across pages remain pagination-unknown. Pagination cardinality/cursors still use original response rows, not coalesced counts. Activity duplicate gates, page limits, cursor/schema checks, deadlines, declared-total and partial-envelope checks are unchanged.
+3. Every source-envelope timestamp now uses the UTC clock sampled immediately after that response is received. Sweep-start `captured_at` and final whole-sweep age validation remain separate. Source 10:00:01 with start 10:00:00 and receipt 10:00:02 is complete; source 10:00:03 is unknown. Existing numeric/stale/future and slow-sweep regressions remain passing.
+4. Minor timing noise repaired narrowly: offline fixture transports cooperatively yield with `asyncio.sleep(0)` to model awaited I/O. No global logging/debug suppression. Final focused and fast logs contain zero asyncio slow-callback diagnostics.
+
+Self-review checked the full base-to-source diff, transactionality, field/provenance comparison, parent preservation, both identity directions, and pagination/freshness semantics. Invocation allowlist, logical requests, schema checks, paper configuration boundary, coverage gates and manifest are otherwise unchanged. No ticker/time identity inference. `git diff --check` passed before the explicit-path source commit.
+
+### Exact RED/GREEN evidence
+
+All commands ran in this worktree. Test-only fixture additions preceded each corresponding behavior change. RED logs have assertion failures for the reviewed symptoms, not import/setup errors. The shell display helper returned 0 after displaying each RED log; the captured unittest output below is the authoritative failure result.
+
+Identity RED:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_reference_identity_mapping_is_bidirectional_over_nested_tree -v > test_artifacts/task-2-fix-red-identity.log 2>&1
+```
+Output: `AssertionError: True is not false`; `Ran 1 test in 0.134s`; `FAILED (failures=4)`.
+Same test GREEN, redirected to `test_artifacts/task-2-fix-green-identity.log`: `Ran 1 test in 0.138s`; `OK`. This intermediate run still had one slow-callback diagnostic, resolved by the later cooperative fixture change.
+
+Tree RED:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_tree_duplicates_coalesce_at_parent_across_roots_and_observations test_watchdog_broker.BrokerSnapshotTests.test_conflicting_tree_duplicates_make_orders_unknown -v > test_artifacts/task-2-fix-red-tree.log 2>&1
+```
+Output: duplicate roots/legs or false completeness assertions; `Ran 2 tests in 0.157s`; `FAILED (failures=9)`.
+Tree GREEN (also rechecking the identity slice):
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_tree_duplicates_coalesce_at_parent_across_roots_and_observations test_watchdog_broker.BrokerSnapshotTests.test_conflicting_tree_duplicates_make_orders_unknown test_watchdog_broker.BrokerSnapshotTests.test_reference_identity_mapping_is_bidirectional_over_nested_tree -v > test_artifacts/task-2-fix-green-tree.log 2>&1
+```
+Output: `Ran 3 tests in 0.363s`; `OK`. Two intermediate slow-callback diagnostics preceded the cooperative fixture change.
+
+Receipt-clock RED:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_source_timestamp_is_checked_at_response_receipt -v > test_artifacts/task-2-fix-red-clock.log 2>&1
+```
+Output: `AssertionError: 'unknown' != 'complete'`; `Ran 1 test in 0.042s`; `FAILED (failures=1)`.
+Receipt-clock GREEN, including existing whole-sweep-age test:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_source_timestamp_is_checked_at_response_receipt test_watchdog_broker.BrokerSnapshotTests.test_snapshot_timestamp_numeric_stale_future_and_slow_are_unknown -v > test_artifacts/task-2-fix-green-clock.log 2>&1
+```
+Output: `Ran 2 tests in 0.143s`; `OK`. One intermediate slow-callback diagnostic preceded the cooperative fixture change.
+
+Additional exact duplicate-root tracer RED:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker.BrokerSnapshotTests.test_tree_duplicates_coalesce_at_parent_across_roots_and_observations -v > test_artifacts/task-2-fix-red-root.log 2>&1
+```
+Output: `AssertionError: False is not true` with `orders=unknown`; `Ran 1 test in 0.090s`; `FAILED (failures=1)`.
+GREEN after within-response tree validation and cooperative fixtures:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker -v > test_artifacts/task-2-fix-green-root.log 2>&1
+```
+Output: `Ran 28 tests in 3.382s`; `OK`; exit 0; no slow-callback diagnostics.
+
+### Final verification
+
+After self-review added further passing conflict subcases and simplified one fixture, then ran:
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_broker test_watchdog_operational -v > test_artifacts/task-2-fix-focused.log 2>&1
+uv run --with 'fastmcp<4' python tests/run_tests.py fast > test_artifacts/task-2-fix-fast.log 2>&1
+```
+Focused: `Ran 45 tests in 5.379s`; `OK`; exit 0 (28 broker, 17 operational). Fast: `Ran 274 tests in 10.320s`; `OK`; `TIER_RESULT fast tests=274 failures=0 errors=0 skipped=0`; exit 0. Both final logs: `slow_callback_lines= 0`. Fast includes existing manifest/discovery parity and operational mutation guards. No source/test changes after these final executions.
+
+Remaining concerns: real provider-payload compatibility is still not established by fixtures/catalog; later isolated authenticated read-only smoke remains a release gate. Contradictory open-order trees are conservatively discarded with orders unknown; contradictory exact readbacks leave the prior coherent forest unchanged with references unknown. Missing or changing nested-child membership is conservatively unknown rather than merged by inference. Independent parent re-review is pending.
