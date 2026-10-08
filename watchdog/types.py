@@ -14,6 +14,11 @@ def money(value: object) -> Decimal:
         raise ValueError('invalid monetary value') from error
     if not result.is_finite():
         raise ValueError('nonfinite monetary value')
+    digits, exponent = result.as_tuple().digits, result.as_tuple().exponent
+    # Finite Decimals may still carry absurd exponents/digit counts that would
+    # later render as unrepresentable public amounts; bound the magnitude.
+    if abs(exponent) > 999 or len(digits) + max(exponent, 0) > 200:
+        raise ValueError('monetary magnitude out of range')
     return result
 
 

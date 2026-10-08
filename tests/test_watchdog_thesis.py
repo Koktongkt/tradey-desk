@@ -385,9 +385,14 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(result['status'], 'potential_thesis_break')
 
     def test_response_timestamps_may_follow_run_start(self):
+        # Receipt retrieval may land after run start (validated against
+        # response_now), but checked_through is pinned to <= the supplied
+        # trusted now: a worker may never claim a future inspection, so a
+        # cutoff past `now` is rejected per source (see
+        # test_watchdog_workflow.DailySeamTests).
         clock = [100.0]
         adapters = self.adapters()
-        sources = {s: dict(status='complete', checked_through='2026-10-08T00:00:01Z',
+        sources = {s: dict(status='complete', checked_through='2026-10-08T00:00:00Z',
             coverage_url='https://issuer.example/list', urls=['https://issuer.example/report'] if s == 'issuer' else [])
             for s in ('sec', 'issuer', 'earnings')}
         def run(worker, request, deadline):
@@ -400,7 +405,7 @@ class MonitorTests(unittest.TestCase):
         with mock.patch.object(self.thesis.time, 'monotonic', side_effect=lambda: clock[0]), mock.patch.object(self.thesis.JSONCommand, 'run', run):
             result = self.monitor(adapters=adapters, deadline=112)[0]
         self.assertEqual(result['status'], 'potential_thesis_break')
-        self.assertEqual(result['source_state']['issuer']['cutoff'], '2026-10-08T00:00:01Z')
+        self.assertEqual(result['source_state']['issuer']['cutoff'], '2026-10-08T00:00:00Z')
 
     def test_deadline_clips_and_three_url_cap(self):
         checked = '2026-10-08T00:00:00Z'

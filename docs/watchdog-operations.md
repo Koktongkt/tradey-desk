@@ -22,10 +22,17 @@ CLI is for fail-closed probes and offline fixture verification:
 
 - `--fixture` runs beneath `test_artifacts/watchdog` exercise the full
   read/commit/report path with fake adapters.
-- `--smoke` verifies path/adapter/lock wiring with no alert send and no
-  publication (asserted: no `latest.json`, no `public/`). Task 9 smoke
-  expectation: a wired transport/broker still sends and publishes nothing
-  under `--smoke`, and unconfigured adapters keep failing closed.
+- `--smoke` is a DRY-RUN commit: run/portfolio/attribution evidence only — no
+  condition transitions, no outbox rows, no source cutoffs, no baselines —
+  and no alert send or report/publication (asserted: no `latest.json`, no
+  `public/`, empty `condition_state`/`alert_outbox`). A smoke probe can
+  therefore never arm the 24h condition quiet window or suppress a real
+  alert. Its output may sit under `test_artifacts/watchdog` even when nested
+  inside the operational root (`test_artifacts` is a documented
+  non-operational exception to the overlap rule; smoke-only — real runs may
+  never nest output inside the operational root). Task 9 smoke expectation:
+  a wired transport/broker still sends and publishes nothing under `--smoke`,
+  and unconfigured adapters keep failing closed.
 
 Options:
 
@@ -33,8 +40,9 @@ Options:
 - `--output-root PATH` — where `private/watchdog/` is created (default: `--root`).
 - `--fixture` — confine both roots beneath `test_artifacts/watchdog`; any
   operational output choice is rejected (`fixture_output_confined`).
-- `--smoke` — live smoke: no alert send, no report/publication; used to verify
-  path/adapter/lock wiring without side effects.
+- `--smoke` — live smoke: dry-run commit (no condition state, no outbox, no
+  source cutoffs), no alert send, no report/publication; used to verify
+  path/adapter/lock wiring without side effects or real-alert suppression.
 - `--now ISO` — trusted aware clock override (ops/testing). The completion
   stamp is always this trusted `now`, never broker capture time.
 
@@ -71,7 +79,27 @@ slot for the same session date, under the stable per-session-date run identity
 delivery and the completion marker ONLY — the committed observation is not
 recommitted and thesis retrieval is not re-run (the retry result carries
 `reporting_retry=true`, `committed_now=false`, and never claims all-clear on
-its own). Execution (retrieval) is never retried mid-run.
+its own). Execution (retrieval) is never retried mid-run. Retry/identity
+checks key on the latest run of the SAME mode, so a later inter-mode run
+(clock override or cron lag) cannot misroute them. Commit rejections
+(`run_identity_conflict`, `source_cutoff_future`, ...) are typed failed
+results with the store reason in `reasons` — never raw exceptions; nothing is
+committed and all alerts stay pending. The daily thesis lane evaluates real
+criteria: baselines are built (`baseline_from_candidate`) from the exactly
+lineage-linked candidate of every managed position; a candidate whose
+catalyst is a plain string without a separate event_date records a typed
+`baseline_incomplete` gap (reason `thesis_baseline_incomplete`) — a date is
+never guessed.
+
+Observation timing: `coverage.captured_at` is the observation-COMPLETION
+instant (trusted `now` + measured elapsed), per the recorded ruling
+"observation-completion captured_at >= source checked-through, not broker/
+start time". Thesis workers are pinned to `checked_through <= supplied now`
+(a worker may never claim a future inspection); a violating source is a
+typed per-source coverage gap, never a whole-run abort. The run-content
+digest excludes the completion
+stamp, so repeated runs of the same slot with identical content still
+dedupe (equivalent-run skip) despite millisecond completion jitter.
 
 ## Paths, locks and failure isolation
 
@@ -102,7 +130,9 @@ its own). Execution (retrieval) is never retried mid-run.
   genuine provider receipt (`provider`, `message_id`, `status='delivered'`,
   aware `verified_at`, `verification='provider_readback'|'idempotent_receipt'`)
   acknowledges. Ambiguous or absent receipts stay pending and the run reports
-  `ambiguous_delivery_possible_duplicates`.
+  `ambiguous_delivery_possible_duplicates`. A transport that RAISES is its own
+  typed bucket, `transport_exception_delivery_pending` (also pending) —
+  distinct from an ambiguous no-readback receipt.
 
 ### Hermes relay deployment note
 

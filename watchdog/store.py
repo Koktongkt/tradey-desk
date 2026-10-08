@@ -2,7 +2,11 @@
 
 Task8 supplies portfolio={strategy: account_strategy result, account: account_overview
 result, benchmark: compare_benchmark result, exposure: aggregate_exposure result}.
-coverage.captured_at is the trusted run timestamp (strategy.at is a fallback).
+coverage.captured_at is the observation-completion trusted instant (run `now`
+plus measured elapsed; strategy.at is a fallback), so it is always >= any
+accepted source checked_through (workers are pinned to checked_through <= now).
+Smoke commits are dry-run: run/portfolio/attribution evidence only, never
+condition transitions, outbox rows or source cutoffs.
 Thesis rows may add `baseline` from baseline_from_candidate for version retention.
 read_report is a single coherent read transaction. pending_alerts returns ALL pending
 rows, including older runs: a failed report/delivery must not strand prior alerts.
@@ -163,7 +167,7 @@ def pending_alerts(db: Path) -> list[dict]:
         return _pending(conn)
 
 
-def commit_observation(db: Path, observation: RunObservation) -> list[dict]:
+def commit_observation(db: Path, observation: RunObservation, smoke: bool = False) -> list[dict]:
     report = compact(asdict(observation))
     at = report['coverage'].get('captured_at') or report['portfolio'].get('strategy', {}).get('at')
     at = aware_timestamp(at).astimezone(timezone.utc).isoformat(timespec='microseconds')
@@ -174,7 +178,15 @@ def commit_observation(db: Path, observation: RunObservation) -> list[dict]:
     if any(not isinstance(p, str) or not p for p in ids) or len(ids) != len(set(ids)):
         raise ValueError('duplicate_or_missing_position_identity')
     payload = dumps(report)
-    digest = hashlib.sha256(payload.encode()).hexdigest()
+    # Digest is observation CONTENT identity: the completion-time captured_at
+    # is run timing, not content, so it is excluded. Two runs of the same run
+    # identity with identical content dedupe (equivalent-run skip) even though
+    # their observation-completion instants differ by milliseconds; any other
+    # content change still raises `run_identity_conflict`.
+    identity_report = json.loads(payload)
+    if isinstance(identity_report.get('coverage'), dict):
+        identity_report['coverage'].pop('captured_at', None)
+    digest = hashlib.sha256(dumps(identity_report).encode()).hexdigest()
     with _connection(db, True) as conn:
         previous = conn.execute('SELECT digest FROM runs WHERE run_id=?', (observation.run_id,)).fetchone()
         if previous:
@@ -186,6 +198,12 @@ def commit_observation(db: Path, observation: RunObservation) -> list[dict]:
             conn.execute('INSERT INTO position_observations VALUES (?,?,?)', (observation.run_id, p['position_id'], dumps(p)))
         conn.execute('INSERT INTO portfolio_snapshots VALUES (?,?)', (observation.run_id, dumps(report['portfolio'])))
         conn.execute('INSERT INTO attribution_rows VALUES (?,?)', (observation.run_id, dumps(report['attribution'])))
+        if smoke:
+            # Dry-run commit semantics: run/portfolio/attribution evidence only.
+            # No baselines, no evidence events, no source cutoffs, no condition
+            # transitions and no outbox rows — a smoke probe can never arm the
+            # 24h condition quiet window or queue alerts.
+            return _pending(conn)
         for field, identity in (('strategy_baseline', '__strategy__'), ('account_baseline', '__account__')):
             baseline = report['portfolio'].get(field)
             if baseline is not None:
@@ -367,4 +385,19 @@ def read_report(db: Path) -> dict:
         return {}
     with _connection(db) as conn:
         row = conn.execute('SELECT payload FROM runs ORDER BY captured_at DESC, rowid DESC LIMIT 1').fetchone()
+        return json.loads(row[0]) if row else {}
+
+
+def read_latest_report(db: Path, mode: str) -> dict:
+    """Latest report of one run mode only (run_id prefix `mode:`).
+
+    Retry/identity decisions in the run wrapper must not be confused by a
+    later inter-mode run (clock override or cron lag) landing on the same
+    monitoring db.
+    """
+    if not _path(db).exists():
+        return {}
+    with _connection(db) as conn:
+        row = conn.execute('SELECT payload FROM runs WHERE run_id LIKE ? ORDER BY captured_at DESC, rowid DESC LIMIT 1',
+                           (mode + ':%',)).fetchone()
         return json.loads(row[0]) if row else {}

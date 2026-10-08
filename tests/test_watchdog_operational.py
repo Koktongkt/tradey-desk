@@ -146,6 +146,13 @@ class OperationalTests(unittest.TestCase):
         for value in (True, False, 'NaN', float('inf'), None, {}, ''):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 money(value)
+        # Finite Decimals with absurd exponents/digit counts are rejected:
+        # they would later render as unrepresentable public amounts.
+        for value in ('1e+200', '1e-1000', '1' + '0' * 250, Decimal('1E+500')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                money(value)
+        self.assertEqual(money('1e+199'), Decimal('1e+199'))
+        self.assertEqual(money('0.001'), Decimal('0.001'))
         self.assertEqual(aware_timestamp('2026-01-01T00:00:00Z').tzinfo, timezone.utc)
         for value in ('2026-01-01', '2026-01-01T00:00:00', True, None):
             with self.subTest(value=value), self.assertRaises(ValueError):

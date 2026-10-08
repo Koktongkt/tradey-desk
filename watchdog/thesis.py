@@ -139,6 +139,12 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
     discover input: symbol, per-source since (cutoff minus 48h), source_priority.
     discover response: {sources: {sec|issuer|earnings: {status: complete|gap,
       checked_through: ISO, coverage_url: HTTPS listing/API, urls: [HTTPS]}}}.
+    Worker contract: checked_through is pinned to <= the supplied trusted
+    `now` — a worker may never claim a future inspection; one that does is a
+    typed per-source coverage gap. The run wrapper additionally stamps
+    coverage.captured_at at observation completion (>= run start), so the
+    recorded ruling "captured_at >= source checked-through, not broker/start
+    time" holds for every accepted cutoff.
     A complete empty source must mean a successfully inspected dated listing,
     not an empty model answer. Concrete deterministic adapters own this proof.
     retrieve input: symbol/source/url/now; response: {receipt: compact receipt}.
@@ -196,7 +202,7 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
                     checked = aware_timestamp(row['checked_through'])
                     document = row['coverage_url']
                     urls = row['urls']
-                    if (row.get('status') != 'complete' or checked > response_now or response_now - checked > timedelta(minutes=5)
+                    if (row.get('status') != 'complete' or checked > now or response_now - checked > timedelta(minutes=5)
                             or not isinstance(document, str) or urlsplit(document).scheme != 'https'
                             or not urlsplit(document).hostname or not isinstance(urls, list)
                             or any(not isinstance(u, str) or urlsplit(u).scheme != 'https' or not urlsplit(u).hostname for u in urls)):
@@ -292,7 +298,8 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
             if status != 'baseline_incomplete' and not complete:
                 status = 'coverage_incomplete'
             results.append(dict(position_id=position['position_id'], symbol=symbol,
-                baseline_version=baseline.get('version'), baseline_status=baseline.get('status'), status=status,
+                baseline_version=baseline.get('version'), baseline_status=baseline.get('status'),
+                baseline=deepcopy(baseline), status=status,
                 coverage_status='complete' if complete and valid_classification else 'coverage_incomplete',
                 coverage=deepcopy(coverage), source_state=deepcopy(state), events=classified['events'],
                 reasons=list(dict.fromkeys(reasons + classified['reasons'] +

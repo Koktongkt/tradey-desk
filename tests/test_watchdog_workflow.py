@@ -32,7 +32,7 @@ SESSION = dict(date='2026-10-07', open='09:30', close='16:00',
                open_at='2026-10-07T09:30:00-04:00', close_at='2026-10-07T16:00:00-04:00')
 
 
-def build_operational_root(base):
+def build_operational_root(base, candidate_overrides=None):
     """Isolated operational fixture root built directly (sqlite_ledger's
     _storage_root hoists test_artifacts subtrees to the shared root, so the
     ledger is constructed in place with the same schema and rows)."""
@@ -40,13 +40,16 @@ def build_operational_root(base):
     import sqlite3
     root = base / 'root'
     (root / 'private').mkdir(parents=True)
+    candidate = dict(candidate_id='idea-a', dossier_hash='da', symbol='ABC',
+                     thesis='grow', event_date='2026-10-30',
+                     catalyst=dict(date='2026-10-30', description='earnings'),
+                     assumptions=[dict(id='a1', metric='eps', operator='>', threshold='1')],
+                     breakers=[dict(id='b1', metric='eps', operator='<', threshold='0.5')],
+                     kpis=['k'], risks=['r'])
+    if candidate_overrides:
+        candidate.update(candidate_overrides)
     rows = {
-        'candidates.jsonl': [dict(candidate_id='idea-a', dossier_hash='da', symbol='ABC',
-                                  thesis='grow', event_date='2026-10-30',
-                                  catalyst=dict(date='2026-10-30', description='earnings'),
-                                  assumptions=[dict(id='a1', metric='eps', operator='>', threshold='1')],
-                                  breakers=[dict(id='b1', metric='eps', operator='<', threshold='0.5')],
-                                  kpis=['k'], risks=['r'])],
+        'candidates.jsonl': [candidate],
         'private/reviews.jsonl': [dict(dossier_hash='da', proposal_hash='pa', evidence_id='ea',
                                        reviews=[dict(decision='APPROVE')])],
         'private/order_intents.jsonl': [dict(client_order_id='parent',
@@ -142,7 +145,7 @@ class WorkflowCase(TestCase):
         db = self.root / 'private/trading_journal.sqlite3'
         return hashlib.sha256(db.read_bytes()).hexdigest()
 
-    def thesis_adapters(self, now=NOW):
+    def thesis_adapters(self, now=NOW, checked_offset_seconds=-60):
         worker = self.artifacts / 'thesis_worker.py'
         worker.write_text(
             "import json,sys\n"
@@ -151,10 +154,10 @@ class WorkflowCase(TestCase):
             "if 'classifications' in req:\n"
             "    json.dump({'classifications': [{'events': []} for _ in req['classifications']]}, sys.stdout)\n"
             "else:\n"
-            "    checked = (datetime.fromisoformat(req['now']) - timedelta(seconds=60)).isoformat()\n"
+            "    checked = (datetime.fromisoformat(req['now']) + timedelta(seconds=%d)).isoformat()\n"
             "    json.dump({'sources': {s: {'status': 'complete', 'checked_through': checked,\n"
             "        'coverage_url': 'https://example.com/' + s + '/listing', 'urls': []}\n"
-            "        for s in ('sec', 'issuer', 'earnings')}}, sys.stdout)\n")
+            "        for s in ('sec', 'issuer', 'earnings')}}, sys.stdout)\n" % checked_offset_seconds)
         from watchdog.thesis import JSONCommand
         return {'discover': JSONCommand([sys.executable, str(worker)]),
                 'retrieve': JSONCommand([sys.executable, str(worker)]),
@@ -536,10 +539,15 @@ class DeliveryAndLockTests(WorkflowCase):
         from watchdog.cli import run_watchdog
         run_watchdog('mechanical', self.root, self.output_root,
                      self.adapters(broker=lambda: broker_snapshot(stop_status='open')), NOW)
-        with self.assertRaises(ValueError) as caught:
-            run_watchdog('mechanical', self.root, self.output_root,
-                         self.adapters(broker=lambda: broker_snapshot(stop_status='canceled')), NOW)
-        self.assertIn('run_identity_conflict', str(caught.exception))
+        # A same-identity content change is a typed failed result with the
+        # store reason, not a raw ValueError escaping the run wrapper.
+        result = run_watchdog('mechanical', self.root, self.output_root,
+                              self.adapters(broker=lambda: broker_snapshot(stop_status='canceled')), NOW)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['run_id'], 'mechanical:20261007T140500Z')
+        self.assertIn('run_identity_conflict', result['reasons'])
+        self.assertFalse(result['committed'])
+        self.assertFalse(result['all_clear'])
 
     def test_smoke_sends_nothing_and_publishes_nothing(self):
         from watchdog.cli import run_watchdog
@@ -550,3 +558,165 @@ class DeliveryAndLockTests(WorkflowCase):
         self.assertEqual(sent, [])
         self.assertFalse((self.output_root / 'private/watchdog/latest.json').exists())
         self.assertFalse((self.output_root / 'public').exists())
+
+
+class SmokeDryRunTests(WorkflowCase):
+    def adapters(self, broker=None, **overrides):
+        # Pending protection guarantees the old smoke path would have written
+        # condition state and outbox rows.
+        return super().adapters(broker or (lambda: broker_snapshot(stop_status='canceled')), **overrides)
+
+    def test_smoke_is_dry_run_commit_no_condition_state_or_outbox(self):
+        import sqlite3
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('mechanical', self.root, self.output_root, self.adapters(), NOW, smoke=True)
+        self.assertEqual(result['status'], 'ok')
+        # Run evidence is committed, but the real-alert state machine is not.
+        self.assertTrue(self.db.exists())
+        self.assertEqual(read_report(self.db).get('mode'), 'mechanical')
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM alert_outbox').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM condition_state').fetchone()[0], 0)
+        self.assertEqual(pending_alerts(self.db), [])
+
+    def test_smoke_cannot_suppress_a_real_alert(self):
+        from watchdog.cli import run_watchdog
+        # Smoke probes the same condition first: it must not arm the 24h
+        # quiet window that would silence the real alert for that condition.
+        run_watchdog('mechanical', self.root, self.output_root, self.adapters(), NOW, smoke=True)
+        # Mechanical runs are eligible at :05 only; one hour later the same
+        # condition is unchanged and still inside the 24h quiet window, so an
+        # old smoke run that had armed condition state would silence it.
+        later = datetime(2026, 10, 7, 15, 5, tzinfo=UTC)
+        result = run_watchdog('mechanical', self.root, self.output_root, self.adapters(), later)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(pending_alerts(self.db), [])
+        self.assertTrue(self.receipts)
+
+    def test_smoke_output_may_nest_under_test_artifacts_watchdog_only(self):
+        import shutil
+        from watchdog.cli import run_watchdog
+        probe_root = CHECKOUT / 'test_artifacts/watchdog/smoke-overlap-probe'
+        shutil.rmtree(probe_root, ignore_errors=True)
+        try:
+            root = build_operational_root(probe_root)
+            output = root / 'smoke-out'
+            result = run_watchdog('mechanical', root, output, self.adapters(), NOW, smoke=True)
+            self.assertEqual(result['status'], 'ok')
+            # The documented test_artifacts/watchdog exception is smoke-only:
+            # a real run may never nest output inside the operational root.
+            with self.assertRaises(ValueError):
+                run_watchdog('mechanical', root, output, self.adapters(), NOW)
+        finally:
+            shutil.rmtree(probe_root, ignore_errors=True)
+
+
+class DailySeamTests(DailyWorkflowTests):
+    def test_captures_observation_completion_and_bounds_worker_checked_through(self):
+        from watchdog.cli import run_watchdog
+        # A worker stamping its own inspection wall-time is pinned to
+        # checked_through <= the supplied trusted now: a whole run must never
+        # abort with source_cutoff_future, and a worker claiming a future
+        # inspection is a typed per-source gap, never a cutoff.
+        def slow_broker():
+            time.sleep(0.2)
+            return broker_snapshot(extra_symbol=None)
+        result = run_watchdog('daily', self.root, self.output_root,
+                              self.adapters(broker=slow_broker,
+                                            thesis=self.thesis_adapters(checked_offset_seconds=3600)),
+                              DAILY_NOW)
+        self.assertEqual(result['status'], 'ok')
+        report = read_report(self.db)
+        row = next(t for t in report['thesis'] if t['position_id'] == 'parent')
+        # checked_through an hour past completion is rejected per source.
+        self.assertTrue(all(v['status'] == 'coverage_incomplete' for v in row['coverage'].values()))
+        # Coverage is stamped at observation completion, not run start.
+        self.assertGreater(report['coverage']['captured_at'], '2026-10-07T20:15:00+00:00')
+        state = read_source_state(self.db)
+        self.assertEqual(state.get('ABC', {}), {})
+
+    def test_daily_retry_detection_is_mode_aware(self):
+        from watchdog.cli import run_watchdog
+        from watchdog.store import commit_observation
+        from watchdog.types import RunObservation
+        first = run_watchdog('daily', self.root, self.output_root,
+                             self.adapters(thesis=self.thesis_adapters()), DAILY_NOW)
+        self.assertEqual(first['status'], 'ok')
+        # A later inter-mode (mechanical) run lands on the same monitoring db
+        # (clock override / cron lag scenario). The daily retry check must key
+        # on the latest daily run, not the absolute latest run of any mode.
+        commit_observation(self.db, RunObservation(
+            run_id='mechanical:20261007T203500Z', session_date='2026-10-07', mode='mechanical',
+            positions=[], portfolio={}, attribution={}, thesis=[],
+            coverage={'status': 'unknown', 'captured_at': '2026-10-07T20:35:00+00:00'}, reasons=[]))
+        later = datetime(2026, 10, 7, 20, 45, tzinfo=UTC)
+        second = run_watchdog('daily', self.root, self.output_root, self.adapters(), later)
+        self.assertEqual(second['status'], 'ok')
+        self.assertTrue(second.get('reporting_retry'))
+        self.assertFalse(second.get('committed_now', True))
+        self.assertEqual(second['run_id'], first['run_id'])
+        self.assertEqual(self._outbox_digest_count(), 1)
+
+    def test_daily_wires_candidate_baselines_for_exactly_linked_positions(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('daily', self.root, self.output_root,
+                              self.adapters(thesis=self.thesis_adapters()), DAILY_NOW)
+        self.assertEqual(result['status'], 'ok')
+        report = read_report(self.db)
+        row = next(t for t in report['thesis'] if t['position_id'] == 'parent')
+        # The exactly linked candidate's dossier drives the baseline.
+        self.assertEqual(row['baseline_status'], 'complete')
+        self.assertEqual(row['status'], 'no_material_change_observed')
+        import sqlite3
+        with sqlite3.connect(self.db) as conn:
+            supplied = conn.execute(
+                "SELECT payload FROM thesis_versions WHERE kind='supplied'").fetchall()
+        self.assertTrue(supplied)
+
+    def test_candidate_string_catalyst_without_event_date_is_typed_baseline_gap(self):
+        import shutil
+        from watchdog.cli import run_watchdog
+        # Lineage projects the candidate catalyst verbatim; a plain-string
+        # catalyst carries no event_date the baseline can date, so the lane
+        # records an explicit baseline_incomplete gap, never a guessed date.
+        base = self.artifacts / 'string-catalyst'
+        base.mkdir()
+        root = build_operational_root(base, candidate_overrides={'catalyst': 'earnings'})
+        output = self.artifacts / 'string-catalyst-out'
+        output.mkdir()
+        db = output / 'private/watchdog/monitoring.sqlite3'
+        try:
+            result = run_watchdog('daily', root, output,
+                                  self.adapters(thesis=self.thesis_adapters()), DAILY_NOW)
+            self.assertEqual(result['status'], 'ok')
+            report = read_report(db)
+            row = next(t for t in report['thesis'] if t['position_id'] == 'parent')
+            self.assertEqual(row['baseline_status'], 'baseline_incomplete')
+            self.assertEqual(row['status'], 'baseline_incomplete')
+            self.assertFalse(result['all_clear'])
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+            shutil.rmtree(output, ignore_errors=True)
+
+
+class TransportBucketTests(WorkflowCase):
+    def adapters(self, broker=None, **overrides):
+        return super().adapters(broker or (lambda: broker_snapshot(stop_status='canceled')), **overrides)
+
+    def test_transport_exception_is_a_distinct_typed_bucket(self):
+        from watchdog.cli import run_watchdog
+        def exploding(alert, rendered):
+            raise RuntimeError('transport socket down')
+        result = run_watchdog('mechanical', self.root, self.output_root,
+                              self.adapters(transport=exploding), NOW)
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue(pending_alerts(self.db))
+        self.assertEqual(result['delivery']['reasons'], ['transport_exception_delivery_pending'])
+        self.assertEqual(result['delivery']['delivered'], 0)
+
+    def test_no_readback_transport_stays_ambiguous(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('mechanical', self.root, self.output_root,
+                              self.adapters(transport=lambda a, r: None), NOW)
+        self.assertTrue(pending_alerts(self.db))
+        self.assertEqual(result['delivery']['reasons'], ['ambiguous_delivery_possible_duplicates'])

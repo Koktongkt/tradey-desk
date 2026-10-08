@@ -89,3 +89,15 @@ git diff --check
 ```
 
 Contract boundaries unchanged: monitoring-only flock, fail-closed adapters, receipt-only ack, trusted completion stamps, Task 6/7 interfaces, budgets and deadlines are untouched.
+
+## Fix wave ONE (Task 9 review F1–F4, base `dc188bf`)
+
+Task 9 whole-branch review findings fixed on this workflow surface; full RED/GREEN evidence in `task-9-report.md`. Summary of touches to the Task 8 contract:
+
+- **Smoke (F1)** is now a dry-run commit (`store.commit_observation(smoke=True)`): no condition transitions, no outbox rows, no source cutoffs — a smoke probe can never suppress a real alert; smoke output may nest under `test_artifacts/watchdog` (smoke-only overlap exception). The Task 8 "smoke commits DB undisclosed" deferred minor is resolved by design, not disclosure.
+- **Timing (F2)**: `coverage.captured_at` is the observation-completion instant; the store run digest excludes the completion stamp so the equivalent-run-skip contract (Task 8) is unchanged while `source_cutoff_future` can no longer abort a daily run.
+- **Typed commits (F3)**: commit rejections return typed failed results with the store reason in `reasons` instead of raw `ValueError`s (the Task 8 digest-conflict test contract upgraded from raw-raise to typed result); retry/identity checks are mode-aware via the new `store.read_latest_report(db, mode)`.
+- **Baselines (F4)**: daily thesis rows carry the candidate-derived `baseline` (retained in `thesis_versions`), and `baseline_incomplete` lanes surface `thesis_baseline_incomplete` with `all_clear=false` (resolves the "empty daily baselines" deferred minor).
+- **Guards**: `money()` magnitude bound (review minor R2) and typed transport-exception bucket (review minor "transport-exception conflation") — both were Task 7/8 deferred minors.
+
+Exact verification after the wave: fast 451 / scenario 222 / full 791 PASS, 0 fail/error/skip; discovery parity OK; `git diff --check` clean.

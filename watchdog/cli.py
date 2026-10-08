@@ -23,13 +23,41 @@ Fail-closed rules:
   date retries reporting/delivery ONLY under the stable per-session-date run
   identity (`daily:<session_date>`): the committed observation is not
   recommitted and thesis retrieval is not re-run. Execution (retrieval) is
-  never retried mid-run.
+  never retried mid-run. Retry/identity checks key on the latest run of the
+  SAME mode (`store.read_latest_report`), so a later inter-mode run cannot
+  misroute them. Commit failures (`run_identity_conflict`,
+  `source_cutoff_future`, ...) are typed failed results with the store reason
+  in `reasons`, never raw exceptions escaping the run wrapper.
+- Coverage stamping: `coverage.captured_at` is the observation-completion
+  instant (trusted `now` + measured elapsed), per the recorded ruling
+  "observation-completion captured_at >= source checked-through, not
+  broker/start time". Thesis workers are additionally pinned to
+  `checked_through <= supplied now` (a worker may never claim inspection in
+  the future); a violating source is a typed per-source coverage gap.
+- Daily thesis baselines: `baseline_from_candidate` is wired over the exactly
+  lineage-linked candidate of every managed position, so the lane evaluates
+  real criteria once workers exist. Candidates whose catalyst is a plain
+  string without a separate event_date yield a typed `baseline_incomplete`
+  gap (surfaced as the `thesis_baseline_incomplete` reason) — a date is never
+  guessed.
+- Smoke: a smoke run is a dry-run commit — run/portfolio/attribution evidence
+  only, NO baselines/evidence events/source cutoffs, NO condition
+  transitions and NO outbox rows — so a smoke probe can never arm the 24h
+  condition quiet window, queue alerts, or suppress real ones. Smoke output
+  may sit under <checkout>/test_artifacts/watchdog even when nested inside
+  the operational root: test_artifacts is a documented non-operational
+  exception to the overlap rule. This exception is smoke-only; real runs may
+  never nest output inside the operational root.
 - Delivery: every pending alert (including older runs) is rendered with
   reports.render_alert and handed to adapters['transport'](alert, rendered).
   Only a genuine provider receipt (validated by store.ack_alert) acknowledges.
   Ambiguous or absent receipts stay pending; where the transport cannot prove
   delivery (e.g. Hermes cron relay with no readback), duplicate-on-retry
-  semantics are disclosed rather than claimed exactly-once.
+  semantics are disclosed rather than claimed exactly-once. A transport that
+  RAISES is reported as its own typed bucket
+  (`transport_exception_delivery_pending`), distinct from an ambiguous
+  no-readback receipt (`ambiguous_delivery_possible_duplicates`); both keep
+  alerts pending.
 
 Adapter keys (all fake in tests; no live defaults):
   broker:     () -> BrokerSnapshot                       (Task 2 collector)
@@ -41,7 +69,7 @@ Adapter keys (all fake in tests; no live defaults):
   install_reports: override of watchdog.reports.install_reports (tests)
   clock:      () -> monotonic seconds (budget test seam)
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -53,7 +81,7 @@ from . import operational, schedule
 from .lineage import build_lineage
 from .mechanical import aggregate_exposure, observe_positions
 from .reports import render_alert
-from .store import (ack_alert, commit_observation, pending_alerts, read_report,
+from .store import (ack_alert, commit_observation, pending_alerts, read_latest_report,
                     read_portfolio_history, read_source_state)
 from .types import RunObservation, aware_timestamp
 
@@ -89,8 +117,14 @@ def _allowed_root(resolved: Path) -> bool:
     return resolved == CHECKOUT or resolved == TEST_ARTIFACTS or TEST_ARTIFACTS in resolved.parents
 
 
-def resolve_paths(root, output_root, fixture: bool = False) -> tuple[Path, Path]:
-    """Fail-closed path contract (fixture confinement, escapes, overlap)."""
+def resolve_paths(root, output_root, fixture: bool = False, smoke: bool = False) -> tuple[Path, Path]:
+    """Fail-closed path contract (fixture confinement, escapes, overlap).
+
+    Smoke-only exception: output under <checkout>/test_artifacts/watchdog is a
+    documented non-operational location, so it may nest inside the operational
+    root for a confined real-broker smoke probe. Never for real runs, and
+    never output inside root/private or root inside output.
+    """
     if not fixture:
         root_r, out_r = _realpath_strict(Path(root)), _realpath_strict(Path(output_root))
         if not _allowed_root(root_r) or not _allowed_root(out_r):
@@ -104,8 +138,10 @@ def resolve_paths(root, output_root, fixture: bool = False) -> tuple[Path, Path]
                 raise ValueError('fixture_output_confined')
     if root_r != out_r:
         private = root_r / 'private'
-        if out_r == private or private in out_r.parents or root_r in out_r.parents \
-                or out_r in root_r.parents:
+        smoke_artifacts_out = smoke and (
+            out_r == TEST_ARTIFACTS / 'watchdog' or (TEST_ARTIFACTS / 'watchdog') in out_r.parents)
+        if (out_r == private or private in out_r.parents or out_r in root_r.parents
+                or (root_r in out_r.parents and not smoke_artifacts_out)):
             raise ValueError('path_overlap_rejected')
     return root_r, out_r
 
@@ -187,7 +223,7 @@ def _deliver(db: Path, transport) -> dict:
     is reported as such. Outbox retries therefore remain until genuine
     provider acknowledgment exists.
     """
-    delivered, ambiguous = [], []
+    delivered, ambiguous, transport_failed = [], [], 0
     for alert in pending_alerts(db):
         key = alert.get('key')
         if not isinstance(key, str) or not key:
@@ -199,6 +235,9 @@ def _deliver(db: Path, transport) -> dict:
             try:
                 receipt = transport(alert, rendered)
             except Exception:
+                # A raising transport is its own typed bucket: distinct from an
+                # ambiguous no-readback receipt, both keep alerts pending.
+                transport_failed += 1
                 receipt = None
         if receipt is not None:
             try:
@@ -209,7 +248,9 @@ def _deliver(db: Path, transport) -> dict:
                 pass
         ambiguous.append(key)
     result = {'delivered': len(delivered), 'pending': len(ambiguous), 'keys': delivered}
-    if ambiguous and transport is not None:
+    if transport_failed:
+        result['reasons'] = ['transport_exception_delivery_pending']
+    elif ambiguous and transport is not None:
         result['reasons'] = ['ambiguous_delivery_possible_duplicates']
     return result
 
@@ -229,7 +270,7 @@ def run_watchdog(mode: str, root, output_root, adapters: dict, now: datetime,
         return {'status': 'failed', 'mode': mode, 'reasons': ['adapter_missing_broker'],
                 'all_clear': False, 'input_unchanged': True, 'committed': False,
                 'delivered': 0, 'pending': 0, 'run_id': None}
-    root, output_root = resolve_paths(root, output_root, fixture=fixture)
+    root, output_root = resolve_paths(root, output_root, fixture=fixture, smoke=smoke)
     clock = adapters.get('clock', time.monotonic)
     budget = _Budget(budgets or run_budgets(mode), clock)
     before = _input_digests(root)
@@ -250,7 +291,7 @@ def run_watchdog(mode: str, root, output_root, adapters: dict, now: datetime,
                     'delivered': 0, 'pending': 0, 'run_id': None}
         try:
             return _run_locked(mode, root, output_root, adapters, now, budget,
-                               before, smoke)
+                               before, smoke, clock)
         except TimeoutError as deadline:
             return {'status': 'budget_exceeded', 'mode': mode, 'run_id': None,
                     'reasons': [str(deadline)], 'all_clear': False,
@@ -263,7 +304,7 @@ def run_watchdog(mode: str, root, output_root, adapters: dict, now: datetime,
         os.close(lock_fd)
 
 
-def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -> dict:
+def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, clock) -> dict:
     db = output_root / 'private/watchdog/monitoring.sqlite3'
     try:
         broker = adapters['broker']()
@@ -287,7 +328,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
     # already-committed observation retries install + delivery ONLY (no
     # thesis retrieval, no recommit). Smoke never retries (no side effects).
     if mode == 'daily' and not smoke and db.exists() \
-            and read_report(db).get('run_id') == run_id:
+            and read_latest_report(db, 'daily').get('run_id') == run_id:
         return _reporting_retry(mode, run_id, session_date, root, output_root,
                                 db, adapters, now, budget, before)
 
@@ -331,10 +372,26 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
         budget.check('active')
         thesis_adapters = adapters.get('thesis')
         if isinstance(thesis_adapters, dict) and thesis_adapters.get('now'):
-            from .thesis import monitor_theses
+            from .thesis import baseline_from_candidate, monitor_theses
+            # Wire the exactly lineage-linked candidate of every managed
+            # position into a real baseline: without this the thesis lane
+            # would evaluate nothing once workers exist. A plain-string
+            # candidate catalyst without an event_date yields a typed
+            # baseline_incomplete gap; a date is never guessed.
+            baselines = {}
+            for position in lineage.positions:
+                position_id = position.get('position_id')
+                if not isinstance(position_id, str) or not position_id:
+                    continue
+                candidate = dict(position.get('thesis_baseline') or {})
+                candidate.update({key: position[key] for key in ('candidate_id', 'dossier_hash')
+                                  if isinstance(position.get(key), str) and position[key]})
+                baselines[position_id] = baseline_from_candidate(candidate)
             deadline = min(budget.left('active'), 600.0)
-            thesis_rows = monitor_theses(lineage.positions, {}, read_source_state(db),
+            thesis_rows = monitor_theses(lineage.positions, baselines, read_source_state(db),
                                          thesis_adapters, time.monotonic() + max(deadline, 0.0))
+            if any(t.get('status') == 'baseline_incomplete' for t in thesis_rows):
+                reasons.append('thesis_baseline_incomplete')
         else:
             # No reviewed concrete worker commands configured: a typed
             # blocker, never a fabricated thesis pass.
@@ -344,9 +401,17 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
     except TimeoutError:
         return _failed(mode, before, root, ['outer_deadline_exceeded'], db)
 
+    # Observation-completion captured_at (recorded ruling: captured_at must be
+    # >= source checked-through, not broker/start time). Elapsed is measured on
+    # the run's own monotonic clock seam.
+    try:
+        elapsed = max(clock() - budget.start, 0.0)
+    except Exception:
+        elapsed = 0.0
+    captured_at = (now + timedelta(seconds=elapsed)).astimezone(timezone.utc).isoformat()
     coverage = {
         'status': 'complete' if snapshot.complete and broker.complete and not reasons else 'incomplete',
-        'captured_at': now.astimezone(timezone.utc).isoformat(),
+        'captured_at': captured_at,
         'sources': dict(getattr(broker, 'coverage', {}) or {}),
         'reasons': sorted(set(reasons)),
     }
@@ -358,14 +423,29 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
                      'decisions': {'observations': len(lineage.decisions)},
                      'shadow': {'observations': 0}},
         thesis=thesis_rows, coverage=coverage, reasons=sorted(set(reasons)))
-    already_committed = read_report(db).get('run_id') == run_id
+    already_committed = read_latest_report(db, mode).get('run_id') == run_id
     # The store itself dedupes an identical digest for the same run identity
     # and raises `run_identity_conflict` on a same-identity content change.
-    alerts = commit_observation(db, observation)
+    # Commit rejections are typed failed results with the store reason, never
+    # raw exceptions escaping the run wrapper; nothing is committed and all
+    # alerts stay pending.
+    try:
+        alerts = commit_observation(db, observation, smoke=smoke)
+    except ValueError as error:
+        code = (str(error) or 'observation_commit_failed').replace(' ', '_')
+        return {'status': 'failed', 'mode': mode, 'run_id': run_id,
+                'session_date': session_date,
+                'reasons': ['observation_commit_failed', code], 'all_clear': False,
+                'input_unchanged': _input_unchanged(before, root),
+                'committed': False, 'committed_now': False, 'delivered': 0,
+                'pending': len(pending_alerts(db)) if db.exists() else 0,
+                'coverage_status': coverage['status'], 'completion_marker': False,
+                'delivery': {}}
     committed_now = not already_committed
 
     if smoke:
-        # Live smoke: no alert send, no dashboard/publication.
+        # Live smoke: dry-run commit (no condition state, no outbox rows), no
+        # alert send, no dashboard/publication, no completion marker.
         delivery = {'delivered': 0, 'pending': len(pending_alerts(db)), 'keys': []}
         marker = False
     else:
@@ -458,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fixture', action='store_true',
                         help='confine root and output beneath test_artifacts/watchdog')
     parser.add_argument('--smoke', action='store_true',
-                        help='live smoke: no alert send, no publication')
+                        help='live smoke: dry-run commit, no alert send, no publication')
     parser.add_argument('--now', default=None, help='trusted aware ISO clock override (ops/testing)')
     try:
         args = parser.parse_args(argv)
