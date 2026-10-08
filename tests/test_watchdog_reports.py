@@ -201,6 +201,150 @@ setImmediate(()=>fs.writeFileSync(process.argv[3],doc.querySelector('#app').inne
                 install_reports(db)
             self.assertEqual([], list(outside.iterdir()))
 
+    def test_report_lock_hardlink_rejected_without_touching_sentinel(self):
+        import os
+        from unittest.mock import patch
+        from watchdog.store import commit_observation
+        from watchdog.reports import install_reports
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'test_artifacts'
+            db = root/'private/watchdog/monitoring.sqlite3'
+            commit_observation(db, observation())
+            sentinel = root/'operational-sentinel'
+            sentinel.write_bytes(b'unrelated operational sentinel\n')
+            sentinel.chmod(0o644)
+            lock = db.parent/'.reports.lock'
+            os.link(sentinel, lock)
+            before_bytes = sentinel.read_bytes()
+            before = sentinel.stat()
+            metadata = {name: getattr(before, name) for name in dir(before) if name.startswith('st_')}
+            rejected = False
+            with patch('fcntl.flock', wraps=__import__('fcntl').flock) as flock:
+                try:
+                    install_reports(db)
+                except ValueError:
+                    rejected = True
+            after = sentinel.stat()
+            self.assertEqual(metadata, {name: getattr(after, name) for name in metadata})
+            self.assertEqual(before_bytes, sentinel.read_bytes())
+            self.assertTrue(rejected, 'multiply linked report lock must reject')
+            flock.assert_not_called()
+            self.assertEqual(before.st_ino, lock.stat().st_ino)
+            self.assertFalse((db.parent/'.reports').exists())
+            self.assertFalse((root/'public').exists())
+
+    def test_report_lock_nonregular_rejected_before_mutation_or_locking(self):
+        import os
+        import socket
+        from unittest.mock import patch
+        from watchdog.store import commit_observation
+        from watchdog.reports import install_reports
+        for kind in ('directory', 'fifo', 'socket', 'symlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)/'test_artifacts'
+                db = root/'private/watchdog/monitoring.sqlite3'
+                commit_observation(db, observation())
+                lock = db.parent/'.reports.lock'
+                sock = socket.socket(socket.AF_UNIX)
+                try:
+                    if kind == 'directory':
+                        lock.mkdir()
+                    elif kind == 'fifo':
+                        os.mkfifo(lock)
+                    elif kind == 'socket':
+                        sock.bind(str(lock))
+                    else:
+                        lock.symlink_to('absent-target')
+                    before = lock.lstat()
+                    with patch('os.fchmod') as chmod, patch('fcntl.flock') as flock:
+                        with self.assertRaises(ValueError):
+                            install_reports(db)
+                    self.assertEqual(before, lock.lstat())
+                    chmod.assert_not_called()
+                    flock.assert_not_called()
+                    self.assertFalse((root/'public').exists())
+                finally:
+                    sock.close()
+
+    def test_report_lock_path_substitution_rejected_before_chmod_or_flock(self):
+        import os
+        from unittest.mock import patch
+        from watchdog.store import commit_observation
+        from watchdog.reports import install_reports
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'test_artifacts'
+            db = root/'private/watchdog/monitoring.sqlite3'
+            commit_observation(db, observation())
+            lock = db.parent/'.reports.lock'
+            lock.write_bytes(b'original lock')
+            lock.chmod(0o644)
+            original = root/'original-lock'
+            real_open = os.open
+            def substitute(path, flags, mode=0o777):
+                fd = real_open(path, flags, mode)
+                if Path(path) == lock:
+                    os.replace(lock, original)
+                    lock.write_bytes(b'replacement lock')
+                return fd
+            with patch('os.open', side_effect=substitute), patch('os.fchmod') as chmod, patch('fcntl.flock') as flock:
+                with self.assertRaisesRegex(ValueError, 'report_lock_invalid'):
+                    install_reports(db)
+            chmod.assert_not_called()
+            flock.assert_not_called()
+            self.assertEqual(0o644, original.stat().st_mode & 0o777)
+            self.assertEqual(b'original lock', original.read_bytes())
+            self.assertEqual(b'replacement lock', lock.read_bytes())
+            self.assertFalse((root/'public').exists())
+
+    def test_report_lock_existing_inode_reused_and_concurrent_installs_serialize(self):
+        import os
+        import fcntl
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        from watchdog import reports
+        from watchdog.store import commit_observation
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'test_artifacts'
+            db = root/'private/watchdog/monitoring.sqlite3'
+            commit_observation(db, observation())
+            lock = db.parent/'.reports.lock'
+            lock.write_bytes(b'reusable monitoring lock')
+            lock.chmod(0o644)
+            identity = (lock.stat().st_dev, lock.stat().st_ino)
+            entered = threading.Event()
+            attempted = threading.Event()
+            overlap = threading.Event()
+            real_flock = fcntl.flock
+            from watchdog.store import read_report
+            calls = []
+            def locked_read(path):
+                calls.append(threading.get_ident())
+                if len(calls) == 1:
+                    entered.set()
+                    self.assertTrue(attempted.wait(5), 'second installer never attempted lock')
+                    self.assertFalse(overlap.wait(0.1), 'concurrent installer entered critical section')
+                else:
+                    overlap.set()
+                return read_report(path)
+            def flock(fd, operation):
+                if entered.is_set():
+                    attempted.set()
+                return real_flock(fd, operation)
+            with patch('watchdog.store.read_report', side_effect=locked_read), patch('fcntl.flock', side_effect=flock):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    first = pool.submit(reports.install_reports, db)
+                    self.assertTrue(entered.wait(5))
+                    second = pool.submit(reports.install_reports, db)
+                    self.assertEqual(first.result(timeout=10), second.result(timeout=10))
+            reports.install_reports(db)
+            self.assertEqual(2, len(calls))
+            self.assertEqual(identity, (lock.stat().st_dev, lock.stat().st_ino))
+            self.assertEqual(0o600, lock.stat().st_mode & 0o777)
+            self.assertEqual(b'reusable monitoring lock', lock.read_bytes())
+            self.assertEqual('r1', json.loads((db.parent/'latest.json').read_text())['run_id'])
+            self.assertEqual(3, len(list((db.parent/'.reports').glob('generation-*'))))
+
     def test_evidence_alert_render_keeps_typed_effect(self):
         from watchdog.reports import render_alert
         self.assertIn('potential-break', render_alert(dict(kind='evidence', status='potential-break', severity='critical', symbol='ABC')))

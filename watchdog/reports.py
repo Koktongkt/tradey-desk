@@ -3,6 +3,7 @@
 Public projection never passes through prose, identifiers, source URLs or dynamic
 keys. No model/source text can be made public merely by putting it in `status`.
 """
+from contextlib import contextmanager
 from datetime import date
 import json
 import re
@@ -202,6 +203,37 @@ def _write_sync(path, text):
         os.fsync(stream.fileno())
 
 
+@contextmanager
+def _report_lock(path):
+    """Lock only a validated, single-link monitoring inode, never a path alias."""
+    import fcntl
+    import os
+    import stat
+
+    # Nonblocking open also lets us reject a FIFO without waiting for a peer.
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as exc:
+        raise ValueError('report_lock_invalid') from exc
+    try:
+        def validate():
+            opened = os.fstat(fd)
+            named = path.lstat()
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+                raise ValueError('report_lock_invalid')
+
+        validate()
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        # A waiter must not publish under an inode replaced while it waited.
+        validate()
+        yield
+    finally:
+        os.close(fd)
+
+
 def install_reports(db) -> dict:
     """Install one coherent private JSON/Markdown generation, public file atomic.
 
@@ -212,7 +244,6 @@ def install_reports(db) -> dict:
     Task8 retries this from read_report after commit before delivering alerts.
     Dashboard always projects the coherent DB snapshot, not these file aliases.
     """
-    import fcntl
     import os
     from pathlib import Path
     import tempfile
@@ -228,9 +259,7 @@ def install_reports(db) -> dict:
     for path in (private/'.reports', root/'public', private/'.reports.lock'):
         if path.is_symlink():
             raise ValueError('report_output_symlink_rejected')
-    with (private/'.reports.lock').open('a') as lock:
-        os.chmod(lock.name, 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with _report_lock(private/'.reports.lock'):
         report = read_report(db)
         if not report:
             raise ValueError('monitoring_report_missing')

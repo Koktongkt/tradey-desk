@@ -124,3 +124,33 @@ Self-reviewed entire new store/report sources, touched dashboard diff, and priva
 Precommit static verification: AST parsing passed for all five affected Python files. Full new-file and full added-line checks found no shell injection, eval/exec, unsafe deserialization, interpolated SQL execution or credential assignment patterns. Explicit staged scope was exactly seven files. The ignored SDD report required explicit `git add -f` for that single file; staged whitespace validation caught and removed one trailing blank line in reports.py. No behavioral edit followed the final test run.
 
 No watchdog import reaches autotrader, reconciliation/repair, broker adapters, research intake, notification transport or live loaders. All fixture outputs are isolated. Parent owns independent frozen-diff review and Tasks8/9 runtime receipt capability, concrete worker wiring, read-only smoke and release. A reusable review reference was recorded in the active local requesting-code-review skill; no repository configuration or other profile was changed.
+
+## R1 fix round 1 — report-lock hardlink isolation
+
+Fix base: `9ffa5f037ea7b6828333940a0d616e25321e3637`. Scope is R1 only; R2 (large finite Decimal browser rendering) remains a non-blocking deferred follow-up. No progress or earlier reports were changed.
+
+Root cause confirmed: the existing append-mode pathname open accepted a hardlinked `.reports.lock`, then pathname `chmod` changed the unrelated inode before flock. Replaced only report-lock acquisition with a descriptor-based context manager: `os.open(O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)`, `fstat` regular-file/single-link checks, no-follow pathname `lstat` regular-file/single-link and device/inode identity checks **before** `fchmod` or `flock`. FIFO opens cannot hang awaiting a peer. Permission repair uses `fchmod` on the validated descriptor; an additional identity validation after acquiring flock rejects pathname replacement during a wait. The descriptor is closed on every exit. Existing report rendering/publication logic is unchanged.
+
+### Exact RED / GREEN
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_reports.ReportTests.test_report_lock_hardlink_rejected_without_touching_sentinel -v
+```
+
+- **RED before production edits:** 1 test, 1 assertion failure at the complete sentinel metadata comparison: `st_mode` changed from `33188` (regular 0644) to `33152` (regular 0600). The actual installer operated on an isolated temporary `test_artifacts` monitoring DB and a two-link unrelated sentinel, not any operational file.
+- **GREEN after the narrow fix:** same command, 1 PASS, 0 failures/errors (0.041s). The test requires rejection, identical bytes and every available `st_*` metadata field (including nanosecond timestamps, link count, permissions, identity/ownership), no flock call, preserved hardlink identity, and no report/public directory publication.
+- Added three supplemental audit tests (not claimed independently RED): directory/FIFO/socket/symlink rejection before `fchmod` or flock; deterministic replacement between descriptor open and pathname identity validation; real flock serialization of two concurrent installers and subsequent reuse of the same existing single-link inode/bytes, with mode 0600 and coherent successful report publication.
+
+### Final verification and self-review
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_store test_watchdog_reports -q
+uv run --with 'fastmcp<4' python tests/run_tests.py fast
+uv run --with 'fastmcp<4' python tests/run_tests.py scenario
+uv run --with 'fastmcp<4' python tests/run_tests.py full
+git diff --check
+```
+
+Actual sequential results: **focused 38 PASS** (20 store + 18 reports, 0.528s), **fast 26 modules / 433 PASS** (8.345s), **scenario 10 modules / 180 PASS** (2.894s), **full 38 modules / 731 PASS** (16.051s); all failures/errors/skips = 0. Manifest/discovery parity and runner operational-file isolation checks passed. Expected existing fixture BLOCKER/SYSTEM_FAILURE/DECISION messages were not live calls or test failures. Whitespace check passed.
+
+Self-reviewed the full source/test diff, acquisition ordering, descriptor lifetime, rejection-without-publication paths, existing lock reuse and concurrent publication. AST parsing passed for both changed Python files. Added-line static scans found no credential assignments, shell injection, eval/exec, unsafe pickle loading or interpolated SQL execution. No production edits followed these suite runs. Explicit commit scope is only `watchdog/reports.py`, `tests/test_watchdog_reports.py`, and this report. No subagents, live calls, operational writes, pushes, schedules or configuration changes. This is implementation/self-review evidence only; parent owns independent frozen-diff rereview and release approval.
