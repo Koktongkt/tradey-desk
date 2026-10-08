@@ -86,3 +86,28 @@ Self-review checked scope, imports, side effects, strict schema, literal identit
 4. Task8 must use deterministic issuer/SEC dates, verified primary provenance and trusted next-earnings endpoints, with previous reports distinct from upcoming events. General news can discover events but cannot establish primary provenance via a model label.
 5. Task7 owns monitoring-only transactional persistence of returned observations/cutoffs/proposals, sanitization and report delivery. These functions perform no operational or monitoring database writes.
 6. No live source/broker smoke, push, schedules, trading config/secret edits, subagents, progress edits or prior-report edits occurred. Release/activation remains blocked pending concrete Task8 wiring, real isolated smoke and independent parent review.
+
+## Fix round 1 — Important I1/I2 (base `cfd5843`)
+
+### Deterministic receipt compatibility / I1
+
+- Schema decision: no new model-authored fact/compatibility field. Duplicate fingerprints are compatible only when **full, exact fact strings**, existing event timestamp, normalized numeric metrics and kind agree. Different descriptions (even plausible paraphrases) are conservatively unresolved; this is not a claim of semantic contradiction detection. Source workers must supply the same deterministic canonical fact text to establish corroboration. No classification-model compatibility/coverage proof is accepted.
+- Full fact text remains temporary during receipt validation/deduplication, bounded by the existing transport byte/URL caps. Comparison occurs before the existing 1,000-character model/storage projection, so conflicting suffixes cannot disappear through clipping. Document bodies and unrelated fields are still discarded.
+- Incompatibility returns sanitized `event_conflicting`, no merged/corroborating event and no model call. The monitor checks conflicts independently of baseline completeness, marks overall coverage incomplete, and conservatively preserves **all** symbol cutoffs (including every affected source). Legacy baseline status remains separate.
+- RED: two focused tests produced **8 assertion failures** before the fix: both retrieval orders, direct short prose and differences after the clipping boundary, plus real-worker monitor coverage with complete/incomplete baselines. The previous implementation incorrectly returned no-change/complete. GREEN: both tests passed; monitor verification also traces real transport requests and confirms classification is never invoked on conflicts. Existing identical-fact/two-URL deduplication still passes.
+
+### Shared malformed JSON boundary / I2
+
+- `_strict_json` normalizes only `RecursionError` raised by `json.loads` into sanitized `ValueError('json_nesting_invalid')`, with decoder details suppressed. Existing direct-classifier and transport/monitor error boundaries then produce `classification_invalid`, `adapter_invalid`, `source_retrieval_failed` or `classification_failed` as appropriate. No blanket exception handling or arbitrary callback-error swallowing was added; unrelated model `RuntimeError` remains visible.
+- RED: three focused tests produced **6 genuine decoder RecursionError errors** before the fix, spanning direct classification, real JSONCommand workers at 10,000/60,000 array nesting, and real discovery/retrieval/classification monitor paths. Inputs were below the existing 131,072-byte cap. GREEN: all pass in final focused suite, with affected cutoff preservation and unchanged caller input state verified. Discovery/classification failure preserves all cutoffs; retrieval failure preserves its source cutoff while independently documented sources retain existing advancement behavior.
+
+### Verification / self-review
+
+Same offline command prefix: `PYTHONPATH=.:tests uv run --with 'fastmcp<4' python ...`. Final suites ran sequentially with default scratch TMPDIR:
+
+- `-m unittest test_watchdog_thesis -q`: **33 passed**, 2.586s.
+- `tests/run_tests.py fast`: **413 passed**, 25 modules, 8.153s; zero failures/errors/skips.
+- `tests/run_tests.py full`: **693 passed**, 36 modules, 15.565s; zero failures/errors/skips.
+- `git diff --check`: clean. Runner isolation checks passed; expected fixture BLOCKER/SYSTEM_FAILURE messages remain fixture output.
+- Self-reviewed exact diff for pre-clipping conflict detection, baseline-incomplete cutoff safety, no false all-clear, parser-only exception normalization, identical-event compatibility, input immutability, unchanged strict model policies and budgets. No configuration, broker, mechanical, schedule or persistence changes.
+- Changed only `watchdog/thesis.py`, `tests/test_watchdog_thesis.py`, and this appended report section. No prior report content/progress/review edits, live calls, subagents, pushes or schedules. Parent re-review remains required; Task8 runtime/activation obligations above are unchanged.

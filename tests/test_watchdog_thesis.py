@@ -87,6 +87,35 @@ def model_output(**updates):
 
 
 class ClassificationTests(unittest.TestCase):
+    def test_deep_json_is_typed_classification_failure(self):
+        from watchdog.thesis import classify_events
+        for depth in (10000, 60000):
+            output = '{"events":' + '[' * depth + '0' + ']' * depth + '}'
+            self.assertLess(len(output.encode()), 131072)
+            result = classify_events(baseline(), [receipt()], lambda request: output)
+            self.assertEqual(result, dict(status='coverage_incomplete', events=[], reasons=['classification_invalid']))
+
+    def test_unrelated_model_runtime_error_is_not_swallowed(self):
+        from watchdog.thesis import classify_events
+        def broken(request):
+            raise RuntimeError('programming error')
+        with self.assertRaises(RuntimeError):
+            classify_events(baseline(), [receipt()], broken)
+
+    def test_conflicting_full_facts_fail_before_model_in_both_orders(self):
+        from watchdog.thesis import classify_events
+        for prefix in ('Margin 4%; guidance ', 'x' * 1000):
+            rows = [receipt(fact=prefix + 'maintained'),
+                    receipt(url='https://second.example/report', fact=prefix + 'withdrawn')]
+            for ordered in (rows, rows[::-1]):
+                with self.subTest(prefix_length=len(prefix), first=ordered[0]['url']):
+                    model = mock.Mock(return_value=model_output(effect='neutral'))
+                    result = classify_events(baseline(), ordered, model)
+                    self.assertEqual(result['status'], 'coverage_incomplete')
+                    self.assertEqual(result['reasons'], ['event_conflicting'])
+                    self.assertEqual(result['events'], [])
+                    model.assert_not_called()
+
     def test_identifiers_are_not_silently_truncated(self):
         from watchdog.thesis import classify_events
         identity = 'issuer-event-' + 'x' * 1001
@@ -154,6 +183,40 @@ class ClassificationTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
+    def deep_worker(self, depth):
+        import sys
+        return self.thesis.JSONCommand([sys.executable, '-I', '-c',
+            'import sys; sys.stdin.read(); print("{\\"events\\":" + "["*' + str(depth) +
+            ' + "0" + "]"*' + str(depth) + ' + "}")'])
+
+    def test_deep_json_real_transport_is_sanitized(self):
+        import time
+        for depth in (10000, 60000):
+            with self.subTest(depth=depth):
+                with self.assertRaises(self.thesis.AdapterFailure) as error:
+                    self.deep_worker(depth).run({}, time.monotonic() + 2)
+                self.assertEqual(error.exception.code, 'adapter_invalid')
+                self.assertEqual(str(error.exception), 'adapter_invalid')
+                self.assertIsNone(error.exception.__cause__)
+
+    def test_deep_json_all_transport_stages_preserve_affected_cutoffs(self):
+        for stage in ('discover', 'retrieve', 'classify'):
+            with self.subTest(stage=stage):
+                adapters = self.adapters()
+                adapters[stage] = self.deep_worker(10000)
+                state = {'ABC': {s: {'cutoff': '2026-10-06T00:00:00Z'} for s in self.thesis.REQUIRED_SOURCES}}
+                saved = copy.deepcopy(state)
+                result = self.monitor(adapters=adapters, source_state=state)[0]
+                self.assertEqual(result['status'], 'coverage_incomplete')
+                self.assertEqual(result['coverage_status'], 'coverage_incomplete')
+                if stage == 'retrieve':
+                    self.assertEqual(result['source_state']['issuer'], saved['ABC']['issuer'])
+                    self.assertEqual(result['coverage']['issuer']['reason'], 'source_retrieval_failed')
+                else:
+                    self.assertEqual(result['source_state'], saved['ABC'])
+                    self.assertIn('adapter_invalid' if stage == 'discover' else 'classification_failed', result['reasons'])
+                self.assertEqual(state, saved)
+
     def setUp(self):
         import watchdog.thesis as thesis
         self.thesis = thesis
@@ -179,6 +242,43 @@ class MonitorTests(unittest.TestCase):
         return self.thesis.monitor_theses(kwargs.get('positions', self.positions()),
             kwargs.get('baselines', {'p1': baseline()}), kwargs.get('source_state', {}),
             kwargs.get('adapters', self.adapters()), kwargs.get('deadline', time.monotonic() + 5))
+
+    def test_conflicting_receipts_preserve_cutoffs_without_classification(self):
+        import sys
+        for reverse in (False, True):
+            for incomplete in (False, True):
+                with self.subTest(reverse=reverse, incomplete=incomplete):
+                    adapters = self.adapters()
+                    sources = {s: dict(status='complete', checked_through=adapters['now'],
+                        coverage_url='https://issuer.example/list', urls=[]) for s in self.thesis.REQUIRED_SOURCES}
+                    sources['issuer']['urls'] = ['https://issuer.example/maintained', 'https://issuer.example/withdrawn']
+                    if reverse:
+                        sources['issuer']['urls'].reverse()
+                    adapters['discover'] = self.adapters(discovery={'sources': sources})['discover']
+                    worker = ('import json,sys; r=json.load(sys.stdin); row=' + repr(receipt()) +
+                        '; row.update(url=r["url"], fact="x"*1000+r["url"].rsplit("/",1)[-1]); '
+                        'print(json.dumps({"receipt":row}))')
+                    adapters['retrieve'] = self.thesis.JSONCommand([sys.executable, '-I', '-c', worker])
+                    adapters['classify'] = self.adapters(output={'classifications': [model_output(effect='neutral')]})['classify']
+                    state = {'ABC': {s: {'cutoff': '2026-10-06T00:00:00Z'} for s in self.thesis.REQUIRED_SOURCES}}
+                    saved = copy.deepcopy(state)
+                    supplied = baseline()
+                    if incomplete:
+                        supplied['status'] = 'baseline_incomplete'
+                    calls = []
+                    original_run = self.thesis.JSONCommand.run
+                    def tracked_run(worker, request, deadline):
+                        calls.append(request)
+                        return original_run(worker, request, deadline)
+                    with mock.patch.object(self.thesis.JSONCommand, 'run', tracked_run):
+                        result = self.monitor(adapters=adapters, source_state=state, baselines={'p1': supplied})[0]
+                    self.assertFalse(any('classifications' in request for request in calls))
+                    self.assertEqual(result['coverage_status'], 'coverage_incomplete')
+                    self.assertNotEqual(result['status'], 'no_material_change_observed')
+                    self.assertEqual(result['source_state'], saved['ABC'])
+                    self.assertIn('event_conflicting', result['reasons'])
+                    self.assertEqual(result['events'], [])
+                    self.assertEqual(state, saved)
 
     def test_completed_coverage_has_compact_events_and_advances_cutoffs(self):
         self.assertTrue(hasattr(self.thesis, 'monitor_theses'), 'bounded monitor missing')

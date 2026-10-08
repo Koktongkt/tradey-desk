@@ -26,6 +26,10 @@ class AdapterFailure(ValueError):
         super().__init__(code)
 
 
+class EvidenceConflict(ValueError):
+    """Same event identity has incompatible deterministic receipt facts."""
+
+
 class JSONCommand:
     """Trusted read-only worker command, NOT an evidence-supplied command.
 
@@ -236,12 +240,19 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
                     # Keep only compact fields; bodies/transcripts/prompts do
                     # not enter classification or monitoring results.
                     clean = next(iter(compact.values()))
+                    # Compare full fact text before clipping the model/storage
+                    # projection; bodies and unrelated fields remain discarded.
+                    clean['fact'] = receipt['fact']
                     clean['date_verified'] = True
                     receipts.append(clean)
                 except (AdapterFailure, ValueError, TypeError, KeyError):
                     coverage[source] = dict(status='coverage_incomplete', reason='source_retrieval_failed')
         except (AdapterFailure, ValueError, TypeError, KeyError) as error:
             reasons.append(error.code if isinstance(error, AdapterFailure) else 'source_input_invalid')
+        try:
+            _compact_receipts(receipts)
+        except EvidenceConflict:
+            reasons.append('event_conflicting')
         prepared, requests = [], []
         for position in grouped[symbol]:
             supplied = position.get('thesis_baseline', {})
@@ -254,7 +265,7 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
             classified = classify_events(baseline, receipts, capture)
             prepared.append((position, baseline, classified, len(requests) - 1 if classified['reasons'] == ['classification_invalid'] and requests else None))
         outputs = None
-        if requests:
+        if requests and 'event_conflicting' not in reasons:
             try:
                 batch = adapters['classify'].run(dict(classifications=requests), min(name_deadline, time.monotonic() + 20))
                 if (not isinstance(batch, dict) or set(batch) != {'classifications'}
@@ -299,7 +310,12 @@ def _strict_json(payload):
         return result
     def invalid_constant(value):
         raise ValueError('nonfinite_json')
-    return json.loads(payload, object_pairs_hook=unique, parse_constant=invalid_constant)
+    try:
+        return json.loads(payload, object_pairs_hook=unique, parse_constant=invalid_constant)
+    except RecursionError:
+        # Decoder nesting failures are malformed JSON, not arbitrary adapter
+        # or callback errors. Normalize only at this shared parser boundary.
+        raise ValueError('json_nesting_invalid') from None
 
 
 MODEL_POLICY = dict(tools=[], memory=False, max_turns=1, safe_mode=True,
@@ -312,7 +328,13 @@ COMPARE = {'<': operator.lt, '<=': operator.le, '>': operator.gt, '>=': operator
 
 
 def _compact_receipts(receipts):
+    """Compatibility requires exact full fact text, date, metrics and kind.
+
+    Differing prose is unresolved, not model-certified corroboration. Compare
+    before 1,000-character projection; no semantic guessing or new fact schema.
+    """
     events = {}
+    facts = {}
     for row in receipts:
         if not isinstance(row, dict):
             raise ValueError('receipt_invalid')
@@ -339,14 +361,16 @@ def _compact_receipts(receipts):
         identity = row['fingerprint']
         if identity in events:
             prior = events[identity]
-            if (prior['event_at'], prior['metrics'], prior['kind']) != (compact['event_at'], metrics, compact['kind']):
-                raise ValueError('event_conflicting')
+            if (facts[identity] != row['fact'] or
+                    (prior['event_at'], prior['metrics'], prior['kind']) != (compact['event_at'], metrics, compact['kind'])):
+                raise EvidenceConflict('event_conflicting')
             urls = list(dict.fromkeys(prior['urls'] + compact['urls']))
             if compact['primary'] and not prior['primary']:
                 events[identity] = compact
             events[identity]['urls'] = urls
         else:
             events[identity] = compact
+            facts[identity] = row['fact']
     return events
 
 
@@ -404,6 +428,8 @@ def classify_events(baseline: dict, receipts: list[dict], run_model) -> dict:
                 action='reassess' if effect in ('weakens', 'unclear', 'potential-break') else 'record',
                 **{k: deepcopy(source[k]) for k in ('fact', 'urls', 'published_at', 'event_at', 'retrieved_at', 'primary', 'kind')}))
         return dict(status=status, events=events, reasons=[])
+    except EvidenceConflict:
+        return dict(status='coverage_incomplete', events=[], reasons=['event_conflicting'])
     except (ValueError, TypeError, KeyError, OverflowError):
         return failure
 
