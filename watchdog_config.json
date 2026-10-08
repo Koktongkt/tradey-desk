@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "mechanical_hard_timeout_seconds": 120,
+  "daily_hard_timeout_seconds": 900,
+  "daily_active_seconds": 840,
+  "report_persistence_reserve_seconds": 60,
+  "reads_accounting_active_seconds": 120,
+  "thesis_active_seconds": 600,
+  "owned_symbol_limit": 20,
+  "per_symbol_active_seconds": 60,
+  "discovery_wall_seconds": 15,
+  "url_wall_seconds": 15,
+  "classification_wall_seconds": 20,
+  "substantive_urls_per_symbol": 3,
+  "source_overlap_hours": 48,
+  "source_priority": ["sec", "issuer", "earnings"],
+  "model_policy": {
+    "configuration_source": "existing_research_provider_model",
+    "safe_mode": true,
+    "tools": [],
+    "memory": false,
+    "max_turns": 1
+  }
+}
