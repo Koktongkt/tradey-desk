@@ -57,6 +57,14 @@ class MechanicalEligibilityTests(TestCase):
 
 
 class DailyEligibilityTests(TestCase):
+    def test_actual_second_and_microsecond_clocks_are_eligible_in_both_slot_minutes(self):
+        for minute in (15, 45):
+            for seconds, micros in ((1, 0), (59, 999999)):
+                with self.subTest(minute=minute, seconds=seconds):
+                    now = utc(2026, 10, 7, 20, minute).replace(second=seconds, microsecond=micros)
+                    self.assertTrue(eligibility('daily', now, [session('2026-10-07')])[0])
+        self.assertFalse(eligibility('daily', utc(2026, 10, 7, 20, 46), [session('2026-10-07')])[0])
+
     def test_first_daily_slot_is_close_plus_fifteen(self):
         # 16:15 EDT = 20:15 UTC.
         ok, reasons, day = eligibility('daily', utc(2026, 10, 7, 20, 15), [session('2026-10-07')])

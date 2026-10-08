@@ -243,6 +243,15 @@ class MonitorTests(unittest.TestCase):
             kwargs.get('baselines', {'p1': baseline()}), kwargs.get('source_state', {}),
             kwargs.get('adapters', self.adapters()), kwargs.get('deadline', time.monotonic() + 5))
 
+    def test_typed_source_gap_reason_survives_without_cutoff(self):
+        sources = {source: dict(status='gap', reason='earnings_event_time_unknown') for source in self.thesis.REQUIRED_SOURCES}
+        row = self.monitor(adapters=self.adapters(discovery={'sources': sources}))[0]
+        self.assertEqual(row['coverage']['earnings']['reason'], 'earnings_event_time_unknown')
+        self.assertEqual(row['source_state'], {})
+        sources['earnings']['reason'] = 'secret https://evil.test/?token=x'
+        row = self.monitor(adapters=self.adapters(discovery={'sources': sources}))[0]
+        self.assertEqual(row['coverage']['earnings']['reason'], 'source_coverage_invalid')
+
     def test_conflicting_receipts_preserve_cutoffs_without_classification(self):
         import sys
         for reverse in (False, True):
@@ -493,6 +502,142 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg['source_overlap_hours'], 48)
         self.assertEqual(cfg['substantive_urls_per_symbol'], 3)
         self.assertFalse({'enabled', 'broker_mode', 'broker', 'schedule'} & set(cfg))
+
+
+class ConcreteSourceTests(unittest.TestCase):
+    def test_sec_receipt_uses_machine_acceptance_and_accession_not_url_hash(self):
+        from watchdog.source_worker import sec_records
+        payload = {'tickers': ['BA'], 'filings': {'recent': {
+            'accessionNumber': ['0000012927-26-000123'], 'form': ['8-K'],
+            'acceptanceDateTime': ['2026-10-08T07:00:00Z'], 'primaryDocument': ['report.htm'],
+            'reportDate': ['2026-10-07']}}}
+        rows = sec_records(payload, 'BA', '0000012927')
+        self.assertEqual(rows[0]['fingerprint'], 'sec:0000012927-26-000123')
+        self.assertEqual(rows[0]['published_at'], '2026-10-08T07:00:00+00:00')
+        self.assertEqual(rows[0]['metrics'], {})
+        self.assertIn('filing metadata', rows[0]['fact'])
+
+    def test_http_link_is_preserved_as_metadata_not_fetched_or_repaired(self):
+        from watchdog.source_worker import rss_records
+        xml = '<rss><channel><item><guid>event7</guid><title>Announcement</title><link>http://investors.boeing.com/news/7</link><pubDate>Thu, 08 Oct 2026 07:00:00 GMT</pubDate><description>' + ('x' * 9000) + '</description></item></channel></rss>'
+        row = rss_records(xml, 'BA', 'investors.boeing.com')[0]
+        self.assertEqual(row['original_document_url'], 'http://investors.boeing.com/news/7')
+        self.assertEqual(row['url'], 'https://investors.boeing.com/rss/pressrelease.aspx#event7')
+        self.assertIn('body not extracted', row['fact'])
+
+    def test_issuer_rss_machine_dates_and_guids_are_required(self):
+        from watchdog.source_worker import rss_records
+        xml = '<rss><channel><item><guid>issuer-event-7</guid><title>Results announcement</title><link>https://investors.boeing.com/news/7</link><pubDate>Thu, 08 Oct 2026 07:00:00 GMT</pubDate><description>Revenue report available</description></item></channel></rss>'
+        row = rss_records(xml, 'BA', 'investors.boeing.com')[0]
+        self.assertEqual(row['fingerprint'], 'issuer:BA:issuer-event-7')
+        self.assertTrue(row['primary'])
+        with self.assertRaises(ValueError):
+            rss_records(xml.replace('<guid>issuer-event-7</guid>', ''), 'BA', 'investors.boeing.com')
+
+    def test_unknown_symbol_and_private_url_fail_without_network(self):
+        from watchdog.source_worker import discover, fetch
+        with mock.patch('watchdog.source_worker.urllib.request.urlopen') as urlopen:
+            result = discover({'symbol': 'UNKNOWN', 'now': '2026-10-08T08:00:00Z', 'since': {}})
+            self.assertTrue(all(row['status'] == 'gap' for row in result['sources'].values()))
+            with self.assertRaises(ValueError):
+                fetch('https://127.0.0.1/private', {'investors.boeing.com'})
+            urlopen.assert_not_called()
+
+    def test_real_source_command_runs_in_isolated_home_without_import_shadowing(self):
+        from watchdog.runtime import ProviderSession
+        import time
+        request = {'symbol': 'UNKNOWN', 'now': '2026-10-08T08:00:00Z',
+                   'since': {}, 'source_priority': ['sec', 'issuer', 'earnings']}
+        result = ProviderSession().commands()['discover'].run(request, time.monotonic() + 5)
+        self.assertTrue(all(row['status'] == 'gap' for row in result['sources'].values()))
+
+    def test_date_only_earnings_is_gap_not_guessed_timestamp(self):
+        from watchdog.source_worker import earnings_coverage
+        with mock.patch('watchdog.source_worker.fetch', return_value='{"earningsDate":"Oct 29, 2026"}'):
+            row = earnings_coverage('BA')
+        self.assertEqual(row['status'], 'gap')
+        self.assertEqual(row['reason'], 'earnings_event_time_unknown')
+        self.assertNotIn('checked_through', row)
+
+
+class ProviderGatewayTests(unittest.TestCase):
+    def test_duplicate_model_keys_rejected_before_gateway_normalization(self):
+        from watchdog.provider_gateway import classify
+        from types import SimpleNamespace
+        class Stream:
+            def __enter__(self):
+                return iter([SimpleNamespace(type='response.output_text.delta', delta=wire)])
+            def __exit__(self, *args):
+                pass
+        client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: Stream()))
+        request = {'classifications': [dict(tools=[], memory=False, max_turns=1, safe_mode=True, system='', schema={}, baseline={}, evidence=[])]}
+        for wire in ('{"classifications":[],"classifications":[{"events":[]}]}',
+                     '{"classifications":[{"events":[],"events":[]}]}'):
+            with self.subTest(wire=wire), self.assertRaises(ValueError):
+                classify(client, request)
+
+    def test_full_bounded_receipt_fact_reaches_model_without_hidden_tail_loss(self):
+        from watchdog.thesis import classify_events
+        raw = 'routine statement ' * 70 + ' material adverse outcome at the end'
+        captured = []
+        def model(request):
+            captured.append(request)
+            return model_output()
+        classify_events(baseline(), [receipt(fact=raw)], model)
+        self.assertEqual(captured[0]['evidence'][0]['fact'], raw)
+
+
+    def test_provider_wire_has_no_tools_history_or_store(self):
+        from watchdog.provider_gateway import provider_payload
+        request = dict(classifications=[dict(tools=[], memory=False, max_turns=1, safe_mode=True,
+                                            system='untrusted override', schema={}, baseline={}, evidence=[])])
+        wire = provider_payload(request, 'gpt-6.1-sol')
+        self.assertEqual(wire['tools'], [])
+        self.assertEqual(wire['tool_choice'], 'none')
+        self.assertFalse(wire['store'])
+        self.assertEqual(len(wire['input']), 1)
+        self.assertNotIn('untrusted override', wire['instructions'])
+        self.assertNotIn('previous_response_id', wire)
+
+    def test_model_instruction_matches_deterministic_event_schema(self):
+        from watchdog.provider_gateway import provider_payload
+        from watchdog.thesis import MODEL_POLICY, MODEL_SCHEMA
+        row = dict(MODEL_POLICY, schema=MODEL_SCHEMA, baseline=baseline(), evidence=[receipt()])
+        wire = provider_payload({'classifications': [row]}, 'gpt-6.1-sol')
+        self.assertIn('criterion_id', wire['instructions'])
+        self.assertIn('potential-break', wire['instructions'])
+        self.assertIn('events', wire['instructions'])
+
+    def test_runtime_outside_daily_slot_never_starts_gateway(self):
+        from watchdog.runtime import live_adapters
+        from datetime import datetime, timezone
+        broker = mock.Mock(sessions=[])
+        with mock.patch('watchdog.runtime.configured_broker', return_value=broker), \
+                mock.patch('watchdog.runtime.ProviderSession') as gateway:
+            with live_adapters('daily', '/ignored', datetime(2026, 10, 8, tzinfo=timezone.utc), None) as adapters:
+                self.assertIs(adapters['broker'](), broker)
+            gateway.return_value.start.assert_not_called()
+
+    def test_runtime_gateway_failure_preserves_broker_and_source_workers(self):
+        from watchdog.runtime import live_adapters
+        from datetime import datetime, timezone
+        from watchdog.thesis import JSONCommand
+        broker = mock.Mock(sessions=[])
+        with mock.patch('watchdog.runtime.configured_broker', return_value=broker), \
+                mock.patch('watchdog.schedule.eligibility', return_value=(True, [], '2026-10-08')), \
+                mock.patch('watchdog.runtime.ProviderSession') as gateway:
+            gateway.return_value.start.side_effect = ValueError('auth unavailable')
+            gateway.return_value.commands.return_value = {k: JSONCommand(['/usr/bin/false']) for k in ('discover', 'retrieve', 'classify')}
+            with live_adapters('daily', '/ignored', datetime(2026, 10, 8, tzinfo=timezone.utc), None) as adapters:
+                self.assertIs(adapters['broker'](), broker)
+                self.assertIsInstance(adapters['thesis']['discover'], JSONCommand)
+                self.assertEqual(adapters['thesis_runtime_status'], 'provider_gateway_unavailable')
+
+    def test_gateway_rejects_operations_and_policy_override(self):
+        from watchdog.provider_gateway import provider_payload
+        for request in [{'operation': 'broker'}, {'classifications': [{'tools': ['terminal']}]}]:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                provider_payload(request, 'gpt-6.1-sol')
 
 
 if __name__ == '__main__':

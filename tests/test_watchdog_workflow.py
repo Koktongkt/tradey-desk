@@ -168,6 +168,96 @@ class WorkflowCase(TestCase):
 
 
 class RuntimeAdapterTests(WorkflowCase):
+    def test_unknown_earnings_never_becomes_aggregate_complete_or_all_clear(self):
+        from unittest.mock import patch
+        from watchdog.cli import run_watchdog
+        from watchdog.thesis import JSONCommand
+        commands = {k: JSONCommand(['/usr/bin/false']) for k in ('discover', 'retrieve', 'classify')}
+        commands['now'] = DAILY_NOW.isoformat()
+        found = {'sources': {s: dict(status='complete', checked_through=DAILY_NOW.isoformat(), coverage_url='https://example.com/' + s, urls=[]) for s in ('sec', 'issuer')}}
+        found['sources']['earnings'] = dict(status='gap', reason='earnings_event_time_unknown')
+        with patch.object(JSONCommand, 'run', return_value=found):
+            result = run_watchdog('daily', self.root, self.output_root,
+                self.adapters(broker=lambda: broker_snapshot(extra_symbol=None), thesis=commands), DAILY_NOW, fixture=True)
+        report = read_report(self.db)
+        self.assertFalse(result['all_clear'])
+        self.assertNotEqual(report['coverage']['status'], 'complete')
+        self.assertTrue(all(a['status'] == 'unknown' for a in self.receipts if a['kind'] == 'digest'))
+
+    def test_unknown_accounting_is_visible_in_aggregate_daily_coverage(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('daily', self.root, self.output_root,
+            self.adapters(broker=lambda: broker_snapshot(extra_symbol=None), thesis=self.thesis_adapters(DAILY_NOW)), DAILY_NOW, fixture=True)
+        self.assertIn('accounting_coverage_incomplete', result['reasons'])
+        self.assertNotEqual(result['coverage_status'], 'complete')
+
+    def test_known_unprotected_position_is_not_all_clear(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('mechanical', self.root, self.output_root,
+            self.adapters(broker=lambda: broker_snapshot(extra_symbol=None, stop_status='canceled')), NOW, fixture=True)
+        self.assertFalse(result['all_clear'])
+
+    def test_missing_stop_without_reason_is_not_all_clear(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('mechanical', self.root, self.output_root,
+            self.adapters(broker=lambda: broker_snapshot(extra_symbol=None, stop_status=None)), NOW, fixture=True)
+        self.assertFalse(result['all_clear'])
+
+    def test_expired_horizon_empty_reasons_is_not_all_clear_and_exact_boundary_is_active(self):
+        import hashlib
+        from watchdog.cli import run_watchdog
+        for offset in (-1, 0):
+            with self.subTest(planned_offset_microseconds=offset):
+                path = self.root / 'private/order_intents.jsonl'
+                intent = json.loads(path.read_text())
+                intent['plan']['planned_exit_at'] = (NOW + timedelta(microseconds=offset)).isoformat()
+                payload = json.dumps(intent, sort_keys=True, separators=(',', ':'))
+                path.write_text(payload + '\n')
+                with sqlite3.connect(self.root / 'private/trading_journal.sqlite3') as conn:
+                    conn.execute('UPDATE ledger_entries SET record_json=?,record_sha256=? WHERE stream=?',
+                        (payload, hashlib.sha256(payload.encode()).hexdigest(), 'private/order_intents.jsonl'))
+                result = run_watchdog('mechanical', self.root, self.output_root / str(offset),
+                    self.adapters(broker=lambda: broker_snapshot(extra_symbol=None)), NOW, fixture=True)
+                self.assertEqual(result['coverage_status'], 'complete')
+                self.assertEqual(result['all_clear'], offset == 0)
+
+    def test_real_protective_registry_schema_is_an_exact_broker_obligation(self):
+        from unittest.mock import patch
+        from watchdog.types import OperationalSnapshot
+        from watchdog.runtime import configured_broker
+        from dataclasses import asdict
+        import subprocess
+        snapshot = OperationalSnapshot({'private/order_intents.jsonl': [dict(client_order_id='parent')],
+            'private/protection_orders.jsonl': [dict(parent_client_order_id='parent', protection_client_order_id='replacement')]}, frozenset(), NOW.isoformat(), True, [])
+        with patch('watchdog.runtime.read_operational', return_value=snapshot), \
+                patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess([], 0, json.dumps(asdict(broker_snapshot()), default=str), '')) as worker:
+            configured_broker(self.root, NOW)
+        self.assertEqual(json.loads(worker.call_args.kwargs['input'])['refs'], ['parent', 'replacement'])
+
+    def test_provider_gateway_failure_is_visible_but_keeps_portfolio_report(self):
+        from watchdog.cli import run_watchdog
+        result = run_watchdog('daily', self.root, self.output_root,
+            self.adapters(thesis=self.thesis_adapters(DAILY_NOW),
+                          thesis_runtime_status='provider_gateway_unavailable'), DAILY_NOW, fixture=True)
+        self.assertTrue(result['committed'])
+        self.assertIn('provider_gateway_unavailable', result['reasons'])
+        self.assertFalse(result['all_clear'])
+
+    def test_cron_launcher_has_mode_deadlines_and_restores_signal_handlers(self):
+        import watchdog_cron
+        from unittest.mock import patch
+        original = lambda *_: None
+        with patch('watchdog_cron.signal.getsignal', return_value=original), \
+                patch('watchdog_cron.signal.signal') as handlers, \
+                patch('watchdog_cron.signal.alarm') as alarm:
+            with self.assertRaises(SystemExit):
+                watchdog_cron.run('daily', lambda args: (_ for _ in ()).throw(SystemExit(124)))
+        self.assertEqual(alarm.call_args_list[0].args, (900,))
+        self.assertEqual(alarm.call_args_list[-1].args, (0,))
+        self.assertEqual(handlers.call_args_list[-1].args[1], original)
+        with self.assertRaises(ValueError):
+            watchdog_cron.run('trade', lambda args: 0)
+
     def test_configured_broker_uses_read_only_worker_and_exact_operational_refs(self):
         from unittest.mock import patch
         from dataclasses import asdict
@@ -426,7 +516,10 @@ class DailyWorkflowTests(WorkflowCase):
             digests = [json.loads(row[0]) for row in conn.execute(
                 "SELECT payload FROM alert_outbox WHERE instr(payload, '\"kind\":\"digest\"') > 0")]
         self.assertEqual(len(digests), 1)
-        self.assertEqual(digests[0].get('status'), 'complete')
+        # Complete thesis inspection cannot erase unknown accounting history.
+        self.assertIn('accounting_coverage_incomplete', result['reasons'])
+        self.assertFalse(result['all_clear'])
+        self.assertEqual(digests[0].get('status'), 'unknown')
         # Completion marker exists only after report commit, stamped by the
         # trusted `now`, not by broker capture time.
         marker = self.output_root / 'private/watchdog/completions/2026-10-07.json'

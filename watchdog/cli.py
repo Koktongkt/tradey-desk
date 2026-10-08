@@ -374,6 +374,8 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
             portfolio['benchmark'] = {}
             reasons.append('benchmark_unavailable')
         budget.check('active')
+        if adapters.get('thesis_runtime_status') == 'provider_gateway_unavailable':
+            reasons.append('provider_gateway_unavailable')
         thesis_adapters = adapters.get('thesis')
         if isinstance(thesis_adapters, dict) and thesis_adapters.get('now'):
             from .thesis import baseline_from_candidate, monitor_theses
@@ -404,6 +406,20 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
         budget.check('outer')
     except TimeoutError:
         return _failed(mode, before, root, ['outer_deadline_exceeded'], db)
+
+    # Coverage and absence of exceptions are distinct assertions. A known
+    # cancelled stop can be fully observed but can never be an all-clear.
+    unresolved = any(p.get('reasons') or p.get('protection_status') in ('unprotected', 'partial', 'unknown')
+                     or p.get('horizon_status') in ('horizon_expired', 'unknown') for p in positions) or any(
+        t.get('status') in ('review_required', 'potential_thesis_break') for t in thesis_rows)
+    if any(p.get('protection_status') == 'unknown' or p.get('horizon_status') == 'unknown'
+           or p.get('quantity_status') != 'consistent' for p in positions):
+        reasons.append('mechanical_coverage_incomplete')
+    if mode == 'daily' and any(t.get('coverage_status') != 'complete' for t in thesis_rows):
+        reasons.append('thesis_source_coverage_incomplete')
+    if mode == 'daily' and any(portfolio.get(k, {}).get('coverage', {}).get('status') != 'complete'
+                               for k in ('strategy', 'account')):
+        reasons.append('accounting_coverage_incomplete')
 
     # Observation-completion captured_at (recorded ruling: captured_at must be
     # >= source checked-through, not broker/start time). Elapsed is measured on
@@ -476,7 +492,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
         coverage['reasons'] = sorted(set(coverage['reasons'] + ['operational_input_changed_after_run']))
         reasons.append('operational_input_changed_after_run')
     return {'status': 'ok', 'mode': mode, 'run_id': run_id, 'session_date': session_date,
-            'reasons': sorted(set(reasons)), 'all_clear': not reasons and coverage['status'] == 'complete',
+            'reasons': sorted(set(reasons)), 'all_clear': not unresolved and not reasons and coverage['status'] == 'complete',
             'input_unchanged': unchanged, 'committed': committed_now,
             'committed_now': committed_now, 'delivered': delivery['delivered'],
             'pending': delivery['pending'], 'coverage_status': coverage['status'],
@@ -562,13 +578,12 @@ def main(argv: list[str] | None = None) -> int:
         output_root = args.output_root or (str(TEST_ARTIFACTS / 'watchdog/smoke') if args.smoke else args.root)
         # Validate before constructing any credential-bearing callback.
         root, output = resolve_paths(args.root, output_root, fixture=args.fixture, smoke=args.smoke)
-        adapters = {} if args.fixture else {
-            'broker': lambda: configured_broker(root, now),
-            'transport': transport,
-            'benchmark': configured_benchmark,
-        }
-        result = run_watchdog(args.action, root, output,
-                              adapters, now, fixture=args.fixture, smoke=args.smoke)
+        if args.fixture:
+            result = run_watchdog(args.action, root, output, {}, now, fixture=True, smoke=args.smoke)
+        else:
+            from .runtime import live_adapters
+            with live_adapters(args.action, root, now, transport) as adapters:
+                result = run_watchdog(args.action, root, output, adapters, now, smoke=args.smoke)
     except (ValueError, OSError, TimeoutError):
         print('Watchdog request rejected; no verified observation.')
         return 2

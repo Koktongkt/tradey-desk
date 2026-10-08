@@ -86,7 +86,10 @@ def eligibility(mode: str, now: datetime, sessions) -> tuple[bool, list[str], st
         return False, ['not_scheduled_slot'], None
     window_start = close_at + timedelta(minutes=15)
     window_end = close_at + timedelta(minutes=45)
-    if window_start <= now <= window_end:
+    # Eligibility covers the scheduled minute, not only its first instant.
+    # Actual launches carry seconds/microseconds; :46 remains ineligible.
+    slot_time = now.replace(second=0, microsecond=0)
+    if window_start <= slot_time <= window_end:
         return True, [], day
     return False, ['not_scheduled_slot'], None
 

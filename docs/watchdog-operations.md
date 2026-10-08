@@ -13,7 +13,7 @@ python3 watchdog_cli.py daily                 # close+15..close+45 reporting run
 python3 watchdog_cli.py eligibility           # print the proposed cron expressions
 ```
 
-**Concrete read adapters are wired; unattended activation is not complete.**
+**Concrete read/source/classification adapters are wired for bounded monitoring.**
 Non-fixture CLI invocations use `watchdog.runtime.configured_broker`: an isolated
 paper-only collector subprocess, with a 90-second deadline and process-group
 cleanup on normal exit or timeout. Submitted intents, confirmed lifecycle rows
@@ -27,8 +27,10 @@ worker and never manufactures missing strategy marks or total-return capability.
 It returns no receipt: the outbox stays pending and notifications may repeat.
 Mechanical successful no-exception runs and out-of-slot runs are silent; daily
 successful runs emit an installed-report/coverage summary. No job registration
-is performed by the CLI. Thesis executables are not yet reviewed/configured,
-so `thesis_worker_blocker` remains a genuine daily activation blocker.
+is performed by the CLI. Concrete workers are now configured; reviewed source
+profiles, provider isolation, and known earnings/financial-content limitations
+are documented in `watchdog-runtime-readiness.md`. Gaps remain visible and never
+become an all-clear. The user approved scheduling with these explicit gaps.
 
 Offline and confined verification:
 
@@ -160,9 +162,9 @@ manufacture receipts; a local send boolean is not provider evidence.
 
 - `thesis_worker_blocker`: daily thesis monitoring requires concrete reviewed
   source-profile worker commands (`discover`/`retrieve`/`classify` as
-  `watchdog.thesis.JSONCommand`) wired through configuration. No reviewed
-  worker executable exists yet, so daily runs record the typed coverage gap
-  and complete with explicit gaps; no fabricated thesis pass is produced.
+  `watchdog.thesis.JSONCommand`) wired through the runtime. The CLI now supplies
+  those reviewed workers; callers that deliberately omit adapters still record
+  this typed gap rather than a fabricated thesis pass.
 - `benchmark_unavailable`: daily runs without a benchmark adapter record the
   gap instead of inventing comparator data.
 

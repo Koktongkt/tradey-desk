@@ -50,8 +50,11 @@ def configured_broker(root, now):
                       for row in snapshot.streams.get(stream, [])]
     submitted_rows += [row for row in snapshot.streams.get('order_ledger.jsonl', [])
                        if row.get('status') in {'submission_started', 'placed', 'filled', 'closed', 'new'}]
-    refs = sorted({row['client_order_id'] for row in submitted_rows
-                   if isinstance(row.get('client_order_id'), str) and row['client_order_id']})
+    fields = ('client_order_id', 'parent_client_order_id', 'protection_client_order_id')
+    values = [row[field] for row in submitted_rows for field in fields if field in row]
+    if any(not isinstance(ref, str) or not ref or len(ref) > 128 for ref in values):
+        raise ValueError('broker_references_invalid')
+    refs = sorted(set(values))
     if len(refs) > 500 or any(len(ref) > 128 for ref in refs):
         raise ValueError('broker_references_invalid')
     payload = dict(refs=refs, start=(now - timedelta(days=90)).isoformat(),
@@ -117,6 +120,75 @@ def main():
     except Exception:
         print('benchmark_runtime_failed', file=sys.stderr)
         return 3
+
+
+class ProviderSession:
+    """Lazy, ephemeral provider-only process; no persistent service/config edit."""
+    def __init__(self):
+        self.directory = self.process = self.socket = None
+
+    def start(self):
+        import tempfile
+        import time
+        self.directory = tempfile.TemporaryDirectory(prefix='watchdog-provider-')
+        home = Path(self.directory.name)
+        home.chmod(0o700)
+        self.socket = home / 'gateway.sock'
+        env = {key: os.environ[key] for key in ('HOME', 'HERMES_HOME', 'PATH', 'LANG') if key in os.environ}
+        self.process = subprocess.Popen(['/opt/hermes/.venv/bin/python', str(CHECKOUT / 'watchdog/provider_gateway.py'), str(self.socket)],
+            env=env, cwd=str(home), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        deadline = time.monotonic() + 12
+        while not self.socket.exists():
+            if self.process.poll() is not None or time.monotonic() >= deadline:
+                raise ValueError('provider_gateway_unavailable')
+            time.sleep(0.05)
+
+    def commands(self):
+        from .thesis import JSONCommand
+        return dict(discover=JSONCommand([sys.executable, '-I', str(CHECKOUT / 'watchdog/source_worker.py'), 'discover']),
+                    retrieve=JSONCommand([sys.executable, '-I', str(CHECKOUT / 'watchdog/source_worker.py'), 'retrieve']),
+                    classify=JSONCommand([sys.executable, '-I', str(CHECKOUT / 'watchdog/classifier_worker.py'), str(self.socket or '/unavailable/watchdog.sock')]))
+
+    def close(self):
+        if self.process is not None:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.process.wait()
+        if self.directory is not None:
+            self.directory.cleanup()
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def live_adapters(mode, root, now, transport):
+    """Start source/classifier infrastructure only after real eligible broker read.
+
+    Gateway/auth failure leaves broker/mechanical accounting intact and sources
+    available; it is a typed thesis gap, not a whole-observation failure.
+    """
+    from .schedule import eligibility
+    gateway = ProviderSession()
+    adapters = dict(transport=transport, benchmark=configured_benchmark)
+    def broker():
+        snapshot = configured_broker(root, now)
+        if mode == 'daily' and eligibility(mode, now, snapshot.sessions)[0]:
+            try:
+                gateway.start()
+                adapters['thesis_runtime_status'] = 'available'
+            except (OSError, ValueError):
+                adapters['thesis_runtime_status'] = 'provider_gateway_unavailable'
+            adapters['thesis'] = dict(gateway.commands(), now=now.isoformat())
+        return snapshot
+    adapters['broker'] = broker
+    try:
+        yield adapters
+    finally:
+        gateway.close()
 
 
 class RelayOutput:

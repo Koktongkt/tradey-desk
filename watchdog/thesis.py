@@ -198,6 +198,16 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
             targets = []
             for source in REQUIRED_SOURCES:
                 row = found['sources'].get(source, {})
+                safe_gaps = {'source_profile_missing', 'source_url_rejected', 'source_fact_size_limit',
+                    'source_dated_listing_missing', 'source_schema_invalid', 'source_size_limit',
+                    'source_future_timestamp', 'source_freshness_unknown', 'source_identity_invalid',
+                    'source_identity_or_date_missing', 'source_symbol_binding_invalid',
+                    'source_fetch_timeout_or_unavailable', 'earnings_event_time_unknown',
+                    'earnings_date_not_found', 'source_fetch_http_403', 'source_fetch_http_404',
+                    'source_fetch_http_429', 'source_fetch_http_500', 'source_fetch_http_503'}
+                if isinstance(row, dict) and row.get('status') == 'gap' and row.get('reason') in safe_gaps:
+                    coverage[source] = dict(status='coverage_incomplete', reason=row['reason'])
+                    continue
                 try:
                     checked = aware_timestamp(row['checked_through'])
                     document = row['coverage_url']
@@ -337,8 +347,8 @@ COMPARE = {'<': operator.lt, '<=': operator.le, '>': operator.gt, '>=': operator
 def _compact_receipts(receipts):
     """Compatibility requires exact full fact text, date, metrics and kind.
 
-    Differing prose is unresolved, not model-certified corroboration. Compare
-    before 1,000-character projection; no semantic guessing or new fact schema.
+    Differing prose is unresolved, not model-certified corroboration. Preserve
+    complete facts up to 4,000 characters; reject oversized/incomplete content.
     """
     events = {}
     facts = {}
@@ -363,7 +373,11 @@ def _compact_receipts(receipts):
             raise ValueError('receipt_invalid')
         metrics = {k: str(money(v)) for k, v in metrics.items() if isinstance(k, str)}
         compact = {k: row[k] for k in required}
-        compact['fact'] = row['fact'][:1000]
+        # Preserve complete bounded facts. Never silently clip financial text
+        # then let a neutral classification advance source cutoffs.
+        if len(row['fact']) > 4000 or row.get('content_complete', True) is not True:
+            raise ValueError('receipt_content_incomplete')
+        compact['fact'] = row['fact']
         compact.update(primary=row.get('primary') is True, metrics=metrics, urls=[row['url']])
         identity = row['fingerprint']
         if identity in events:
