@@ -66,3 +66,26 @@ Runner operational-file isolation checks passed. Artifact inspection: a daily fi
 - Daily thesis monitoring is blocked on concrete reviewed worker executables (typed `thesis_worker_blocker`); no live retrieval or model calls exist in this lane.
 - Delivery remains ambiguous for any transport without provider readback (including a Hermes cron relay); duplicate-on-retry semantics documented rather than exactly-once claimed.
 - `run_watchdog` creates `private/watchdog/` (lock directory) even for out-of-session no-ops under the selected output root; the monitoring DB itself is created only by a real commit.
+
+## Fix round 1 (review findings 1–3, base `dd10252`)
+
+RED-first evidence: the four new tests failed before the fix (`4 tests ... FAILED (failures=4)` — run-identity mismatch `'daily:20261007T204500Z' != 'daily:20261007T201500Z'` on both next-slot tests, plus the two WAL digest coverage tests failing on missing sidecar keys/undetected mutation).
+
+1. **Next-slot reporting/delivery-only retry (review Important #1) — implemented.**
+   Daily run identity is now stable per session date: `daily:<session_date>` (mechanical and smoke keep slot-stamped identities; smoke never retries). After the eligibility gate, a daily run whose committed report already carries that run identity takes `_reporting_retry`: report install, outbox delivery and completion marker ONLY — no operational re-read, no thesis retrieval, no recommit, no duplicate digest. Retry results carry `reporting_retry=true`, `committed_now=false`, `coverage_status='prior_run_committed'|'unknown'`, and never claim `all_clear` from the retry alone (reason `reporting_retry_delivery_only`). A failed retry install returns `report_install_failed` with alerts still pending. Docs (`docs/watchdog-operations.md`, module docstring) updated to match. Tests: `test_next_slot_retry_is_reporting_only_with_stable_run_identity` (broken install at close+15 → repaired reporting at close+45: stable run_id, source state untouched, latest.json installed, alerts drained, marker stamped 20:45, exactly one digest row) and `test_second_slot_after_successful_daily_is_still_reporting_only` (no duplicate digest/recommit on the second firing of a successful day).
+2. **WAL/-shm digest coverage (review Important #2) — implemented.**
+   `_input_digests` now includes `trading_journal.sqlite3-wal`/`-shm` stat+sha256 entries whenever the sidecars exist; a sidecar created or removed between the before/after snapshots changes the key set and is detected as a change. Tests: `test_digests_cover_sqlite_wal_and_shm_when_present` (sidecar absent → absent from digest; present → sha256/size recorded; changed WAL bytes → `_input_unchanged` false) and `test_wal_write_mid_run_is_detected_without_main_db_change` (a live WAL-mode insert committed mid-run from the broker adapter, connection left open so the change lives only in `-wal`: run reports `operational_input_changed_after_run`, `all_clear=false`, and the main-db sha256 is provably unchanged — the old digest would have missed it).
+3. **README operability overclaim (review Important #3) — corrected honestly (docs-only, minimal).**
+   README watchdog section and `docs/watchdog-operations.md` now state the CLI is not yet operationally wired: real invocations always fail closed (`adapter_missing_broker`, exit 1, no writes) until the Task 2 broker collector and a transport adapter are wired into the CLI; `--fixture`/`--smoke` are the offline verification paths; Task 9 smoke expectations are documented (wired transport/broker still send and publish nothing under `--smoke`; unconfigured adapters keep failing closed). No placeholder runtime was added. Also removed the docstring's hardlink-alias overclaim (review minor).
+
+Exact verification after the fix:
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest tests.test_watchdog_workflow tests.test_watchdog_schedule -q   # 45 PASS
+uv run --with 'fastmcp<4' python tests/run_tests.py fast        # 451 PASS, 0 fail/error/skip
+uv run --with 'fastmcp<4' python tests/run_tests.py scenario    # 207 PASS
+uv run --with 'fastmcp<4' python tests/run_tests.py full        # 776 PASS, 0 fail/error/skip
+git diff --check
+```
+
+Contract boundaries unchanged: monitoring-only flock, fail-closed adapters, receipt-only ack, trusted completion stamps, Task 6/7 interfaces, budgets and deadlines are untouched.

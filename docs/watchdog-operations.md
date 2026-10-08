@@ -13,6 +13,20 @@ python3 watchdog_cli.py daily                 # close+15..close+45 reporting run
 python3 watchdog_cli.py eligibility           # print the proposed cron expressions
 ```
 
+**Not yet operationally wired.** The CLI currently invokes `run_watchdog` with
+an empty adapter set, so every real (non-fixture) invocation fails closed with
+`adapter_missing_broker` (exit 1, nothing written) — by design, no placeholder
+runtime. Operational enablement requires wiring the Task 2 broker collector
+and a transport adapter into the CLI (a Task 9 deliverable). Until then, the
+CLI is for fail-closed probes and offline fixture verification:
+
+- `--fixture` runs beneath `test_artifacts/watchdog` exercise the full
+  read/commit/report path with fake adapters.
+- `--smoke` verifies path/adapter/lock wiring with no alert send and no
+  publication (asserted: no `latest.json`, no `public/`). Task 9 smoke
+  expectation: a wired transport/broker still sends and publishes nothing
+  under `--smoke`, and unconfigured adapters keep failing closed.
+
 Options:
 
 - `--root PATH` — operational storage root (default: the checkout root).
@@ -52,7 +66,12 @@ close+15..close+45 window. Scheduler firings outside eligibility are silent
 no-ops (`status=no_op`). A missing/invalid calendar is a typed
 `schedule_calendar_missing` coverage gap — market-session eligibility is never
 guessed. There is one safe bounded reporting retry at the next eligible daily
-slot; execution (retrieval) is never retried mid-run.
+slot for the same session date, under the stable per-session-date run identity
+(`daily:<session_date>`): the retry performs report installation, outbox
+delivery and the completion marker ONLY — the committed observation is not
+recommitted and thesis retrieval is not re-run (the retry result carries
+`reporting_retry=true`, `committed_now=false`, and never claims all-clear on
+its own). Execution (retrieval) is never retried mid-run.
 
 ## Paths, locks and failure isolation
 
@@ -66,7 +85,10 @@ slot; execution (retrieval) is never retried mid-run.
   here; a watchdog failure cannot prevent the autotrader.
 - Operational inputs are hashed/ stat-ed before and after every run; a change
   mid-run yields the typed `operational_input_changed_after_run` reason and
-  the run is never all-clear.
+  the run is never all-clear. The ledger is WAL-mode, so the sqlite `-wal`/
+  `-shm` sidecars are covered whenever they exist — an autotrader write
+  landing in `-wal` without a main-db checkpoint is still detected (including
+  sidecars created or removed between the before/after snapshots).
 
 ## Daily completion and delivery
 

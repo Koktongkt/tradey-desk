@@ -235,6 +235,63 @@ class MechanicalWorkflowTests(WorkflowCase):
         self.assertIn('operational_input_changed_after_run', result['reasons'])
 
 
+class OperationalInputDigestTests(WorkflowCase):
+    def test_digests_cover_sqlite_wal_and_shm_when_present(self):
+        from watchdog.cli import _input_digests, _input_unchanged
+        db = self.root / 'private/trading_journal.sqlite3'
+        wal = Path(str(db) + '-wal')
+        shm = Path(str(db) + '-shm')
+        self.assertFalse(wal.exists())  # fixture db was checkpointed on close
+        # A prior run's digest snapshot only records WAL sidecars that exist.
+        digests = _input_digests(self.root)
+        self.assertNotIn(str(wal), digests)
+        # WAL/-shm sidecars are covered once they exist.
+        wal.write_bytes(b'wal-frame-bytes')
+        shm.write_bytes(b'shm-bytes')
+        digests = _input_digests(self.root)
+        self.assertIn(str(wal), digests)
+        self.assertIn(str(shm), digests)
+        import hashlib
+        self.assertEqual(digests[str(wal)]['sha256'],
+                         hashlib.sha256(b'wal-frame-bytes').hexdigest())
+        self.assertEqual(digests[str(shm)]['size'], len(b'shm-bytes'))
+        # A WAL change between before/after snapshots is detected.
+        before = _input_digests(self.root)
+        wal.write_bytes(b'wal-frame-bytes-changed')
+        self.assertFalse(_input_unchanged(before, self.root))
+
+    def test_wal_write_mid_run_is_detected_without_main_db_change(self):
+        import hashlib
+        from watchdog.cli import run_watchdog
+        db_path = self.root / 'private/trading_journal.sqlite3'
+        self.assertFalse(Path(str(db_path) + '-wal').exists())
+        main_sha_before = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        original = self.adapters()['broker']
+        held = {}
+        def wal_writing_broker():
+            snapshot = original()
+            conn = sqlite3.connect(db_path)
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute(
+                'INSERT INTO ledger_entries (stream, sequence, record_json, record_sha256, appended_at) '
+                'VALUES (?,?,?,?,?)',
+                ('private/order_intents.jsonl', 999, json.dumps({'noise': True}),
+                 'deadbeef', '2026-10-07T14:01:00+00:00'))
+            conn.commit()
+            held['conn'] = conn  # stay open: change lives in -wal, not main db
+            return snapshot
+        result = run_watchdog('mechanical', self.root, self.output_root,
+                              self.adapters(broker=wal_writing_broker), NOW)
+        try:
+            self.assertFalse(result['input_unchanged'])
+            self.assertIn('operational_input_changed_after_run', result['reasons'])
+            self.assertEqual(result['all_clear'], False)
+            # The main-db digest alone would have missed this mutation.
+            self.assertEqual(hashlib.sha256(db_path.read_bytes()).hexdigest(), main_sha_before)
+        finally:
+            held['conn'].close()
+
+
 class DailyWorkflowTests(WorkflowCase):
     def adapters(self, broker=None, **overrides):
         return super().adapters(broker or (lambda: broker_snapshot(extra_symbol=None)), **overrides)
@@ -284,6 +341,62 @@ class DailyWorkflowTests(WorkflowCase):
                                self.adapters(thesis=self.thesis_adapters()), DAILY_NOW)
         self.assertEqual(result2['status'], 'ok')
         self.assertTrue((self.output_root / 'private/watchdog/completions/2026-10-07.json').exists())
+
+    def _outbox_digest_count(self):
+        with sqlite3.connect(self.db) as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM alert_outbox WHERE instr(payload, '\"kind\":\"digest\"') > 0"
+            ).fetchone()[0]
+
+    def test_next_slot_retry_is_reporting_only_with_stable_run_identity(self):
+        from watchdog.cli import run_watchdog
+        def broken_install(db):
+            raise ValueError('report_install_failed')
+        result = run_watchdog('daily', self.root, self.output_root,
+                              self.adapters(thesis=self.thesis_adapters(),
+                                            install_reports=broken_install), DAILY_NOW)
+        self.assertEqual(result['status'], 'failed')
+        self.assertTrue(pending_alerts(self.db))
+        source_state_before = read_source_state(self.db)
+        report_run_id = read_report(self.db).get('run_id')
+        # Next eligible daily slot (close+45) with repaired reporting: the
+        # retry must reuse the stable session-date run identity, skip thesis
+        # retrieval/recommit, drain pending alerts and install reports.
+        later = datetime(2026, 10, 7, 20, 45, tzinfo=UTC)
+        result2 = run_watchdog('daily', self.root, self.output_root,
+                               self.adapters(thesis=self.thesis_adapters(now=later)), later)
+        self.assertEqual(result2['status'], 'ok')
+        self.assertEqual(result2['run_id'], result['run_id'])
+        self.assertEqual(result2['run_id'], report_run_id)
+        self.assertFalse(result2.get('committed_now', True))
+        self.assertTrue(result2.get('reporting_retry'))
+        # Thesis retrieval/recommit skipped: source state untouched by the retry.
+        self.assertEqual(read_source_state(self.db), source_state_before)
+        self.assertEqual(read_report(self.db).get('run_id'), report_run_id)
+        # Reports installed, alerts drained, marker written with the retry `now`.
+        self.assertTrue((self.output_root / 'private/watchdog/latest.json').exists())
+        self.assertEqual(pending_alerts(self.db), [])
+        self.assertTrue(self.receipts)
+        marker = json.loads((self.output_root / 'private/watchdog/completions/2026-10-07.json').read_text())
+        self.assertIn('2026-10-07T20:45', marker['completed_at'])
+        # No second daily digest for the same session date.
+        self.assertEqual(self._outbox_digest_count(), 1)
+
+    def test_second_slot_after_successful_daily_is_still_reporting_only(self):
+        from watchdog.cli import run_watchdog
+        first = run_watchdog('daily', self.root, self.output_root,
+                             self.adapters(thesis=self.thesis_adapters()), DAILY_NOW)
+        self.assertEqual(first['status'], 'ok')
+        self.assertEqual(self._outbox_digest_count(), 1)
+        source_state_before = read_source_state(self.db)
+        later = datetime(2026, 10, 7, 20, 45, tzinfo=UTC)
+        second = run_watchdog('daily', self.root, self.output_root, self.adapters(), later)
+        self.assertEqual(second['status'], 'ok')
+        self.assertEqual(second['run_id'], first['run_id'])
+        self.assertFalse(second.get('committed_now', True))
+        self.assertTrue(second.get('reporting_retry'))
+        self.assertEqual(read_source_state(self.db), source_state_before)
+        self.assertEqual(self._outbox_digest_count(), 1)
 
     def test_daily_without_thesis_worker_is_typed_blocker_not_crash(self):
         from watchdog.cli import run_watchdog

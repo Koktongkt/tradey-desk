@@ -7,8 +7,8 @@ Fail-closed rules:
 - Paths: the operational root and output root must be the live checkout root
   or lie explicitly beneath <checkout>/test_artifacts. Fixture (--fixture) and
   smoke runs are confined beneath <checkout>/test_artifacts/watchdog. External
-  roots, symlink escapes, hardlink aliases, and operational input/output
-  overlap are rejected before any side effect.
+  roots, symlink escapes, and operational input/output overlap are rejected
+  before any side effect.
 - Locking: a single monitoring-only flock at
   <output_root>/private/watchdog/monitor.lock (LOCK_EX|LOCK_NB). Contention is
   a skipped no-op; the trading lock is never opened or created here, so a
@@ -19,8 +19,11 @@ Fail-closed rules:
   time or local start time.
 - Daily completion: the marker file is written only after the observation is
   committed AND reports install successfully. A failed reporting attempt
-  leaves alerts pending and lets the next eligible daily slot retry the
-  reporting/delivery work; execution (retrieval) is never retried mid-run.
+  leaves alerts pending and the next eligible daily slot for the same session
+  date retries reporting/delivery ONLY under the stable per-session-date run
+  identity (`daily:<session_date>`): the committed observation is not
+  recommitted and thesis retrieval is not re-run. Execution (retrieval) is
+  never retried mid-run.
 - Delivery: every pending alert (including older runs) is rendered with
   reports.render_alert and handed to adapters['transport'](alert, rendered).
   Only a genuine provider receipt (validated by store.ack_alert) acknowledges.
@@ -108,7 +111,14 @@ def resolve_paths(root, output_root, fixture: bool = False) -> tuple[Path, Path]
 
 
 def _input_digests(root: Path) -> dict:
-    """Stat + content identity of operational inputs, taken before the run."""
+    """Stat + content identity of operational inputs, taken before the run.
+
+    The ledger is WAL-mode, so the sqlite `-wal`/`-shm` sidecars are covered
+    whenever they exist: an autotrader write landing in `-wal` without a
+    main-db checkpoint would otherwise change neither the db's sha256 nor its
+    mtime. Sidecars created (or removed) between the before/after snapshots
+    are detected as a change because the key set itself differs.
+    """
     digests = {}
     db = root / 'private/trading_journal.sqlite3'
     paths = [db, root / 'private/broker_baseline.json'] + [
@@ -116,6 +126,8 @@ def _input_digests(root: Path) -> dict:
             'candidates.jsonl', 'candidate_outcomes.jsonl', 'decision_audit.jsonl',
             'order_ledger.jsonl', 'trade_journal.jsonl', 'private/order_intents.jsonl',
             'private/reviews.jsonl', 'private/protection_orders.jsonl')]
+    paths += [Path(str(db) + suffix) for suffix in ('-wal', '-shm')
+              if Path(str(db) + suffix).exists()]
     for path in paths:
         try:
             stat = path.stat()
@@ -268,7 +280,16 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
                 'all_clear': False, 'input_unchanged': _input_unchanged(before, root),
                 'committed': False, 'delivered': 0, 'pending': 0,
                 'coverage_status': 'unknown'}
-    run_id = mode + ':' + now.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    run_id = mode + ':' + (session_date if mode == 'daily' and not smoke else
+                           now.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+    # Bounded next-slot reporting/delivery retry for the same session date:
+    # the stable per-session-date identity means a later daily slot for an
+    # already-committed observation retries install + delivery ONLY (no
+    # thesis retrieval, no recommit). Smoke never retries (no side effects).
+    if mode == 'daily' and not smoke and db.exists() \
+            and read_report(db).get('run_id') == run_id:
+        return _reporting_retry(mode, run_id, session_date, root, output_root,
+                                db, adapters, now, budget, before)
 
     reasons = []
     try:
@@ -338,15 +359,14 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
                      'shadow': {'observations': 0}},
         thesis=thesis_rows, coverage=coverage, reasons=sorted(set(reasons)))
     already_committed = read_report(db).get('run_id') == run_id
-    try:
-        alerts = commit_observation(db, observation)
-    except ValueError as error:
-        raise
+    # The store itself dedupes an identical digest for the same run identity
+    # and raises `run_identity_conflict` on a same-identity content change.
+    alerts = commit_observation(db, observation)
     committed_now = not already_committed
 
     if smoke:
         # Live smoke: no alert send, no dashboard/publication.
-        delivery = {'delivered': 0, 'pending': len(alerts), 'keys': []}
+        delivery = {'delivered': 0, 'pending': len(pending_alerts(db)), 'keys': []}
         marker = False
     else:
         try:
@@ -383,6 +403,39 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke) -
 def _default_install(db):
     from .reports import install_reports
     install_reports(db)
+
+
+def _reporting_retry(mode, run_id, session_date, root, output_root, db,
+                     adapters, now, budget, before) -> dict:
+    """Reporting/delivery-only retry for an already-committed session date.
+
+    The observation and thesis retrieval are NOT redone: only report
+    installation, outbox delivery and the completion marker are retried.
+    Coverage is not re-measured here, so all_clear is never claimed from the
+    retry alone; the committed observation's coverage stands in the store.
+    """
+    try:
+        budget.check('outer')
+        (adapters.get('install_reports') or _default_install)(db)
+    except Exception:
+        # Reporting failure keeps alerts pending for the following slot.
+        return {'status': 'failed', 'mode': mode, 'run_id': run_id,
+                'reasons': ['report_install_failed'], 'all_clear': False,
+                'input_unchanged': _input_unchanged(before, root),
+                'committed': True, 'committed_now': False,
+                'reporting_retry': True, 'delivered': 0,
+                'pending': len(pending_alerts(db)), 'coverage_status': 'unknown'}
+    delivery = _deliver(db, adapters.get('transport'))
+    # Trusted stamp is the caller-supplied `now` of the retrying slot.
+    _mark_complete(output_root, session_date, run_id, now)
+    unchanged = _input_unchanged(before, root)
+    return {'status': 'ok', 'mode': mode, 'run_id': run_id, 'session_date': session_date,
+            'reasons': ['reporting_retry_delivery_only'], 'all_clear': False,
+            'input_unchanged': unchanged, 'committed': True, 'committed_now': False,
+            'reporting_retry': True, 'delivered': delivery['delivered'],
+            'pending': delivery['pending'], 'coverage_status': 'prior_run_committed',
+            'completion_marker': True,
+            'delivery': {k: v for k, v in delivery.items() if k != 'keys'}}
 
 
 def _failed(mode, before, root, extra, db):
