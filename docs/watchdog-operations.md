@@ -13,15 +13,27 @@ python3 watchdog_cli.py daily                 # close+15..close+45 reporting run
 python3 watchdog_cli.py eligibility           # print the proposed cron expressions
 ```
 
-**Not yet operationally wired.** The CLI currently invokes `run_watchdog` with
-an empty adapter set, so every real (non-fixture) invocation fails closed with
-`adapter_missing_broker` (exit 1, nothing written) — by design, no placeholder
-runtime. Operational enablement requires wiring the Task 2 broker collector
-and a transport adapter into the CLI (a Task 9 deliverable). Until then, the
-CLI is for fail-closed probes and offline fixture verification:
+**Concrete read adapters are wired; unattended activation is not complete.**
+Non-fixture CLI invocations use `watchdog.runtime.configured_broker`: an isolated
+paper-only collector subprocess, with a 90-second deadline and process-group
+cleanup on normal exit or timeout. Submitted intents, confirmed lifecycle rows
+and protective references are obligations; unsubmitted rejected proposals are
+not broker orders. A missing submitted reference still makes coverage unknown.
+The requested activity interval is 90 days, explicitly not lifetime accounting.
+The benchmark adapter runs the existing Massive loader in a separate 30-second
+worker and never manufactures missing strategy marks or total-return capability.
 
-- `--fixture` runs beneath `test_artifacts/watchdog` exercise the full
-  read/commit/report path with fake adapters.
+`--cron` emits sanitized alert text for supported Hermes script-only cron delivery.
+It returns no receipt: the outbox stays pending and notifications may repeat.
+Mechanical successful no-exception runs and out-of-slot runs are silent; daily
+successful runs emit an installed-report/coverage summary. No job registration
+is performed by the CLI. Thesis executables are not yet reviewed/configured,
+so `thesis_worker_blocker` remains a genuine daily activation blocker.
+
+Offline and confined verification:
+
+- `--fixture` CLI invocations remain broker-unwired and fail closed. Inject
+  fake adapters into `run_watchdog` for full offline read/commit/report tests.
 - `--smoke` is a DRY-RUN commit: run/portfolio/attribution evidence only — no
   condition transitions, no outbox rows, no source cutoffs, no baselines —
   and no alert send or report/publication (asserted: no `latest.json`, no
@@ -41,10 +53,12 @@ Options:
 - `--fixture` — confine both roots beneath `test_artifacts/watchdog`; any
   operational output choice is rejected (`fixture_output_confined`).
 - `--smoke` — live smoke: dry-run commit (no condition state, no outbox, no
-  source cutoffs), no alert send, no report/publication; used to verify
-  path/adapter/lock wiring without side effects or real-alert suppression.
-- `--now ISO` — trusted aware clock override (ops/testing). The completion
-  stamp is always this trusted `now`, never broker capture time.
+  source cutoffs), no alert send, no report/publication. Defaults output to
+  `test_artifacts/watchdog/smoke`; explicit output outside
+  `test_artifacts/watchdog` is rejected before any broker read.
+- `--cron` — sanitized exception-only output for script-only cron relay delivery.
+- `--now ISO` — trusted aware clock override (ops/testing). Completion is
+  this trusted `now` plus measured elapsed time, never broker capture time.
 
 Unknown actions fail closed with exit code 2 and no side effects.
 

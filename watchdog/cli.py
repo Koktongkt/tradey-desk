@@ -59,7 +59,7 @@ Fail-closed rules:
   no-readback receipt (`ambiguous_delivery_possible_duplicates`); both keep
   alerts pending.
 
-Adapter keys (all fake in tests; no live defaults):
+Adapter keys (run_watchdog requires explicit callbacks; CLI supplies live reads):
   broker:     () -> BrokerSnapshot                       (Task 2 collector)
   transport:  (alert, rendered_text) -> receipt|None|raise
   thesis:     {'discover','retrieve','classify'} JSONCommand trio + 'now'
@@ -136,6 +136,10 @@ def resolve_paths(root, output_root, fixture: bool = False, smoke: bool = False)
         for resolved in (root_r, out_r):
             if resolved != watchdog_root and watchdog_root not in resolved.parents:
                 raise ValueError('fixture_output_confined')
+    if smoke:
+        watchdog_root = TEST_ARTIFACTS / 'watchdog'
+        if out_r != watchdog_root and watchdog_root not in out_r.parents:
+            raise ValueError('smoke_output_confined')
     if root_r != out_r:
         private = root_r / 'private'
         smoke_artifacts_out = smoke and (
@@ -539,6 +543,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='confine root and output beneath test_artifacts/watchdog')
     parser.add_argument('--smoke', action='store_true',
                         help='live smoke: dry-run commit, no alert send, no publication')
+    parser.add_argument('--cron', action='store_true',
+                        help='sanitized exception-only stdout for supported cron relay delivery')
     parser.add_argument('--now', default=None, help='trusted aware ISO clock override (ops/testing)')
     try:
         args = parser.parse_args(argv)
@@ -549,13 +555,33 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({'mechanical_cron': schedule.MECHANICAL_CRON,
                           'daily_cron': schedule.DAILY_CRON}))
         return 0
+    from .runtime import RelayOutput, configured_broker, configured_benchmark
+    transport = RelayOutput()
     try:
         now = aware_timestamp(args.now) if args.now else datetime.now(timezone.utc)
-        output_root = args.output_root or args.root
-        result = run_watchdog(args.action, Path(args.root), Path(output_root),
-                              {}, now, fixture=args.fixture, smoke=args.smoke)
-    except (ValueError, OSError, TimeoutError) as error:
-        print('watchdog: rejected: ' + str(error))
+        output_root = args.output_root or (str(TEST_ARTIFACTS / 'watchdog/smoke') if args.smoke else args.root)
+        # Validate before constructing any credential-bearing callback.
+        root, output = resolve_paths(args.root, output_root, fixture=args.fixture, smoke=args.smoke)
+        adapters = {} if args.fixture else {
+            'broker': lambda: configured_broker(root, now),
+            'transport': transport,
+            'benchmark': configured_benchmark,
+        }
+        result = run_watchdog(args.action, root, output,
+                              adapters, now, fixture=args.fixture, smoke=args.smoke)
+    except (ValueError, OSError, TimeoutError):
+        print('Watchdog request rejected; no verified observation.')
         return 2
-    print(json.dumps(result, sort_keys=True))
+    if args.cron:
+        if result.get('status') not in {'no_op', 'skipped'}:
+            text = transport.text()
+            if text:
+                print(text)
+            elif result.get('status') != 'ok':
+                print('Watchdog observation unavailable; coverage not verified.')
+            if args.action == 'daily' and result.get('status') == 'ok':
+                print('Watchdog daily report installed. Coverage: ' + result.get('coverage_status', 'unknown')
+                      + '. All-clear: ' + str(result.get('all_clear') is True) + '.')
+    else:
+        print(json.dumps(result, sort_keys=True))
     return 0 if result.get('status') in {'ok', 'no_op', 'skipped'} else 1

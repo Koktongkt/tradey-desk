@@ -118,7 +118,9 @@ def broker_snapshot(complete=True, extra_symbol='LEG', stop_status='open'):
 
 class WorkflowCase(TestCase):
     def setUp(self):
-        self.artifacts = Path(tempfile.mkdtemp(prefix='workflow-', dir=CHECKOUT / 'test_artifacts'))
+        confined = CHECKOUT / 'test_artifacts/watchdog'
+        confined.mkdir(parents=True, exist_ok=True)
+        self.artifacts = Path(tempfile.mkdtemp(prefix='workflow-', dir=confined))
         self.root = build_operational_root(self.artifacts)
         self.output_root = self.artifacts / 'output'
         self.output_root.mkdir()
@@ -163,6 +165,113 @@ class WorkflowCase(TestCase):
                 'retrieve': JSONCommand([sys.executable, str(worker)]),
                 'classify': JSONCommand([sys.executable, str(worker)]),
                 'now': now.astimezone(timezone.utc).isoformat()}
+
+
+class RuntimeAdapterTests(WorkflowCase):
+    def test_configured_broker_uses_read_only_worker_and_exact_operational_refs(self):
+        from unittest.mock import patch
+        from dataclasses import asdict
+        from watchdog.runtime import configured_broker
+        import subprocess
+        calls = []
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, json.dumps(asdict(broker_snapshot()), default=str), '')
+        with patch('watchdog.runtime._run_worker', side_effect=run):
+            result = configured_broker(self.root, NOW)
+        self.assertTrue(result.complete)
+        argv, kwargs = calls[0]
+        self.assertEqual(argv[-2:], ['-m', 'watchdog.broker'])
+        self.assertEqual(json.loads(kwargs['input'])['refs'], ['parent'])
+        self.assertLessEqual(kwargs['timeout'], 90)
+        self.assertNotIn('shell', kwargs)
+
+    def test_runtime_transport_never_invents_receipts(self):
+        from watchdog.runtime import RelayOutput
+        output = RelayOutput()
+        self.assertIsNone(output({'key': 'x'}, 'Watchdog protection unprotected'))
+        self.assertIn('Watchdog protection', output.text())
+        self.assertIn('unverified', output.text())
+
+    def test_smoke_rejects_production_output_before_broker_read(self):
+        from watchdog.cli import resolve_paths
+        with self.assertRaisesRegex(ValueError, 'smoke_output_confined'):
+            resolve_paths(CHECKOUT, CHECKOUT, smoke=True)
+
+    def test_cli_wires_broker_and_smoke_defaults_to_confined_output(self):
+        from watchdog.cli import main
+        from unittest.mock import patch
+        import contextlib, io
+        with patch('watchdog.runtime.configured_broker', return_value=broker_snapshot()), \
+                patch('watchdog.cli.run_watchdog', return_value={'status': 'ok'}) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['mechanical', '--smoke', '--now', NOW.isoformat()]), 0)
+            args = run.call_args.args
+            self.assertEqual(args[2], CHECKOUT / 'test_artifacts/watchdog/smoke')
+            self.assertTrue(callable(args[3]['broker']))
+            self.assertTrue(args[3]['broker']().complete)
+
+    def test_cron_no_op_is_silent(self):
+        from watchdog.cli import main
+        from unittest.mock import patch
+        import contextlib, io
+        out = io.StringIO()
+        with patch('watchdog.cli.run_watchdog', return_value={'status': 'no_op'}), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(main(['mechanical', '--cron']), 0)
+        self.assertEqual(out.getvalue(), '')
+
+    def test_benchmark_worker_is_bounded_and_uses_existing_loader(self):
+        from watchdog.runtime import configured_benchmark
+        from unittest.mock import patch
+        import subprocess
+        strategy = {'observations': [{'date': '2026-10-06'}, {'date': '2026-10-07'}]}
+        with patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess([], 0, '{}', '')) as run, \
+                patch('watchdog.benchmark.compare_benchmark', return_value={'sample_count': 2}) as compare:
+            self.assertEqual(configured_benchmark(strategy), {'sample_count': 2})
+        self.assertEqual(json.loads(run.call_args.kwargs['input']), {'start': '2026-10-06', 'end': '2026-10-07'})
+        self.assertLessEqual(run.call_args.kwargs['timeout'], 30)
+        compare.assert_called_once_with(strategy, {})
+
+    def test_unsubmitted_proposals_are_not_broker_reference_obligations(self):
+        from watchdog.runtime import configured_broker
+        from watchdog.types import OperationalSnapshot
+        from unittest.mock import patch
+        from dataclasses import asdict
+        import subprocess
+        snapshot = OperationalSnapshot({
+            'order_ledger.jsonl': [dict(client_order_id='never-submitted', status='rejected')],
+            'private/order_intents.jsonl': [dict(client_order_id='parent')],
+            'private/protection_orders.jsonl': [dict(client_order_id='stop-live')],
+        }, frozenset(), NOW.isoformat(), True, [])
+        with patch('watchdog.runtime.read_operational', return_value=snapshot), \
+                patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(asdict(broker_snapshot()), default=str), '')) as run:
+            configured_broker(self.root, NOW)
+        self.assertEqual(json.loads(run.call_args.kwargs['input'])['refs'], ['parent', 'stop-live'])
+
+    def test_broker_timeout_kills_its_entire_worker_process_group(self):
+        from watchdog.runtime import _run_worker
+        from unittest.mock import Mock, patch
+        import subprocess, signal
+        process = Mock(pid=12345, returncode=0)
+        process.communicate.side_effect = subprocess.TimeoutExpired('worker', 90)
+        with patch('watchdog.runtime.subprocess.Popen', return_value=process) as spawn, \
+                patch('watchdog.runtime.os.killpg') as kill:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                _run_worker(['/usr/bin/python3', '-m', 'watchdog.broker'], input='{}', timeout=90,
+                            cwd=CHECKOUT, capture_output=True, text=True)
+        self.assertTrue(spawn.call_args.kwargs['start_new_session'])
+        kill.assert_called_once_with(12345, signal.SIGKILL)
+        process.wait.assert_called_once()
+
+    def test_runtime_worker_failure_is_typed_and_has_no_fake_snapshot(self):
+        from watchdog.runtime import configured_broker
+        from unittest.mock import patch
+        import subprocess
+        with patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess([], 3, '', 'private secret')):
+            with self.assertRaisesRegex(ValueError, '^broker_runtime_failed$'):
+                configured_broker(self.root, NOW)
 
 
 class MechanicalWorkflowTests(WorkflowCase):
