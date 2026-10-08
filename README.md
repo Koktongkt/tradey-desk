@@ -104,6 +104,10 @@ The initial cutover is deliberately non-rolling because old JSONL-only writers d
 
 Keep the database private. Create consistent snapshots with `python3 sqlite_ledger.py backup --root /path/to/tradey-desk --output /secure/path/trading-journal.sqlite3`; the command uses SQLite's backup API, validates the snapshot, fsyncs it, and installs it atomically. Retain snapshots off-host and periodically test restoration. The broker remains authoritative for orders and fills; migration does not weaken fresh broker reconciliation.
 
+## Position/portfolio watchdog (monitoring only)
+
+The watchdog is a read-only monitoring lane with no trading authority. **The CLI is not yet operationally wired**: `python3 watchdog_cli.py mechanical|daily` always runs with an empty adapter set and therefore fails closed (`adapter_missing_broker`, exit 1, no writes) until the Task 2 broker collector and a transport adapter are wired into the CLI entry point. Offline verification today: `--fixture` runs (confined beneath `test_artifacts/watchdog`) exercise the full read/commit/report path with fake adapters, and `--smoke` performs a dry-run commit — no condition transitions or outbox rows, no source cutoffs, no alert send, no publication (no `latest.json`, no `public/`) — so a smoke probe can never suppress a real alert. Task 9 smoke expectations: a wired transport/broker still sends nothing and publishes nothing under `--smoke`, and a real mechanical/daily run remains fail-closed until adapters are explicitly configured. Other flags: `--root`, `--output-root`; unknown actions fail closed. It uses its own monitoring-only lock under the selected output root, never the trading lock or kill switch, and cannot block the autotrader. Default outputs live at `private/watchdog/` (monitoring store, latest report generations, daily completion markers). Proposed cron registration (`5 14-21 * * 1-5` mechanical, `15,45 17-22 * * 1-5` daily UTC) is filtered against the actual Alpaca session calendar; firings outside eligibility are silent no-ops and registration remains a separate operational change. Delivery acknowledges only genuine provider receipts; ambiguous transports keep alerts pending with disclosed duplicate-on-retry semantics. See `docs/watchdog-operations.md` for budgets, path rules, completion markers, and typed blockers.
+
 ## One-tree development and release
 
 `/opt/data/projects/tradey-desk` is both the operational directory and the Git checkout. Edit, test, review, commit, and push from this directory; do not maintain a second source mirror. `origin` points to the public GitHub repository. The scheduled `cron/*.sh` wrappers also invoke this directory.
@@ -121,7 +125,7 @@ Use the smallest sufficient tier while editing:
 uv run --with 'fastmcp<4' python tests/run_tests.py fast
 
 # Isolated vertical workflows across research, review, execution, reconciliation,
-# notifications, diagnostics, and dashboard projection.
+# notifications, diagnostics, dashboard projection, and the monitoring watchdog.
 uv run --with 'fastmcp<4' python tests/run_tests.py scenario
 
 # Required before release: fast + scenario + deep research-path coverage.
