@@ -23,7 +23,9 @@
       "test_watchdog_operational",
       "test_watchdog_broker",
          "test_watchdog_lineage",
-      "test_watchdog_mechanical"
+      "test_watchdog_mechanical",
+      "test_watchdog_accounting",
+      "test_watchdog_benchmark"
     ],
     "scenario": [
       "test_autotrader_reconciliation",
