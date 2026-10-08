@@ -4,7 +4,8 @@ Evidence dictionaries are private trusted-adapter inputs, not model assertions.
 Completeness flags describe a requested sweep, not lifetime accounting coverage.
 """
 from decimal import Decimal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import date
 from .types import BrokerSnapshot, LineageResult, aware_timestamp, money
 
 ZERO = Decimal(0)
@@ -32,6 +33,31 @@ def _interval(broker, start, end):
         return aware_timestamp(interval['start']) < start and aware_timestamp(interval['end']) > end
     except (KeyError, ValueError, TypeError):
         return False
+
+
+def _rounded_average_matches(notional, qty, average, precision):
+    """Verified HALF_EVEN rounding cell, in notional space; no division of P&L.
+
+    Never infer a quantum from printed trailing digits. Unknown precision is
+    distinct from contradicting exact events. Cell endpoints honor tie parity.
+    """
+    try:
+        quantum = money(precision['quantum'])
+        if (not precision.get('provenance') or precision.get('rounding') != 'ROUND_HALF_EVEN'
+                or quantum <= 0 or quantum.as_tuple().digits != (1,) or qty <= 0):
+            return None
+        from decimal import localcontext
+        with localcontext() as context:
+            context.prec = sum(len(v.as_tuple().digits) + abs(int(v.as_tuple().exponent))
+                               for v in (notional, qty, average, quantum)) + 32
+            units = average / quantum
+            if units != units.to_integral_value():
+                return False
+            difference = abs(notional - qty * average)
+            half_cell = qty * quantum / 2
+            return difference < half_cell or (difference == half_cell and units % 2 == 0)
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def account_strategy(lineage: LineageResult, broker: BrokerSnapshot, baseline: dict, prior_snapshots: list[dict]) -> dict:
@@ -224,7 +250,7 @@ def account_strategy(lineage: LineageResult, broker: BrokerSnapshot, baseline: d
             totals[position['symbol']] = totals.get(position['symbol'], ZERO) + qty
             matching = [p for p in broker.positions if p['symbol'] == position['symbol']]
             mark = matching[0] if len(matching) == 1 else {}
-            if qty and (broker.coverage.get('positions') != 'complete' or not _proven(mark, ('current_price', 'qty'))
+            if qty and (broker.coverage.get('positions') != 'complete' or not _proven(mark, ('current_price', 'qty', 'market_value'))
                         or money(mark.get('current_price', 0)) <= 0):
                 reasons.append('mark_evidence_unknown')
                 continue
@@ -253,8 +279,31 @@ def account_strategy(lineage: LineageResult, broker: BrokerSnapshot, baseline: d
                                and fill['broker_order_id'] == observation['broker_order_id']]
                     qty = sum((money(f['quantity']) for f in matches), ZERO)
                     notional = sum((money(f['notional']) for f in matches), ZERO)
-                    if qty != money(observation['cumulative_quantity']) or notional != money(observation['cumulative_notional']):
+                    if qty != money(observation['cumulative_quantity']):
                         errors.append('execution_totals_discrepancy')
+                    elif notional != money(observation['cumulative_notional']):
+                        # Task 3 emits qty * filled_avg_price, not exact notional.
+                        # Resolve the source without changing its contract.
+                        orders = []
+                        def collect(order):
+                            if order.get('id') == observation['broker_order_id']:
+                                orders.append(order)
+                            for leg in order.get('legs', []):
+                                collect(leg)
+                        for order in broker.orders:
+                            collect(order)
+                        source = orders[0] if len(orders) == 1 else {}
+                        if (not _proven(source, ('filled_qty', 'filled_avg_price'))
+                                or money(source['filled_qty']) != qty
+                                or money(source['filled_avg_price']) * qty != money(observation['cumulative_notional'])):
+                            errors.append('execution_totals_discrepancy')
+                        else:
+                            precision = baseline.get('average_price_precision', {}).get(observation['broker_order_id'], {})
+                            reconciled = _rounded_average_matches(notional, qty, money(source['filled_avg_price']), precision)
+                            if reconciled is None:
+                                reasons.append('execution_precision_unknown')
+                            elif not reconciled:
+                                errors.append('execution_totals_discrepancy')
                 except (KeyError, ValueError, TypeError):
                     reasons.append('execution_totals_unknown')
     for symbol, qty in totals.items():
@@ -262,6 +311,13 @@ def account_strategy(lineage: LineageResult, broker: BrokerSnapshot, baseline: d
         observed = money(matching[0]['qty']) if len(matching) == 1 else ZERO if not matching else None
         if qty != observed:
             errors.append('broker_quantity_discrepancy')
+        elif qty and len(matching) == 1 and _proven(matching[0], ('market_value',)):
+            # No broker rounding contract is verified: exact Decimal equality,
+            # once per symbol, never per idea or against legacy inventory.
+            marked_rows = [r for r in rows if r['symbol'] == symbol]
+            allocated = sum((r['market_value'] for r in marked_rows), ZERO)
+            if sum((r['quantity'] for r in marked_rows), ZERO) == qty and allocated != money(matching[0]['market_value']):
+                errors.append('broker_market_value_discrepancy')
     reasons = sorted(set(reasons + errors))
     if not reasons:
         equity = cash + value
@@ -409,6 +465,14 @@ def account_overview(broker: BrokerSnapshot, prior_snapshots: list[dict]) -> dic
                 or not _covers(baseline.get('flow_coverage', {}), start, end) or not _interval(broker, start, end)
                 or broker.coverage.get('account_cashflows') != 'complete' or broker.coverage.get('activities') != 'complete'):
             raise ValueError('account_cashflows_unknown')
+        basis = baseline.get('flow_coverage', {}).get('date_basis', {})
+        try:
+            if not basis.get('provenance'):
+                raise ValueError('account_flow_date_basis_unknown')
+            zone = ZoneInfo(basis['timezone'])
+        except (KeyError, ValueError, TypeError, ZoneInfoNotFoundError):
+            raise ValueError('account_flow_date_basis_unknown')
+        start_day, end_day = start.astimezone(zone).date(), end.astimezone(zone).date()
         flows, seen = ZERO, {}
         for activity in broker.activities:
             kind = activity.get('activity_type')
@@ -418,13 +482,20 @@ def account_overview(broker: BrokerSnapshot, prior_snapshots: list[dict]) -> dic
                 raise ValueError('account_transfer_classification_unknown')
             if not _proven(activity, ('id', 'date', 'net_amount')):
                 raise ValueError('account_cashflows_unknown')
-            day = activity['date']
-            if not start.date().isoformat() <= day <= end.date().isoformat():
-                continue
-            # A date-only flow on the opening day is ambiguous unless baseline
-            # starts at midnight. No guessed before/after allocation.
-            if day == start.date().isoformat() and (start.hour or start.minute or start.second):
-                raise ValueError('account_flow_boundary_unknown')
+            day = date.fromisoformat(activity['date'])
+            if _proven(activity, ('transaction_time',)):
+                when = aware_timestamp(activity['transaction_time'])
+                if when.astimezone(zone).date() != day:
+                    raise ValueError('account_cashflows_unknown')
+                if not start < when <= end:
+                    continue
+            else:
+                if not start_day <= day <= end_day:
+                    continue
+                # Date-only evidence cannot order either boundary day relative
+                # to a captured instant, even midnight. Never guess a cutoff.
+                if day in {start_day, end_day}:
+                    raise ValueError('account_flow_boundary_unknown')
             identity, amount = activity['id'], money(activity['net_amount'])
             if (kind == 'CSD' and amount < 0) or (kind == 'CSW' and amount > 0):
                 raise ValueError('account_cashflow_sign_invalid')
@@ -444,7 +515,7 @@ def account_overview(broker: BrokerSnapshot, prior_snapshots: list[dict]) -> dic
             result.update(flow_adjusted_equity=adjusted, account_baseline_version=baseline['version'], observations=curve, drawdown=_drawdown(curve), mark_gaps=gaps)
     except (ValueError, KeyError, TypeError) as error:
         reason = str(error)
-        reasons.append(reason if reason in {'account_baseline_unknown', 'account_cashflows_unknown', 'account_transfer_classification_unknown', 'account_flow_boundary_unknown', 'account_cashflow_sign_invalid', 'account_cashflow_conflict'} else 'account_input_invalid')
+        reasons.append(reason if reason in {'account_baseline_unknown', 'account_cashflows_unknown', 'account_transfer_classification_unknown', 'account_flow_boundary_unknown', 'account_flow_date_basis_unknown', 'account_cashflow_sign_invalid', 'account_cashflow_conflict'} else 'account_input_invalid')
     result.update(reasons=sorted(set(reasons)), coverage=dict(status='unknown' if reasons else 'complete',
                   valid_mark_samples=len(result['observations'])))
     return result

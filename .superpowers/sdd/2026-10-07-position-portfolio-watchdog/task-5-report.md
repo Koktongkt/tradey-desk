@@ -134,3 +134,62 @@ All names below are in the two new fast modules.
 - Raw broker-mark observations stay broker snapshots. Task 8 must obtain verified completed-close synchronization evidence or retain an unavailable comparator rather than relabel those marks. Missing intermediate marks reduce observed drawdown coverage; no unseen-path claim is made.
 - Loader dividend facts are useful evidence but remain unverified for total-return computation until release capability checks establish split-basis compatibility, ex-date reinvestment and proxy expense treatment. Pagination is deliberately a coverage blocker, not silently ignored.
 - **Live Massive/broker capability probe explicitly deferred to Task 9.** No configured key read or live request was performed here; normal tests patch only the existing network helper and clock. Independent reviewer and release/live authorization remain with the parent. No scheduler or operational controls changed.
+
+## Review repair round 1 — I1 / I2 / I3
+
+Fix base: `b047d0f`. Scope: `watchdog/accounting.py`, `tests/test_watchdog_accounting.py`, append-only additions to this report. Task 3 lineage/broker/types contracts and source are unchanged. No progress file, manifest, controls, scheduler, live requests, credentials, subagents or pushes changed/performed. Read project AGENTS, Task 5 brief/review and design §7 before repair. Fresh frozen-diff re-review remains with the parent; self-review is not independent acceptance.
+
+### Regression evidence (RED before each behavior repair)
+
+All focused commands use `PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest ... -v` (or `-q` for the whole focused suite).
+
+| Finding | Test names (`test_watchdog_accounting.AccountingTests`) | Observed RED | Observed GREEN |
+|---|---|---|---|
+| I1 broker mark evidence/reconciliation | `test_normalized_market_value_contradiction_withholds_performance`, `test_normalized_market_value_requires_provenance`, `test_market_value_reconciles_same_symbol_ideas_in_aggregate` | 3 tests / 3 failures: published 10015 despite broker 999, published return without value provenance, ignored a .00000001 aggregate contradiction | Accounting module 35 PASS after repair; final focused includes all 3 PASS |
+| I2 verified date basis, equivalent offsets and both boundaries | `test_account_flow_equivalent_offsets_and_both_boundaries_are_unknown`, `test_account_flow_date_basis_must_be_verified`, `test_exact_proven_flow_time_resolves_boundaries` | 3 tests / 3 failures: UTC spelling reported .02; missing basis reported 0; exact proven opening flow unresolved | Accounting module 38 PASS after repair; final focused includes all 3 PASS |
+| I3 rounded derived observation versus exact events | `test_real_lineage_rounded_average_preserves_exact_event_cash`, `test_rounded_average_without_verified_precision_is_unknown`, `test_rounded_average_rejects_material_difference_and_missing_events` | 3 tests / 2 failures: valid real lineage reported error; absent precision mislabeled contradiction. Material/missing-event guard already passed (preserved coverage, not claimed as new RED). | Focused 51 PASS after repair, then 52 PASS with rounding-cell audit test |
+| Self-review I1 missing evidence must not invent contradiction | Extended `test_missing_mark_is_gap_not_carried_forward` | 1 test / 1 failure: missing mark incorrectly classified error by the new aggregate check | Final focused 52 PASS; aggregate comparison now runs only when marked quantity is complete |
+
+Added `test_verified_rounding_cell_ties_and_invalid_precision` as an audit of the already-green Decimal rounding helper: HALF_EVEN inclusive even/exclusive odd ties, just-outside-cell rejection, absent provenance, unsupported rounding and invalid quantum. It passed without a product behavior change; not claimed as RED evidence.
+
+### Precision decisions and downstream input schema
+
+**I1:** Require normalized broker `market_value` provenance in addition to quantity/current price. Compare sum of exactly owned idea values for each symbol against its single broker position value, only after exact aggregate quantity reconciliation and complete marks. Do not compare each idea against the whole symbol value, do not attribute legacy holdings, and do not turn unavailable marks into discrepancies. Precision policy is **exact Decimal equality with zero tolerance**: no verified broker market-value rounding policy exists in this task. The fractional fixture uses normalized quantity 2, price 105.12345678, value 210.24691356; a one-unit last-place discrepancy is rejected. Existing mark fixtures now carry realistic market-value/provenance evidence and changed quantities carry consistent value. If real broker value rounding prevents equality, downstream must retain incomplete/error accounting until an independently verified policy is separately specified; no assumed cents tolerance.
+
+**I2:** Add independently verified account baseline evidence:
+
+```text
+account_baseline.flow_coverage.date_basis:
+  timezone: explicit IANA timezone identifier
+  provenance: independently verified broker activity-date contract reference
+```
+
+No timezone default is inferred from ISO spelling, exchange session dates, the query creation-time basis, or a completeness flag. Missing/invalid basis withholds performance with `account_flow_date_basis_unknown`, even if the inventory is empty. Convert both baseline and capture instants into that verified basis before interpreting activity dates. Date-only flows on **either boundary day** fail closed with `account_flow_boundary_unknown`, including midnight; date alone cannot order a flow relative to an instant. A genuine normalized `transaction_time` with its own provenance may resolve timing, must agree with the verified activity date basis, and uses the explicit `(baseline, capture]` interval. `created_at` is never a substitute. The fixture New York basis is explicit test evidence, **not a live-verified assertion about Alpaca**. Existing .01 account-return fixture moves its deposit to an unambiguous interior date; it does not invent a timestamp for a date-only row. Raw account observations remain available when performance is withheld.
+
+**I3:** Task 3 output remains unchanged. Identify average-derived cumulative observations by exact order ID in the existing normalized broker order tree (including legs), corroborated filled quantity/average provenance, and `cumulative_notional == filled_qty * filled_avg_price`. Exact event notionals and quantities remain the only FIFO/cash inputs. Exact cumulative quantity must always match; uncorroborated/exact-notional discrepancies stay errors. For a differing **corroborated average-derived** notional, accept only an independently verified precision policy supplied in the versioned strategy baseline:
+
+```text
+baseline.average_price_precision[broker_order_id]:
+  quantum: canonical positive power-of-ten Decimal string (e.g. "0.00000001")
+  rounding: "ROUND_HALF_EVEN"
+  provenance: independently verified broker average-price precision/rounding reference
+```
+
+Never derive the quantum from the number of displayed decimal places. This release supports only the explicitly named HALF_EVEN policy, not arbitrary tolerance. Validate the exact notional against the rounding cell of the reported average in **notional space**: `abs(exact_notional - quantity * average) < quantity * quantum / 2`; equality at either endpoint is valid only for an even average/quantum integer. The helper uses an operand-sized local Decimal context for finite products/endpoints, never floats or a rounded division of exact event totals. Absent/unverified policy returns `execution_precision_unknown` (unknown, not a false exact contradiction), withholds totals, and never invents a precision contract. Real-lineage fixture 1@100 + 2@101 retains exact buy notional 302 despite derived 302.00000001; sale 1@110 gives cash 9808, remaining basis 202, value 210, equity 10018 and realized 10. Verified 1e-8 quantum rejects averages 100.66666668 and 100.67 and missing execution events. The test policy is a hypothetical verified input, **not live Alpaca capability evidence**.
+
+No Task 3 additive fields were needed. Existing result shapes remain unchanged; new typed reasons are `broker_market_value_discrepancy`, `account_flow_date_basis_unknown`, and `execution_precision_unknown`. Task 8 must persist/audit these versioned baseline inputs and keep unavailable evidence unknown, rather than fill them from formatting or defaults.
+
+### Final verification / self-review
+
+Executed after the missing-mark self-review repair:
+
+```sh
+PYTHONPATH=.:tests uv run --with 'fastmcp<4' python -m unittest test_watchdog_accounting test_watchdog_benchmark -q
+uv run --with 'fastmcp<4' python tests/run_tests.py fast
+uv run --with 'fastmcp<4' python tests/run_tests.py full
+git diff --check
+```
+
+Actual results: **focused 52 PASS** (42 accounting + 10 benchmark), **fast 24 modules / 380 PASS**, **full 35 modules / 660 PASS**; failures=0, errors=0, skipped=0. Used the configured persistent scratch TMPDIR, not a `test_artifacts` temporary ancestor; no SQLite fixture isolation failures. Existing expected `BLOCKER`, `SYSTEM_FAILURE` and `DECISION` fixture diagnostic prints are not test failures. AST parsing passed for both changed Python files; added-line static security scan found no shell injection, eval/exec, unsafe deserialization or credential assignments. Inspected the full source diff for coverage downgrades, quantity/event conservation, source identity, rounding boundaries, date-basis assumptions and absent-mark classification. `git diff --check` was clean.
+
+Remaining integration concerns are explicit, not papered over: verified activity-date basis and average-price rounding capability must be supplied by audited runtime evidence; exact market-value reconciliation may conservatively withhold genuinely rounded broker values until a separately reviewed policy exists; live capability checks and independent re-review remain deferred. No timestamp, precision, cutoff, baseline or zero-cost evidence was synthesized to force completeness.

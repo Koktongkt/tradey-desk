@@ -17,7 +17,7 @@ def fixture():
     fills = [dict(activity_id=a['id'], broker_order_id=a['order_id'], side=a['side'], quantity=a['qty'], notional=a['qty']*a['price'], timestamp=a['transaction_time']) for a in activities]
     position = dict(position_id='idea', symbol='AAA', ownership='verified', remaining_quantity=D(1), stop=D(90), fills=fills,
                     fill_observations=[dict(broker_order_id='entry', cumulative_quantity=D(2), cumulative_notional=D(200), trusted=True)])
-    mark = dict(symbol='AAA', qty=D(1), current_price=D(105), provenance=dict(current_price='get_all_positions.current_price', qty='get_all_positions.qty'))
+    mark = dict(symbol='AAA', qty=D(1), current_price=D(105), market_value=D(105), provenance=dict(current_price='get_all_positions.current_price', qty='get_all_positions.qty', market_value='get_all_positions.market_value'))
     coverage = {k: 'complete' for k in ('activities', 'fees', 'distribution', 'corporate_actions', 'account_cashflows', 'positions', 'account')}
     coverage['interval'] = dict(start='2026-09-30T00:00:00+00:00', end='2026-10-07T00:00:00+00:00')
     broker = BrokerSnapshot(dict(equity=D(50000), cash=D(40000), provenance=dict(equity='get_account_info.equity', cash='get_account_info.cash')), [mark], [], activities, [], END, True, coverage)
@@ -27,7 +27,127 @@ def fixture():
     return lineage, broker, baseline
 
 
+def rounded_fixture():
+    from watchdog.lineage import build_lineage
+    from watchdog.types import OperationalSnapshot
+    _, broker, baseline = fixture()
+    op = OperationalSnapshot({'candidates.jsonl': [dict(candidate_id='idea', dossier_hash='dossier', symbol='AAA')],
+          'private/reviews.jsonl': [dict(dossier_hash='dossier', proposal_hash='proposal', evidence_id='evidence')],
+          'private/order_intents.jsonl': [dict(client_order_id='parent', plan=dict(action='BUY', symbol='AAA', proposal_hash='proposal', stop='90'))]}, frozenset(), END, True, [])
+    broker.orders = [dict(id='entry', client_order_id='parent', status='filled', symbol='AAA', side='buy', filled_qty=D(3), filled_avg_price=D('100.66666667'), provenance=dict(filled_qty='get_orders.filled_qty', filled_avg_price='get_orders.filled_avg_price'), legs=[dict(id='exit', client_order_id='exit-client', status='partially_filled', symbol='AAA', side='sell', filled_qty=D(1), filled_avg_price=D(110), provenance=dict(filled_qty='get_orders.filled_qty', filled_avg_price='get_orders.filled_avg_price'), legs=[])])]
+    broker.coverage.update(orders='complete', references='complete')
+    broker.activities[0]['qty'] = D(1)
+    another = deepcopy(broker.activities[0])
+    another.update(id='buy2', qty=D(2), price=D(101), transaction_time='2026-10-03T15:00:00+00:00')
+    broker.activities.append(another)
+    broker.positions[0].update(qty=D(2), market_value=D(210))
+    baseline['average_price_precision'] = {'entry': dict(quantum='0.00000001', rounding='ROUND_HALF_EVEN', provenance='independently_verified_broker_average_contract')}
+    lineage = build_lineage(op, broker)
+    assert lineage.coverage['status'] == 'complete'
+    return lineage, broker, baseline
+
+
 class AccountingTests(unittest.TestCase):
+    def test_normalized_market_value_contradiction_withholds_performance(self):
+        from watchdog.broker import normalize_position
+        lineage, broker, baseline = fixture()
+        broker.positions = [normalize_position(dict(symbol='AAA', side='long', qty='1', avg_entry_price='100', current_price='105', market_value='999', cost_basis='100'))]
+        result = accounting.account_strategy(lineage, broker, baseline, [])
+        self.assertIsNone(result['marked_equity'])
+        self.assertIn('broker_market_value_discrepancy', result['reasons'])
+
+    def test_normalized_market_value_requires_provenance(self):
+        lineage, broker, baseline = fixture()
+        broker.positions[0]['provenance'].pop('market_value')
+        result = accounting.account_strategy(lineage, broker, baseline, [])
+        self.assertIsNone(result['return'])
+        self.assertIn('mark_evidence_unknown', result['reasons'])
+
+    def test_market_value_reconciles_same_symbol_ideas_in_aggregate(self):
+        from watchdog.broker import normalize_position
+        lineage, broker, baseline = fixture()
+        other = deepcopy(lineage.positions[0])
+        other['position_id'] = 'idea2'
+        for fill in other['fills']:
+            fill['activity_id'] += '2'
+            fill['broker_order_id'] += '2'
+        other['fill_observations'][0]['broker_order_id'] += '2'
+        for activity in deepcopy(broker.activities):
+            activity['id'] += '2'
+            activity['order_id'] += '2'
+            broker.activities.append(activity)
+        lineage.positions.append(other)
+        broker.positions = [normalize_position(dict(symbol='AAA', side='long', qty='2', avg_entry_price='100', current_price='105.12345678', market_value='210.24691356', cost_basis='200'))]
+        result = accounting.account_strategy(lineage, broker, baseline, [])
+        self.assertEqual(result['coverage']['status'], 'complete')
+        self.assertEqual(result['managed_market_value'], D('210.24691356'))
+        self.assertEqual([p['market_value'] for p in result['positions']], [D('105.12345678')]*2)
+        broker.positions[0]['market_value'] += D('.00000001')
+        self.assertIn('broker_market_value_discrepancy', accounting.account_strategy(lineage, broker, baseline, [])['reasons'])
+
+    def test_account_flow_equivalent_offsets_and_both_boundaries_are_unknown(self):
+        for day, instants in [('2026-10-01', ['2026-10-02T00:00:00+00:00', '2026-10-01T20:00:00-04:00']), ('2026-10-06', [START, START])]:
+            for at in instants:
+                _, broker, _ = fixture()
+                broker.account['equity'] = D(51000)
+                broker.activities.append(dict(id='deposit', activity_type='CSD', date=day, net_amount=D(1000), provenance={k: 'get_account_activities.'+k for k in ('id', 'date', 'net_amount')}))
+                prior = [dict(account_baseline=dict(at=at, equity='50000', version='a1', provenance='audited_baseline', flow_coverage=dict(start=START, end=END, provenance='audited_inventory', date_basis=dict(timezone='America/New_York', provenance='verified_activity_date_contract'))))]
+                result = accounting.account_overview(broker, prior)
+                self.assertIsNone(result['return'])
+                self.assertIn('account_flow_boundary_unknown', result['reasons'])
+
+    def test_account_flow_date_basis_must_be_verified(self):
+        _, broker, _ = fixture()
+        prior = [dict(account_baseline=dict(at=START, equity='50000', version='a1', provenance='audited_baseline', flow_coverage=dict(start=START, end=END, provenance='audited_inventory')))]
+        result = accounting.account_overview(broker, prior)
+        self.assertIsNone(result['return'])
+        self.assertIn('account_flow_date_basis_unknown', result['reasons'])
+
+    def test_exact_proven_flow_time_resolves_boundaries(self):
+        for day, when, expected in [('2026-10-01', '2026-10-01T21:00:00+00:00', D(1000)), ('2026-10-06', '2026-10-06T19:00:00+00:00', D(1000)), ('2026-10-06', '2026-10-06T21:00:00+00:00', D(0))]:
+            _, broker, _ = fixture()
+            broker.activities.append(dict(id='flow', activity_type='CSD', date=day, transaction_time=when, net_amount=D(1000), provenance={k: 'verified_activity.'+k for k in ('id', 'date', 'net_amount', 'transaction_time')}))
+            prior = [dict(account_baseline=dict(at=START, equity='50000', version='a1', provenance='audited_baseline', flow_coverage=dict(start=START, end=END, provenance='audited_inventory', date_basis=dict(timezone='America/New_York', provenance='verified_activity_date_contract'))))]
+            result = accounting.account_overview(broker, prior)
+            self.assertEqual(result['net_external_flows'], expected)
+
+    def test_real_lineage_rounded_average_preserves_exact_event_cash(self):
+        lineage, broker, baseline = rounded_fixture()
+        result = accounting.account_strategy(lineage, broker, baseline, [])
+        self.assertEqual(result['coverage']['status'], 'complete')
+        self.assertEqual(result['cash'], D(9808))
+        self.assertEqual(result['marked_equity'], D(10018))
+        self.assertEqual(result['realized_pnl'], D(10))
+        self.assertEqual(result['positions'][0]['cost_basis'], D(202))
+        self.assertEqual(sum(f['notional'] for f in lineage.positions[0]['fills'] if f['side'] == 'buy'), D(302))
+        self.assertEqual(lineage.positions[0]['fill_observations'][0]['cumulative_notional'], D('302.00000001'))
+
+    def test_rounded_average_without_verified_precision_is_unknown(self):
+        lineage, broker, baseline = rounded_fixture()
+        baseline.pop('average_price_precision')
+        result = accounting.account_strategy(lineage, broker, baseline, [])
+        self.assertEqual(result['coverage']['status'], 'unknown')
+        self.assertIn('execution_precision_unknown', result['reasons'])
+
+    def test_rounded_average_rejects_material_difference_and_missing_events(self):
+        lineage, broker, baseline = rounded_fixture()
+        for average in ('100.66666668', '100.67'):
+            broker.orders[0]['filled_avg_price'] = D(average)
+            lineage.positions[0]['fill_observations'][0]['cumulative_notional'] = D(average)*3
+            result = accounting.account_strategy(lineage, broker, baseline, [])
+            self.assertIn('execution_totals_discrepancy', result['reasons'])
+            self.assertIsNone(result['marked_equity'])
+        lineage, broker, baseline = rounded_fixture()
+        lineage.positions[0]['fills'].pop(0)
+        self.assertIn('execution_totals_discrepancy', accounting.account_strategy(lineage, broker, baseline, [])['reasons'])
+
+    def test_verified_rounding_cell_ties_and_invalid_precision(self):
+        policy = dict(quantum='.01', rounding='ROUND_HALF_EVEN', provenance='verified_contract')
+        for exact, average, expected in [('100.005', '100.00', True), ('100.005', '100.01', False), ('100.015', '100.02', True), ('100.015000001', '100.01', False)]:
+            self.assertEqual(accounting._rounded_average_matches(D(exact)*3, D(3), D(average), policy), expected)
+        for bad in [dict(quantum='.01', rounding='ROUND_HALF_EVEN'), dict(quantum='.02', rounding='ROUND_HALF_EVEN', provenance='verified_contract'), dict(quantum='.01', rounding='unspecified', provenance='verified_contract')]:
+            self.assertIsNone(accounting._rounded_average_matches(D(302), D(3), D('100.66666667'), bad))
+
     def test_fifo_partial_exit_and_idle_cash(self):
         lineage, broker, baseline = fixture()
         original = deepcopy((lineage, broker, baseline))
@@ -113,6 +233,8 @@ class AccountingTests(unittest.TestCase):
         self.assertIsNone(result['marked_equity'])
         self.assertIsNone(result['drawdown'])
         self.assertIn('mark_evidence_unknown', result['reasons'])
+        self.assertEqual(result['coverage']['status'], 'unknown')
+        self.assertNotIn('broker_market_value_discrepancy', result['reasons'])
 
     def test_negative_cash_and_oversell_are_errors_not_clipped(self):
         for negative_cash in (True, False):
@@ -219,10 +341,10 @@ class AccountingTests(unittest.TestCase):
         lineage, broker, baseline = fixture()
         self.assertTrue(callable(getattr(accounting, 'account_overview', None)), 'account overview missing')
         broker.account['equity'] = D(51500)
-        activity = dict(id='deposit', activity_type='CSD', net_amount=D(1000), date='2026-10-06')
+        activity = dict(id='deposit', activity_type='CSD', net_amount=D(1000), date='2026-10-05')
         activity['provenance'] = {k: 'get_account_activities.' + k for k in activity}
         broker.activities.append(activity)
-        prior = [dict(account_baseline=dict(at=START, equity='50000', version='account-v1', provenance='verified_independent_account_baseline', flow_coverage=dict(start=START, end=END, provenance='verified_external_flow_inventory')))]
+        prior = [dict(account_baseline=dict(at=START, equity='50000', version='account-v1', provenance='verified_independent_account_baseline', flow_coverage=dict(start=START, end=END, provenance='verified_external_flow_inventory', date_basis=dict(timezone='America/New_York', provenance='verified_activity_date_contract'))))]
         result = accounting.account_overview(broker, prior)
         self.assertEqual(result['return'], D('.01'))
         self.assertEqual(result['net_external_flows'], D(1000))
@@ -251,7 +373,7 @@ class AccountingTests(unittest.TestCase):
                     fills.append(dict(activity_id=activity['id'], broker_order_id=activity['order_id'], side=side, quantity=D(1), notional=D(8000), timestamp=activity['transaction_time']))
                 lineage.positions.append(dict(position_id=identity, symbol=identity.upper(), ownership='verified', remaining_quantity=D(0 if closed else 1), stop=D(7000), fills=fills))
                 if not closed:
-                    broker.positions.append(dict(symbol=identity.upper(), qty=D(1), current_price=D(8000), provenance=dict(qty='get_all_positions.qty', current_price='get_all_positions.current_price')))
+                    broker.positions.append(dict(symbol=identity.upper(), qty=D(1), current_price=D(8000), market_value=D(8000), provenance=dict(qty='get_all_positions.qty', current_price='get_all_positions.current_price', market_value='get_all_positions.market_value')))
             for order in (lineage.positions, list(reversed(lineage.positions))):
                 lineage.positions = order
                 result = accounting.account_strategy(lineage, broker, baseline, [])
@@ -276,7 +398,7 @@ class AccountingTests(unittest.TestCase):
         broker.activities.append(activity)
         lineage.positions[0]['fills'].append(dict(activity_id='buy2', broker_order_id='entry2', side='buy', quantity=D(1), notional=D(120), timestamp=activity['transaction_time']))
         lineage.positions[0]['remaining_quantity'] = D(2)
-        broker.positions[0]['qty'] = D(2)
+        broker.positions[0].update(qty=D(2), market_value=D(210))
         result = accounting.account_strategy(lineage, broker, baseline, [])
         self.assertEqual(result['realized_pnl'], D(10))
         self.assertEqual(result['unrealized_pnl'], D(-10))
