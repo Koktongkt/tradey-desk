@@ -26,7 +26,8 @@
       "test_watchdog_mechanical",
       "test_watchdog_accounting",
       "test_watchdog_benchmark",
-      "test_watchdog_thesis"
+      "test_watchdog_thesis",
+      "test_watchdog_store"
     ],
     "scenario": [
       "test_autotrader_reconciliation",
@@ -37,7 +38,8 @@
       "test_pipeline",
       "test_reconciliation_cli",
       "test_w2_w4",
-      "test_watchdog_forward_lineage"
+      "test_watchdog_forward_lineage",
+      "test_watchdog_reports"
     ],
     "full_only": [
       "test_alpha_radar",
