@@ -26,6 +26,10 @@ A fail-closed, paper-first Alpaca trading desk. It is **disabled by default** an
 
 The preview is rendered from the source-pinned workflow HTML. It includes the independent, monitoring-only portfolio watchdog: in-session mechanical checks and post-close accounting/thesis monitoring, with visible coverage gaps and receipt-honest alert delivery. GitHub READMEs cannot run interactive HTML or JavaScript; download [the standalone HTML](docs/process-flow/tradey-desk.html) and open it in a browser for interactive exploration. The diagram documents observed configuration/README discrepancies without changing trading controls.
 
+## Codebase knowledge graph
+
+[Explore the Graphify graph, report and integrity notes](graphify-out/README.md). The source-only snapshot covers 90 tracked code/test files, including the portfolio watchdog. It is a structural navigation aid—not a verified runtime call graph or trading safety audit.
+
 ## Simplified decision workflow
 
 1. **Research:** the radar proposes a sourced thesis, catalyst, setup type, exact `planned_exit_at`, and horizon rationale. It does not choose an executable limit, stop, target, quantity, confidence, or reward/risk.

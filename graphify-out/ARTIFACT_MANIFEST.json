@@ -1,0 +1,47 @@
+{
+  "source_revision": "bb88070b998d5a406c99de2b252867e4caebdc2b",
+  "graphify_version": "0.9.75",
+  "nodes": 2152,
+  "edges": 5104,
+  "communities": 110,
+  "scope": "tracked source code and tests only",
+  "publication_normalization": "Audit source paths are repository-relative; local extractor installation path replaced with module path; graph HTML/JSON unchanged.",
+  "files": {
+    "README.md": {
+      "sha256": "13956e6db48c2427874b7f90bf585064d97e90d128f16814e8cbfe4da6e81c10",
+      "bytes": 3409
+    },
+    "graph.html": {
+      "sha256": "141da195a11a6004821d0dbbb0352072c68a618ee094f441f229c86976876d43",
+      "bytes": 2394716
+    },
+    "graph.json": {
+      "sha256": "855c83eb42f26efddcfa561d46ed64539a0be4ea6f29aa0b143908904ca11fd5",
+      "bytes": 2924405
+    },
+    "GRAPH_REPORT.md": {
+      "sha256": "4191cea8876431838e7d50c2e9b37dbe7c35c7a8d4e1ab6731eb1b132eeb2857",
+      "bytes": 20400
+    },
+    "GRAPH_HEALTH.json": {
+      "sha256": "3a1e1d2cd9b1eb90c2f9d02fcb861de9a3abcdd895857d596eb2379b048e5fc3",
+      "bytes": 4854
+    },
+    "SOURCE_SCOPE.json": {
+      "sha256": "45466d909b08c22b4eba89010139246008b061f74606ff4070eb60e3f9e2cade",
+      "bytes": 3363
+    },
+    "EXTRACTION_AUDIT.json": {
+      "sha256": "49217d71315c4b97426334265ad3cb5eaf9eee564b3604d1aa8884dd46728561",
+      "bytes": 2111532
+    },
+    "BROWSER_VERIFICATION.json": {
+      "sha256": "33ea9cb62fbfcd4cc296411f0e749b70aca0bd0e24ec5a23f61f6dbe56834b06",
+      "bytes": 237
+    },
+    "graph-preview.png": {
+      "sha256": "173e02bf1fc57e2c4aa45ded46d34bf6bbc3f5d9745db56c16c2ae183bee41db",
+      "bytes": 697373
+    }
+  }
+}

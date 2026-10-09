@@ -1,0 +1,11 @@
+{
+  "status": "pass",
+  "page_errors": [],
+  "canvas_count": 1,
+  "search_results": "run_watchdog()",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "network_dependency": "vis-network 9.1.6 via integrity-checked unpkg CDN"
+}

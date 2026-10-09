@@ -1,0 +1,212 @@
+{
+  "node_count": 2106,
+  "unverified_node_count": 0,
+  "raw_edge_count": 5296,
+  "non_object_edges": 0,
+  "missing_endpoint_edges": 0,
+  "dangling_endpoint_edges": 468,
+  "external_reference_edges": 0,
+  "self_loop_edges": 19,
+  "valid_candidate_edges": 4828,
+  "exact_duplicate_edges": 0,
+  "directed_unique_endpoint_pairs": 4638,
+  "directed_same_endpoint_collapsed_edges": 190,
+  "undirected_unique_endpoint_pairs": 4638,
+  "undirected_same_endpoint_collapsed_edges": 190,
+  "same_endpoint_group_count": 187,
+  "relation_variant_groups": 153,
+  "source_file_variant_groups": 0,
+  "source_location_variant_groups": 1,
+  "context_variant_groups": 33,
+  "post_build_graph_type": "Graph",
+  "post_build_node_count": 2152,
+  "post_build_edge_count": 5104,
+  "post_build_error": "",
+  "producer_suppression": {
+    "path": "graphify/extract.py",
+    "total_sites": 12,
+    "sites": [
+      {
+        "line": 1677,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 2210,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 2212,
+        "name": "seen_doc_refs",
+        "tuple_arity": 0,
+        "sample": "seen_doc_refs: set[str] = set()"
+      },
+      {
+        "line": 2629,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 2776,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n.get(\"id\") for n in nodes}"
+      },
+      {
+        "line": 3502,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 3675,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 5804,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5912,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 5991,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 6506,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 6507,
+        "name": "seen_edges",
+        "tuple_arity": 4,
+        "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+      }
+    ],
+    "error": ""
+  },
+  "examples": [
+    {
+      "source": "watchdog_broker_collect_broker",
+      "target": "watchdog_types_brokersnapshot",
+      "edge_count": 3,
+      "relations": [
+        "calls",
+        "references",
+        "uses"
+      ],
+      "source_files": [
+        "watchdog/broker.py"
+      ],
+      "source_locations": [
+        "L318",
+        "L410"
+      ],
+      "contexts": [
+        "",
+        "call",
+        "return_type"
+      ]
+    },
+    {
+      "source": "watchdog_lineage_build_lineage",
+      "target": "watchdog_types_lineageresult",
+      "edge_count": 3,
+      "relations": [
+        "calls",
+        "references",
+        "uses"
+      ],
+      "source_files": [
+        "watchdog/lineage.py"
+      ],
+      "source_locations": [
+        "L15",
+        "L312"
+      ],
+      "contexts": [
+        "",
+        "call",
+        "return_type"
+      ]
+    },
+    {
+      "source": "watchdog_operational_read_operational",
+      "target": "watchdog_types_operationalsnapshot",
+      "edge_count": 3,
+      "relations": [
+        "calls",
+        "references",
+        "uses"
+      ],
+      "source_files": [
+        "watchdog/operational.py"
+      ],
+      "source_locations": [
+        "L69",
+        "L86"
+      ],
+      "contexts": [
+        "",
+        "call",
+        "return_type"
+      ]
+    },
+    {
+      "source": "alpha_radar_source_verification_result",
+      "target": "alpha_radar_source_verification_result_result",
+      "edge_count": 2,
+      "relations": [
+        "calls",
+        "contains"
+      ],
+      "source_files": [
+        "alpha_radar.py"
+      ],
+      "source_locations": [
+        "L293",
+        "L304"
+      ],
+      "contexts": [
+        "",
+        "call"
+      ]
+    },
+    {
+      "source": "alpha_radar_record_source_verification_diagnostic",
+      "target": "alpha_radar_record_source_verification_diagnostic_bounded_count",
+      "edge_count": 2,
+      "relations": [
+        "calls",
+        "contains"
+      ],
+      "source_files": [
+        "alpha_radar.py"
+      ],
+      "source_locations": [
+        "L349",
+        "L358"
+      ],
+      "contexts": [
+        "",
+        "call"
+      ]
+    }
+  ]
+}
