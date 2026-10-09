@@ -2,13 +2,13 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
-    "title": "Tradey Desk \u2014 Research to Protected Paper Execution",
+    "title": "Tradey Desk — Protected Paper Execution + Portfolio Watchdog",
     "locale": "en",
     "quality_profile": "showcase",
     "output": "docs/process-flow/tradey-desk.html",
     "repository": {
       "url": "https://github.com/Koktongkt/tradey-desk.git",
-      "revision": "4e007c379e4adbdb8e816e2abe1786a371cda5ed"
+      "revision": "d2bb7ee67c4bc0651a379eb59ae718f7df8f32d4"
     }
   },
   "lanes": [
@@ -30,8 +30,12 @@
       "label": "3  Paper execution + broker truth"
     },
     {
+      "id": "watchdog",
+      "label": "4  Portfolio watchdog • read-only"
+    },
+    {
       "id": "reporting",
-      "label": "4  Measurement + publication"
+      "label": "5  Measurement + publication"
     }
   ],
   "mainPath": [
@@ -54,8 +58,8 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 201,
-          "end_line": 219
+          "line": 204,
+          "end_line": 222
         }
       ]
     },
@@ -145,13 +149,18 @@
       "col": 0,
       "type": "security",
       "label": "Reconcile first",
-      "sublabel": "Pending fills + protection",
+      "sublabel": "Exact lineage + protection",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1282,
-          "end_line": 1327
+          "line": 1287,
+          "end_line": 1332
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 330,
+          "end_line": 425
         }
       ]
     },
@@ -182,8 +191,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 304,
-          "end_line": 343
+          "line": 305,
+          "end_line": 344
         }
       ]
     },
@@ -198,8 +207,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 800,
-          "end_line": 872
+          "line": 801,
+          "end_line": 873
         }
       ]
     },
@@ -214,8 +223,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 353,
-          "end_line": 372
+          "line": 354,
+          "end_line": 373
         }
       ],
       "tag": "score >=0.55"
@@ -231,8 +240,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1362,
-          "end_line": 1393
+          "line": 1368,
+          "end_line": 1398
         }
       ],
       "tag": "R/R >=1.6"
@@ -264,8 +273,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1401,
-          "end_line": 1412
+          "line": 1408,
+          "end_line": 1418
         }
       ]
     },
@@ -280,8 +289,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1403,
-          "end_line": 1407
+          "line": 1410,
+          "end_line": 1414
         }
       ]
     },
@@ -312,8 +321,8 @@
       "sources": [
         {
           "path": "README.md",
-          "line": 76,
-          "end_line": 80
+          "line": 84,
+          "end_line": 88
         }
       ]
     },
@@ -328,8 +337,8 @@
       "sources": [
         {
           "path": "public_dashboard.py",
-          "line": 13,
-          "end_line": 25
+          "line": 14,
+          "end_line": 26
         }
       ]
     },
@@ -344,8 +353,8 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 220,
-          "end_line": 225
+          "line": 223,
+          "end_line": 228
         }
       ]
     },
@@ -360,10 +369,294 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1355,
-          "end_line": 1361
+          "line": 1361,
+          "end_line": 1367
         }
       ]
+    },
+    {
+      "id": "wm-clock",
+      "lane": "watchdog",
+      "col": 0,
+      "type": "messagebus",
+      "label": "Mechanical slot",
+      "sublabel": ":05 + session calendar",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/schedule.py",
+          "line": 76,
+          "end_line": 84
+        },
+        {
+          "path": "watchdog_cron.py",
+          "line": 11,
+          "end_line": 26
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wm-snapshot",
+      "lane": "watchdog",
+      "col": 1,
+      "type": "cloud",
+      "label": "Broker + ledger reads",
+      "sublabel": "Paper, exact refs; no repair",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 39,
+          "end_line": 81
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 311,
+          "end_line": 350
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wm-checks",
+      "lane": "watchdog",
+      "col": 2,
+      "type": "security",
+      "label": "Protection + horizon",
+      "sublabel": "Quantity, exits + exposure",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/mechanical.py",
+          "line": 1,
+          "end_line": 6
+        },
+        {
+          "path": "watchdog/mechanical.py",
+          "line": 46,
+          "end_line": 123
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 346,
+          "end_line": 352
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wm-coverage",
+      "lane": "watchdog",
+      "col": 3,
+      "type": "security",
+      "label": "Coverage / exceptions",
+      "sublabel": "Gaps forbid all-clear",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 410,
+          "end_line": 445
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 490,
+          "end_line": 500
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wm-store",
+      "lane": "watchdog",
+      "col": 4,
+      "type": "database",
+      "label": "Watchdog state",
+      "sublabel": "Reports + alert outbox",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 312,
+          "end_line": 312
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 446,
+          "end_line": 483
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wm-relay",
+      "lane": "watchdog",
+      "col": 5,
+      "type": "cloud",
+      "label": "Exception alerts",
+      "sublabel": "No receipt: pending",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 194,
+          "end_line": 210
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 223,
+          "end_line": 259
+        }
+      ],
+      "yOffset": -54
+    },
+    {
+      "id": "wd-clock",
+      "lane": "watchdog",
+      "col": 0,
+      "type": "messagebus",
+      "label": "Daily session slot",
+      "sublabel": "Close +15; +45 retry",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/schedule.py",
+          "line": 85,
+          "end_line": 94
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 328,
+          "end_line": 337
+        }
+      ],
+      "yOffset": 54
+    },
+    {
+      "id": "wd-account",
+      "lane": "watchdog",
+      "col": 1,
+      "type": "backend",
+      "label": "Portfolio accounting",
+      "sublabel": "Ledger/broker vs SPY",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 341,
+          "end_line": 375
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 84,
+          "end_line": 101
+        }
+      ],
+      "yOffset": 54
+    },
+    {
+      "id": "wd-source",
+      "lane": "watchdog",
+      "col": 2,
+      "type": "cloud",
+      "label": "Thesis source workers",
+      "sublabel": "SEC / issuer / earnings",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/source_worker.py",
+          "line": 1,
+          "end_line": 6
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 147,
+          "end_line": 151
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 381,
+          "end_line": 404
+        }
+      ],
+      "yOffset": 54
+    },
+    {
+      "id": "wd-classify",
+      "lane": "watchdog",
+      "col": 3,
+      "type": "backend",
+      "label": "Thesis classifier",
+      "sublabel": "Tool-free gateway",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/provider_gateway.py",
+          "line": 1,
+          "end_line": 6
+        },
+        {
+          "path": "watchdog/provider_gateway.py",
+          "line": 30,
+          "end_line": 47
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 125,
+          "end_line": 151
+        }
+      ],
+      "yOffset": 54
+    },
+    {
+      "id": "wd-store",
+      "lane": "watchdog",
+      "col": 4,
+      "type": "database",
+      "label": "Coverage + reports",
+      "sublabel": "Private + safe public",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 410,
+          "end_line": 483
+        },
+        {
+          "path": "watchdog/reports.py",
+          "line": 1,
+          "end_line": 5
+        }
+      ],
+      "yOffset": 54
+    },
+    {
+      "id": "wd-relay",
+      "lane": "watchdog",
+      "col": 5,
+      "type": "cloud",
+      "label": "Daily summary + alerts",
+      "sublabel": "No receipt ≠ delivered",
+      "width": 144,
+      "sources": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 194,
+          "end_line": 210
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 223,
+          "end_line": 259
+        },
+        {
+          "path": "docs/watchdog-operations.md",
+          "line": 26,
+          "end_line": 33
+        }
+      ],
+      "yOffset": 54
     }
   ],
   "edges": [
@@ -511,21 +804,89 @@
       "variant": "default",
       "role": "main",
       "from": "dashboard"
+    },
+    {
+      "id": "wm-clock-wm-snapshot",
+      "from": "wm-clock",
+      "to": "wm-snapshot",
+      "role": "main"
+    },
+    {
+      "id": "wm-snapshot-wm-checks",
+      "from": "wm-snapshot",
+      "to": "wm-checks",
+      "role": "main"
+    },
+    {
+      "id": "wm-checks-wm-coverage",
+      "from": "wm-checks",
+      "to": "wm-coverage",
+      "role": "main"
+    },
+    {
+      "id": "wm-coverage-wm-store",
+      "from": "wm-coverage",
+      "to": "wm-store",
+      "role": "main"
+    },
+    {
+      "id": "wm-store-wm-relay",
+      "from": "wm-store",
+      "to": "wm-relay",
+      "role": "main"
+    },
+    {
+      "id": "wd-clock-wd-account",
+      "from": "wd-clock",
+      "to": "wd-account",
+      "role": "main"
+    },
+    {
+      "id": "wd-account-wd-source",
+      "from": "wd-account",
+      "to": "wd-source",
+      "role": "main"
+    },
+    {
+      "id": "wd-source-wd-classify",
+      "from": "wd-source",
+      "to": "wd-classify",
+      "role": "main"
+    },
+    {
+      "id": "wd-classify-wd-store",
+      "from": "wd-classify",
+      "to": "wd-store",
+      "role": "main"
+    },
+    {
+      "id": "wd-store-wd-relay",
+      "from": "wd-store",
+      "to": "wd-relay",
+      "role": "main"
+    },
+    {
+      "id": "journal-watchdog-read",
+      "from": "journal",
+      "to": "wm-snapshot",
+      "role": "async",
+      "variant": "dashed",
+      "label": "read only"
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "Producer / consumer cadence \u2022 New York time",
+      "title": "Producer / consumer cadence • New York time",
       "items": [
-        "Premarket: 09:00. Radar: 10:00\u201315:40 at :00 / :20 / :40.",
-        "Autotrader: 09:40, then 10:10\u201315:50 at :10 / :30 / :50.",
+        "Premarket: 09:00. Radar: 10:00–15:40 at :00 / :20 / :40.",
+        "Autotrader: 09:40, then 10:10–15:50 at :10 / :30 / :50.",
         "Verified eligible dossiers can be reused within 60 minutes; already-reviewed dossiers are normally skipped. Research qualification is not trade approval."
       ]
     },
     {
       "dot": "rose",
-      "title": "Execution controls \u2022 checked-in configuration",
+      "title": "Execution controls • checked-in configuration",
       "items": [
         "Paper only; enabled flag and kill switch checked. $10,000 managed exposure; $500 per position; two orders/day; whole shares only.",
         "Planned stop risk <=$40; IEX spread <=600 bps; limit deviation <=150 bps; quote age <=120 seconds; upcoming earnings blackout: two sessions.",
@@ -536,7 +897,7 @@
       "dot": "violet",
       "title": "Independent decision, not model-selected order fields",
       "items": [
-        "Python counts exchange sessions: 1\u20135 short; 6\u201330 swing. Completed Massive bars determine technical levels; fresh IEX ask determines BUY limit.",
+        "Python counts exchange sessions: 1–5 short; 6–30 swing. Completed Massive bars determine technical levels; fresh IEX ask determines BUY limit.",
         "Both isolated tool-free reviewers receive the same hashed proposal. They cannot change its order fields. The lower rubric score must be >=0.55.",
         "Conviction is uncalibrated, not win probability. Shadow calibration is separate from actual paper fills."
       ]
@@ -548,6 +909,33 @@
         "Bridge sends GTC brackets; README says DAY. Configuration uses $40 planned risk; README says $25. Configuration spread cap is 600 bps.",
         "SQLite transactional journals have JSONL compatibility projections. Broker orders and fills remain authoritative.",
         "This is a source-backed workflow snapshot, not an account-status audit. No trading controls or orders were changed."
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Portfolio watchdog • independent monitoring, never execution",
+      "items": [
+        "Mechanical: UTC 5 14-21 * * 1-5, only :05 inside a verified session; protection, quantity, exit horizon and exposure. Hard bound: 120 seconds.",
+        "Daily: UTC 15,45 17-22 * * 1-5, only close+15 / close+45. Adds managed-strategy versus account accounting, benchmark coverage and versioned-thesis monitoring. Hard bound: 900 seconds.",
+        "Both read broker and operational ledgers and write only monitoring outputs. A separate monitoring lock cannot block the trader. No order placement, cancellation, liquidation, journal repair or kill-switch changes."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Coverage gaps stay visible • no invented safety or performance",
+      "items": [
+        "Missing lineage, legacy baselines, incomplete financial evidence, unknown exact earnings times and benchmark gaps remain typed coverage limitations. SEC metadata is not extracted financial content.",
+        "A fully observed cancelled stop or expired holding horizon still forbids all-clear. Classification is a stateless, tool-free provider request; source workers do not receive broker credentials.",
+        "Watchdog state is shared under private/watchdog/: observations, condition state, source cutoffs, reports and alert outbox. Public output is field/value allowlisted, never raw source or model prose."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Reporting retry and delivery • completion is not acknowledgment",
+      "items": [
+        "The later daily slot retries report installation, pending-outbox delivery and completion marker only after an observation is already committed; it does not repeat thesis retrieval or claim fresh all-clear.",
+        "Mechanical runs without exceptions are silent; daily successful runs emit a report/coverage summary. Out-of-slot launches are silent no-ops, not completed observations.",
+        "Hermes cron relays sanitized stdout. Without genuine provider readback, alerts stay pending and may repeat. Diagram describes source behavior, not proof of eligible-run execution or alert delivery."
       ]
     }
   ]

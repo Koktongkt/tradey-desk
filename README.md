@@ -20,11 +20,11 @@ A fail-closed, paper-first Alpaca trading desk. It is **disabled by default** an
 
 ## Process flow diagram
 
-![Tradey Desk research-to-protected-paper-execution workflow](docs/process-flow/tradey-desk-preview.png)
+![Tradey Desk protected paper execution and portfolio watchdog workflow](docs/process-flow/tradey-desk-preview.png)
 
 [View full-size workflow preview](docs/process-flow/tradey-desk-preview.png) · [Interactive HTML and editable specification](docs/process-flow/README.md)
 
-The preview is rendered from the source-pinned workflow HTML. GitHub READMEs cannot run interactive HTML or JavaScript; download [the standalone HTML](docs/process-flow/tradey-desk.html) and open it in a browser for interactive exploration. The diagram documents observed configuration/README discrepancies without changing trading controls.
+The preview is rendered from the source-pinned workflow HTML. It includes the independent, monitoring-only portfolio watchdog: in-session mechanical checks and post-close accounting/thesis monitoring, with visible coverage gaps and receipt-honest alert delivery. GitHub READMEs cannot run interactive HTML or JavaScript; download [the standalone HTML](docs/process-flow/tradey-desk.html) and open it in a browser for interactive exploration. The diagram documents observed configuration/README discrepancies without changing trading controls.
 
 ## Simplified decision workflow
 

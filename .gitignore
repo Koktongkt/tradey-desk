@@ -24,3 +24,6 @@ __pycache__/
 
 # Isolated development checkouts (never a second live deployment).
 /.worktrees/
+
+# Archify local provenance contains host-specific absolute paths.
+/docs/process-flow/*.delivery.json
