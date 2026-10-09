@@ -25,6 +25,7 @@ from shadow_calibration import record_decision as record_shadow_decision
 import managed_reconciliation
 from durable_jsonl import append_jsonl, read_jsonl
 from private_lineage import private_lineage, confirmed_fill_metadata
+from json_parsing import first_object
 
 ROOT = Path(__file__).resolve().parent
 PRIVATE_DIR = ROOT / "private"
@@ -652,27 +653,32 @@ BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_
 NOTIFICATION_STATUSES = BROKER_CONFIRMED_ORDER_STATUSES | {"placing"}
 
 
+def _notification_plan(plan, *, validate=True):
+    """Pure common projection; broker binding and fill checks stay with readback."""
+    action = str(plan.get("action") or "").upper()
+    symbol = str(plan.get("symbol") or "").upper()
+    try:
+        quantity, limit_price, stop, target = (
+            Decimal(str(plan.get(field))) for field in ("quantity", "limit_price", "stop", "target")
+        )
+    except Exception:
+        return None
+    if validate and (plan.get("order_type") != "limit" or action not in {"BUY", "SELL"}
+            or not symbol.isalpha() or len(symbol) > 6
+            or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
+            or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))):
+        return None
+    return action, symbol, quantity, limit_price, stop, target
+
+
 def placing_notification_line(plan: dict[str, Any], broker_mode: str) -> str | None:
     """Return a safe pre-submission line for a validated paper limit plan."""
     if broker_mode != "paper" or not isinstance(plan, dict):
         return None
-    action = str(plan.get("action") or "").upper()
-    symbol = str(plan.get("symbol") or "").upper()
-    try:
-        quantity = Decimal(str(plan.get("quantity")))
-        limit_price = Decimal(str(plan.get("limit_price")))
-        stop = Decimal(str(plan.get("stop")))
-        target = Decimal(str(plan.get("target")))
-    except Exception:
+    fields = _notification_plan(plan)
+    if fields is None:
         return None
-    if (
-        plan.get("order_type") != "limit"
-        or action not in {"BUY", "SELL"}
-        or not symbol.isalpha() or len(symbol) > 6
-        or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
-        or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))
-    ):
-        return None
+    action, symbol, quantity, limit_price, stop, target = fields
     return (
         f"ORDER placing {action} {int(quantity)} {symbol} LIMIT {limit_price:.2f} "
         f"STOP {stop:.2f} TARGET {target:.2f} PAPER"
@@ -686,14 +692,12 @@ def broker_order_notification_line(
     if broker_mode != "paper" or not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
         return None
     status = str(broker_order.get("status") or "").lower()
-    action = str(plan.get("action") or "").upper()
-    symbol = str(plan.get("symbol") or "").upper()
+    fields = _notification_plan(plan, validate=False)
+    if fields is None:
+        return None
+    action, symbol, quantity, limit_price, stop, target = fields
     try:
-        quantity = Decimal(str(plan.get("quantity")))
         broker_quantity = Decimal(str(broker_order.get("qty")))
-        limit_price = Decimal(str(plan.get("limit_price")))
-        stop = Decimal(str(plan.get("stop")))
-        target = Decimal(str(plan.get("target")))
     except Exception:
         return None
     if (
@@ -788,14 +792,7 @@ def emit_placing_notification_once(
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch == "{":
-            try:
-                obj, _ = decoder.raw_decode(text[i:])
-                if isinstance(obj, dict): return obj
-            except json.JSONDecodeError: pass
-    raise ValueError("no JSON object")
+    return first_object(text, missing="no JSON object")
 
 
 def _review_request(bundle: dict[str, Any], provider: str, model: str) -> tuple[list[str], str]:

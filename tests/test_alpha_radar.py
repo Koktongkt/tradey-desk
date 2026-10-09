@@ -1548,27 +1548,23 @@ class BundleRescueTests(unittest.TestCase):
             rows=[json.loads(l) for l in (Path(td)/"private"/"research_diagnostics.jsonl").read_text().splitlines()]
         self.assertEqual(rows[0]["reason"],"bundle_rescue_unavailable")
 
+class _RawResponse:
+    def __init__(self, raw): self.raw = raw
+    def __enter__(self): return self
+    def __exit__(self,*_): return False
+    def read(self,_limit): return self.raw() if callable(self.raw) else self.raw
+
+
 def _json_response(payload):
-    class R:
-        def __enter__(self): return self
-        def __exit__(self,*_): return False
-        def read(self,_limit): return json.dumps(payload).encode()
-    return R()
+    return _RawResponse(lambda: json.dumps(payload).encode())
 
 
 def _empty_response():
-    class R:
-        def __enter__(self): return self
-        def __exit__(self,*_): return False
-        def read(self,_limit): return b'{"hits":{"hits":[]}}'
-    return R()
+    return _RawResponse(b'{"hits":{"hits":[]}}')
+
 
 def _bad_response():
-    class R:
-        def __enter__(self): return self
-        def __exit__(self,*_): return False
-        def read(self,_limit): return b'not json'
-    return R()
+    return _RawResponse(b'not json')
 
 
 class FocusedRetrievalRerankTests(unittest.TestCase):

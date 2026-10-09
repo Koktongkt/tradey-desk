@@ -23,6 +23,13 @@ class PlacingNotificationTests(unittest.TestCase):
             "side": "buy", "qty": "3", "type": "limit", "order_class": "bracket",
         }
 
+    def test_broker_notification_preserves_metadata_error_before_price_rejection(self):
+        plan = dict(self.plan, limit_price=0)
+        for field in ('client_order_id', 'symbol', 'side', 'type', 'order_class'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                autotrader.broker_order_notification_line(
+                    self.ref, plan, dict(self.accepted, **{field: 10**5000}), 'paper')
+
     def test_placing_notification_emits_once_without_private_identifier(self):
         with tempfile.TemporaryDirectory() as td:
             marker = Path(td) / "notifications.jsonl"

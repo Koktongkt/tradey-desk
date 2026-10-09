@@ -26,15 +26,7 @@ class _Response:
         }).encode()
 
 
-class _GroupedResponse:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
+class _GroupedResponse(_Response):
     def read(self):
         return json.dumps({
             "status": "OK",

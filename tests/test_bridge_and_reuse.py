@@ -28,6 +28,22 @@ def _fail_process(stderr="boom"):
     return subprocess.CompletedProcess([], 3, "", stderr)
 
 
+def _reusable_candidate(now):
+    return {
+        "symbol": "DELL",
+        "researched_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
+        "price": 100.0,
+        "spy_price": 500.0,
+        "instrument_type": "cash_equity",
+        "setup_type": "breakout",
+        "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+        "planned_exit_at": (now + dt.timedelta(days=7)).isoformat().replace("+00:00", "Z"),
+        "horizon_rationale": "swing",
+    }
+
+
 class BridgeCommandTests(unittest.TestCase):
     def test_bridge_command_pins_runtime_and_targets_canonical_script(self):
         cmd = autotrader.bridge_command("snapshot")
@@ -150,19 +166,7 @@ class RadarReuseFirstTests(unittest.TestCase):
             root = Path(td)
             candidates = root / "candidates.jsonl"
             now = dt.datetime.now(dt.timezone.utc)
-            candidate = {
-                "symbol": "DELL",
-                "researched_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
-                "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
-                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
-                "price": 100.0,
-                "spy_price": 500.0,
-                "instrument_type": "cash_equity",
-                "setup_type": "breakout",
-                "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
-                "planned_exit_at": (now + dt.timedelta(days=7)).isoformat().replace("+00:00", "Z"),
-                "horizon_rationale": "swing",
-            }
+            candidate = _reusable_candidate(now)
             candidates.write_text(json.dumps(candidate) + "\n")
             (root / "autonomy_config.json").write_text(json.dumps({"min_price_usd": 10, "max_position_usd": 500}))
             with patch.object(alpha_radar, "ROOT", root), patch(
@@ -202,19 +206,7 @@ class RadarReuseFirstTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             now = dt.datetime.now(dt.timezone.utc)
-            candidate = {
-                "symbol": "DELL",
-                "researched_at": (now - dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
-                "sources_verified_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
-                "sources": [{"url": "https://a.example/1"}, {"url": "https://b.example/2"}],
-                "price": 100.0,
-                "spy_price": 500.0,
-                "instrument_type": "cash_equity",
-                "setup_type": "breakout",
-                "earnings_event_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
-                "planned_exit_at": (now + dt.timedelta(days=7)).isoformat().replace("+00:00", "Z"),
-                "horizon_rationale": "swing",
-            }
+            candidate = _reusable_candidate(now)
             (root / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
             (root / "autonomy_config.json").write_text(json.dumps({"min_price_usd": 10, "max_position_usd": 500}))
             args = alpha_radar.argparse.Namespace(dry_run_fixture=False)

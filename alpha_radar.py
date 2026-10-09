@@ -13,6 +13,7 @@ from market_data import synchronized_completed_close_prices
 from research_budget import ResearchDeadlineExceeded, active_deadline, remaining as budget_remaining
 from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
 from candidate_retry import pre_submission_retryable
+from json_parsing import first_object
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
@@ -363,14 +364,7 @@ def record_source_verification_diagnostic(
     append_jsonl(target,row)
 
 def extract_json(text:str)->dict[str,Any]:
-    d=json.JSONDecoder()
-    for i,ch in enumerate(text):
-        if ch=="{":
-            try:
-                x,_=d.raw_decode(text[i:])
-                if isinstance(x,dict): return x
-            except json.JSONDecodeError: pass
-    raise ValueError("no json")
+    return first_object(text, missing="no json")
 
 def append(row:dict[str,Any])->None:
     append_jsonl(ROOT/"candidates.jsonl",row)

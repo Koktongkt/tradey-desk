@@ -17,6 +17,7 @@ import time
 from urllib.parse import urlsplit
 
 from .types import aware_timestamp, money
+from json_parsing import loads_strict
 
 
 class AdapterFailure(ValueError):
@@ -318,21 +319,8 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
 
 
 def _strict_json(payload):
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError('duplicate_json_key')
-            result[key] = value
-        return result
-    def invalid_constant(value):
-        raise ValueError('nonfinite_json')
-    try:
-        return json.loads(payload, object_pairs_hook=unique, parse_constant=invalid_constant)
-    except RecursionError:
-        # Decoder nesting failures are malformed JSON, not arbitrary adapter
-        # or callback errors. Normalize only at this shared parser boundary.
-        raise ValueError('json_nesting_invalid') from None
+    return loads_strict(payload, duplicate='duplicate_json_key',
+                        nonfinite='nonfinite_json', depth='json_nesting_invalid')
 
 
 MODEL_POLICY = dict(tools=[], memory=False, max_turns=1, safe_mode=True,

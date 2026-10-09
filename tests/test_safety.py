@@ -11,6 +11,22 @@ from unittest.mock import patch
 import autotrader
 
 
+def _protective_exit_parent(ref):
+    return {
+        "client_order_id": ref, "status": "filled", "symbol": "AAPL",
+        "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
+        "legs": [
+            {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
+             "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
+             "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
+            {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
+             "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
+             "symbol": "AAPL", "qty": "1", "filled_qty": "1",
+             "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+        ],
+    }
+
+
 class TradeySafetyTests(unittest.TestCase):
     def setUp(self):
         self.cfg = {
@@ -544,19 +560,7 @@ class TradeySafetyTests(unittest.TestCase):
             calls = []
             def broker(operation, payload):
                 calls.append((operation, payload))
-                return {"orders": [{
-                    "client_order_id": ref, "status": "filled", "symbol": "AAPL",
-                    "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
-                    "legs": [
-                        {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
-                         "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
-                         "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
-                        {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
-                         "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
-                         "symbol": "AAPL", "qty": "1", "filled_qty": "1",
-                         "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
-                    ],
-                }]}
+                return {"orders": [_protective_exit_parent(ref)]}
 
             updates = autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
 
@@ -582,19 +586,7 @@ class TradeySafetyTests(unittest.TestCase):
                 {"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"},
                 {"symbol": "AAPL", "action": "SELL", "quantity": 1, "status": "filled"},
             ]) + "\n")
-            broker = lambda operation, payload: {"orders": [{
-                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
-                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
-                "legs": [
-                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
-                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
-                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
-                ],
-            }]}
+            broker = lambda operation, payload: {"orders": [_protective_exit_parent(ref)]}
 
             updates = autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
 
@@ -716,19 +708,7 @@ class TradeySafetyTests(unittest.TestCase):
             ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
             intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
             journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
-            parent = {
-                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
-                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
-                "legs": [
-                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
-                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
-                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
-                ],
-            }
+            parent = _protective_exit_parent(ref)
             barrier = threading.Barrier(2)
             real_sha256 = autotrader.hashlib.sha256
             def synchronized_sha256(value=b""):
