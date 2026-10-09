@@ -179,9 +179,115 @@ def flatten_open(orders):
     return found
 
 
-def check_protection(snapshot, active, legs_by_parent, closing):
+def exact_order_lineage(orders):
+    """Every observed lookup ID belongs to exactly one parent, including closed exits."""
+    known = {}
+    def visit(order):
+        require(isinstance(order, dict), 'managed_evidence_invalid')
+        ref = order.get('client_order_id')
+        require(isinstance(ref, str) and bool(ref) and ref not in known,
+                'managed_order_ownership_ambiguous')
+        known[ref] = order
+        children = order.get('legs')
+        require(children is None or isinstance(children, list), 'managed_evidence_invalid')
+        for child in children or []:
+            visit(child)
+    for order in orders.values():
+        visit(order)
+    return known
+
+
+def check_exact_open_lineage(snapshot, known):
+    """No status-filter escape: all returned open IDs must have exact known evidence."""
+    fields = ('symbol', 'side', 'position_intent', 'order_class', 'time_in_force',
+              'status', 'filled_at')
+    numeric = ('qty', 'filled_qty', 'limit_price', 'stop_price', 'filled_avg_price')
+    for ref, observed in flatten_open(snapshot.get('open_orders')).items():
+        require(ref in known, 'managed_open_order_unlinked')
+        expected = known[ref]
+        require(observed.get('status') in ACTIVE | TERMINAL | {'filled', 'partially_filled'},
+                'managed_open_orders_unverified')
+        require(all(observed.get(field) == expected.get(field) for field in fields)
+                and observed.get('type', observed.get('order_type')) ==
+                expected.get('type', expected.get('order_type')), 'managed_open_order_inconsistent')
+        for field in numeric:
+            a, b = observed.get(field), expected.get(field)
+            require((a is None) == (b is None), 'managed_open_order_inconsistent')
+            if a is not None:
+                require(number(a, zero=True) == number(b, zero=True), 'managed_open_order_inconsistent')
+
+
+PENDING_ENTRY = ACTIVE | {'submission_started', 'submission_unknown', 'placed', 'partially_filled'}
+
+
+def pending_bracket(intent, parent):
+    """Validate an exact saved pending entry; never infer linkage from a symbol."""
+    ref, plan = intent['client_order_id'], intent['plan']
+    require(plan.get('action') == 'BUY' and plan.get('order_type') == 'limit',
+            'managed_pending_entry_invalid')
+    require(isinstance(parent, dict) and parent.get('client_order_id') == ref
+            and parent.get('symbol') == plan['symbol'] and parent.get('side') == 'buy'
+            and parent.get('position_intent') == 'buy_to_open'
+            and parent.get('order_class') == 'bracket'
+            and parent.get('type', parent.get('order_type')) == 'limit'
+            and parent.get('time_in_force') == 'gtc'
+            and parent.get('extended_hours') in (None, False)
+            and parent.get('notional') is None, 'managed_pending_entry_invalid')
+    require(parent.get('status') in ACTIVE and number(parent.get('filled_qty'), zero=True) == 0,
+            'managed_pending_entry_not_unfilled')
+    require(number(parent.get('qty')) == number(plan['quantity'])
+            and number(parent.get('limit_price')) == number(plan['limit_price']),
+            'managed_pending_entry_invalid')
+    require(number(plan['stop']) < number(plan['limit_price']) < number(plan['target']),
+            'managed_pending_entry_invalid')
+    children = parent.get('legs')
+    require(isinstance(children, list) and len(children) == 2, 'managed_pending_entry_invalid')
+    for order in [parent] + children:
+        kind = order.get('type', order.get('order_type'))
+        require(order.get('order_type', kind) == kind
+                and (order.get('extended_hours') is None or order.get('extended_hours') is False)
+                and order.get('stop_price' if kind == 'limit' else 'limit_price') is None
+                and order.get('notional') is None
+                and order.get('filled_at') is None and order.get('filled_avg_price') is None,
+                'managed_pending_entry_invalid')
+    refs = {ref}
+    kinds = []
+    for child in children:
+        validate_exit(child, plan, 'bracket')
+        kind = child.get('type', child.get('order_type'))
+        require(child.get('status') == 'held' and child.get('time_in_force') == 'gtc'
+                and child.get('legs') in (None, []) and child['client_order_id'] not in refs,
+                'managed_pending_entry_invalid')
+        refs.add(child['client_order_id'])
+        kinds.append(kind)
+    require(sorted(kinds) == ['limit', 'stop'], 'managed_pending_entry_invalid')
+    return refs
+
+
+def check_pending_entries(snapshot, pending, orders):
+    """Bind the exact lookup's parent/children to the open-order representation."""
     opened = flatten_open(snapshot.get('open_orders'))
     allowed = set()
+    for intent in pending:
+        ref = intent['client_order_id']
+        expected = pending_bracket(intent, orders[ref])
+        require(ref in opened, 'managed_pending_entry_missing')
+        observed = pending_bracket(intent, opened[ref])
+        require(expected == observed and not (allowed & expected), 'managed_pending_entry_inconsistent')
+        exact = {o['client_order_id']: o for o in [orders[ref]] + orders[ref]['legs']}
+        for order_ref in expected:
+            require(order_ref in opened, 'managed_pending_entry_missing')
+            require(opened[order_ref].get('status') == exact[order_ref].get('status')
+                    and opened[order_ref].get('type', opened[order_ref].get('order_type')) ==
+                    exact[order_ref].get('type', exact[order_ref].get('order_type')),
+                    'managed_pending_entry_inconsistent')
+        allowed.update(expected)
+    return allowed
+
+
+def check_protection(snapshot, active, legs_by_parent, closing, pending_refs=()):
+    opened = flatten_open(snapshot.get('open_orders'))
+    allowed = set(pending_refs)
     for intent in active:
         ref = intent['client_order_id']
         if ref in closing:
@@ -206,7 +312,8 @@ def check_protection(snapshot, active, legs_by_parent, closing):
         require(represented, 'managed_protection_missing')
         require(sorted(current) == ['limit', 'stop'], 'managed_protection_missing_or_oversized')
     # No symbol-only exemption: every active exit must be a known linked leg.
-    require(all(ref in allowed for ref, order in opened.items() if order.get('status') in ACTIVE), 'managed_open_order_unlinked')
+    require(all(ref in allowed for ref, order in opened.items()
+                if order.get('status') in ACTIVE | {'partially_filled'}), 'managed_open_order_unlinked')
 
 
 def reconcile_detailed(root: Path, broker):
@@ -224,18 +331,50 @@ def reconcile_detailed(root: Path, broker):
         journal = read_rows(root / 'trade_journal.jsonl')
         intents = read_rows(root / 'private/order_intents.jsonl')
         registry = read_rows(root / 'private/protection_orders.jsonl')
-        latest = {r['client_order_id']: r for r in ledger if r.get('client_order_id')}
+        latest = {}
+        for row in ledger:
+            status, ref = row.get('status'), row.get('client_order_id')
+            require(status in PENDING_ENTRY | TERMINAL | {'filled', 'closed', 'proposed'},
+                    'managed_state_invalid')
+            if 'filled_qty' in row and status not in {'filled', 'closed', 'partially_filled'}:
+                require(number(row['filled_qty'], zero=True) == 0, 'managed_pending_entry_not_unfilled')
+            if ref is None and status == 'rejected':
+                continue  # Never-submitted reviewer/validation rejection, not an order obligation.
+            require(isinstance(ref, str) and bool(ref) and len(ref) <= 128
+                    and not any(ch.isspace() for ch in ref), 'managed_state_invalid')
+            latest[ref] = row
+        intent_refs = [i.get('client_order_id') for i in intents]
+        require(all(isinstance(ref, str) and ref for ref in intent_refs)
+                and len(intent_refs) == len(set(intent_refs)), 'managed_evidence_invalid')
+        require(all(ref in latest for ref in intent_refs), 'managed_state_invalid')
+        for ref, row in latest.items():
+            status = row.get('status')
+            require(status in PENDING_ENTRY | TERMINAL | {'filled', 'closed', 'proposed'},
+                    'managed_state_invalid')
+            if status in PENDING_ENTRY | {'filled'}:
+                require(ref in intent_refs, 'managed_pending_entry_missing')
+            if status not in {'filled', 'closed'} and 'filled_qty' in row:
+                require(number(row['filled_qty'], zero=True) == 0, 'managed_pending_entry_not_unfilled')
         for row in latest.values():
             if row.get('status') == 'closed':
                 require(any(r.get('parent_client_order_id') == row['client_order_id'] and r.get('action') == 'SELL' for r in journal), 'managed_closed_without_fill')
         active = [i for i in intents if latest.get(i['client_order_id'], {}).get('status') == 'filled']
+        pending = [i for i in intents if latest[i['client_order_id']].get('status') in PENDING_ENTRY | {'proposed'}]
+        for intent in pending:
+            prior = latest[intent['client_order_id']]
+            require(prior.get('status') != 'partially_filled', 'managed_pending_entry_not_unfilled')
+            if 'filled_qty' in prior:
+                require(number(prior['filled_qty'], zero=True) == 0, 'managed_pending_entry_not_unfilled')
         refs = [i['client_order_id'] for i in active]
         refs += [r['protection_client_order_id'] for r in registry if r['parent_client_order_id'] in refs]
+        refs += [i['client_order_id'] for i in pending]
+        require(len(refs) == len(set(refs)), 'managed_evidence_invalid')
         snapshot = broker('reconciliation_snapshot', {'client_order_ids': refs})
         require(isinstance(snapshot.get('orders'), list) and len(snapshot['orders']) == len(refs))
         require(all(isinstance(o, dict) for o in snapshot['orders']))
         orders = {o.get('client_order_id'): o for o in snapshot['orders']}
         require(set(orders) == set(refs) and len(orders) == len(refs))
+        known_orders = exact_order_lineage(orders)
         updates = []
         legs_by_parent = {}
         for intent in active:
@@ -259,7 +398,10 @@ def reconcile_detailed(root: Path, broker):
             raise ReconciliationBlocked('broker_baseline_invalid') from error
         proposed_journal = journal + [row for row in updates if row['closure_key'] not in known]
         check_quantities(snapshot.get('positions'), proposed_journal, baseline)
-        check_protection(snapshot, active, legs_by_parent, {r['parent_client_order_id'] for r in updates})
+        check_exact_open_lineage(snapshot, known_orders)
+        pending_refs = check_pending_entries(snapshot, pending, orders)
+        check_protection(snapshot, active, legs_by_parent,
+                         {r['parent_client_order_id'] for r in updates}, pending_refs)
         written = []
         for row in updates:
             if row['closure_key'] not in known:
