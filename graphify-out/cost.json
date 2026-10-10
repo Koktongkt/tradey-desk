@@ -1,0 +1,13 @@
+{
+  "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+  "runs": [
+    {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 91,
+      "method": "deterministic AST; empty semantics"
+    }
+  ],
+  "total_input_tokens": 0,
+  "total_output_tokens": 0
+}

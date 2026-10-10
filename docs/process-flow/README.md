@@ -1,64 +1,69 @@
 # Tradey Desk process flow
 
-[Download / open the interactive Archify diagram](tradey-desk.html) · [Editable workflow specification](tradey-desk.workflow.json)
+[Interactive workflow](tradey-desk.workflow.html) · [Editable JSON](tradey-desk.workflow.json) · [PNG preview](tradey-desk-preview.png) · [SVG export](tradey-desk-preview.svg)
 
-GitHub displays HTML as source, not as an interactive page. The root README embeds [a static PNG preview](tradey-desk-preview.png) rendered from the delivered HTML's SVG using Chromium and system fonts (decorative grid and Viewer controls omitted). Download `tradey-desk.html` and open it in a browser for interaction; the page is standalone and has no external script dependencies. The preview was visually inspected for legibility and clipping; it is separate from the interactive browser evidence.
+The actual generated name is `tradey-desk.workflow.html`, matching `meta.output`. GitHub cannot execute HTML: download and open it locally. The standalone viewer has no external script dependency. Both static exports were freshly generated using the native Archify exporter from the delivered HTML; PNG is 4011×3450. Viewer controls and source badges are omitted from the export; its decorative grid remains. `tradey-desk.html` is an untouched historical artifact, not this refresh.
 
-## Scope and evidence
+## Frozen source and release status
 
-This is a source-backed snapshot of the process at commit `d2bb7ee67c4bc0651a379eb59ae718f7df8f32d4`, not an account-status audit or a statement that every scheduled job is currently active. Diagram nodes link to pinned source ranges. Existing source references were refreshed against this revision, including the exact pending-bracket reconciliation release.
+Source pin: `0d3a5a554bf2c36b758f085ab46e56d2a317f7a8`. This is a **frozen candidate-only local pin, NOT deployed**. The final independent offline review returned **PASS**, with all 16 reviewed source hashes verified against this pin. The user authorized commit and push of the reviewed code and finalized artifacts. This publication approval is separate from artifact checks and does not authorize or demonstrate live deployment, scheduler activation, model calls or broker execution. Changed runtime bytes require a new pin and artifact regeneration. The diagram establishes no account state, current broker capability, scheduler activation, eligible-run observation, performance, or alert delivery.
 
-The flow covers scheduled research, verified candidate dossiers, existing-order/protection reconciliation, deterministic market/broker inputs, immutable BUY proposals, parallel independent review, fresh risk checks, protected paper execution, broker readback, durable journals, the **portfolio watchdog**, post-close measurement, separate shadow calibration, and sanitized dashboard publication. Research qualification is not trade approval; order acceptance is not a confirmed fill.
+Every source citation was re-read from this isolated pin (71 diagram citations bound to committed blobs; two supplemental inspected excerpts retained separately), including both independent watchdog tracks. Local-only SRC markers intentionally avoid suggesting that the unpublished pin is available on GitHub. The isolated clone's stored origin is a local clone path; validation used a process-local Git `url.<public identity>.insteadOf` mapping to the inherited credential-free repository identity. No Git config, remote, commit, index, live checkout, or source file was changed. Verification still read the exact local committed blobs and line ranges, not network content.
 
-The post-close sequence is a scheduled reporting routine, not an automatic consequence of each fill. Candidate outcomes also include untraded ideas; shadow results are not actual performance. Every required pre-submission gate fails closed. The HOLD branch illustrates review rejection; other failed safety gates also stop new submission.
+## Trading conditions represented
 
-## Portfolio watchdog: monitoring only
+- Checked-in settings: enabled=true, paper, `exact_owned_zero_fill_v1`, pending parents=3, `new_intents_session_close_v1`. Unchanged: daily submissions=2, $10,000 managed exposure, $500 position, $40 planned risk, IEX spread≤600 bps, whole shares, no margin. GTC and $40 correct the prior DAY/$25 narrative; they are observed implementation/configuration, not newly authorized policy.
+- Pending observations happen before candidate freshness/no-candidate/already-reviewed skips and do **not** stop a later eligible candidate. Confirmed-exit return paths remain distinct. Acceptance is not fill; lifecycle updates do not create phantom trade-journal fills.
+- Exact zero-fill saved parent/held-child ownership is required. Unknown/manual/unlinked orders, partial fills, same-symbol pending entries, stale or forged proof, exhausted capacity, invalid funding and other safety gates fail closed. Three parents across sessions is not three submissions/day: unique submission identities, including unknown submissions, retain their original New York submission date.
+- Sealed proof is bound to current snapshot and local state. Initial qualification feeds sizing and pre-review validation; post-review validation rechecks it; independently requalified fresh broker-review proof gates the unchanged reviewed plan immediately before durable intent. Canonical `.entry_state.lock` serializes the complete entry cycle across processes and operational reconciliation; no force-unlock/inode rotation.
+- Gross cash subtracts verified pending notional once; available-net buying power remains a separate cap and is not subtracted again. Pending notional also reserves managed-exposure headroom. The mapping's source records a 2023 Alpaca developer-relations note and orders documentation, not a newly verified live account contract.
+- Immutable forward-only new-intent deadlines are included in the proposal/hash: short 1–5 sessions at placement-session **regular** close; swing 6–30 at next **actual** session regular close. Authoritative New York open/close rows cover early close, DST and holidays. This is an entry deadline, not the investment holding deadline.
+- Expiry is **OBSERVATION ONLY**, `SAFE_PARENT_CANCEL_VERIFIED=False`: no automatic cancellation/activation path. Legacy intents without metadata, including legacy UBER, are not retrofitted; no actual UBER order was inspected. Passing a deadline never releases a slot, cash/exposure reservation or daily quota. Release requires exact broker-confirmed terminal/fill lifecycle reconciliation.
 
-The watchdog lane contains two independently scheduled tracks, not extra approval gates for the trader:
+## Storage and process boundaries
 
-- **Mechanical:** UTC `5 14-21 * * 1-5`, filtered to :05 inside the verified actual market session. Reads exact paper-broker references and operational ledgers; observes protection, quantity, exits, holding horizon and exposure. Hard outer bound: 120 seconds.
-- **Daily:** UTC `15,45 17-22 * * 1-5`, filtered to close+15 / close+45, including DST and early closes. Adds managed-strategy versus account accounting, benchmark coverage, versioned-thesis source retrieval and tool-free classification. Hard outer bound: 900 seconds.
-- **Read-only trading boundary:** no placement, cancellation, liquidation, operational-journal repair or kill-switch change. A separate monitoring lock cannot block the trader. Both tracks write monitoring state/reports/outbox under `private/watchdog/`; the two store nodes summarize the same monitoring subsystem, not separate databases.
-- **Visible gaps:** missing lineage, legacy baselines, incomplete financial contents, unknown exact earnings timestamps and missing benchmark evidence cannot become all-clear. SEC filing metadata is not financial-content extraction. A fully observed cancelled stop or expired holding horizon is still an exception.
-- **Isolation:** public-source workers and the classifier client are credential-free; classification reaches only an ephemeral provider-only gateway with no tools, broker, web or memory access. The daily track also includes the mechanical observations; the overview compresses those shared checks.
-- **Outputs:** private observations and reports, field/value-allowlisted public projections, sanitized cron stdout and a pending alert outbox. Successful mechanical runs without exceptions are silent; daily runs emit a report/coverage summary. Outside-slot launches are no-ops, not successful observations.
-- **Retry and receipts:** after a daily observation is committed, the later slot retries reporting, outbox delivery and the completion marker only—not thesis retrieval. Relay stdout provides no provider receipt, so alerts remain pending and may repeat. Completion does not prove delivery; neither silence nor a retry alone proves all-clear.
+Operational reconciliation explicitly imports JSONL projections **only when an existing SQLite database is present**. Qualification uses `verify_only`: read-only immutable SQLite under the cooperating storage lock, with business JSONL/SQLite bytes preserved. Unsynchronized projections/lifecycle repair produce typed `managed_repair_required`; corrupt/divergent state fails closed. Nonempty WAL/recovery journals block rather than being ignored or checkpointed by the reader. Coordination locks may be created; this is not a claim of zero filesystem effects.
 
-See [watchdog operations](../watchdog-operations.md) and [runtime readiness](../watchdog-runtime-readiness.md) for implementation boundaries and known coverage limitations. This diagram does not establish that an eligible unattended observation or confirmed alert delivery has occurred.
+Native bridge launches use an isolated Linux subreaper, pidfd-bound process identity, a stable outer per-launch subreaper custodian plus an inner supervisor, with bounded kill/reap cleanup preceding return and entry-lock release. Offline probes found no living or zombie owned process before lock release, including forced escalation. Detached orphans are included. External custodian SIGKILL/OOM, container destruction and uninterruptible tasks are explicitly outside the internally controlled reaping guarantee. This is not a filesystem/network sandbox, and there is no unconditional OOM/SIGKILL/container-death guarantee or rollback of a broker request already accepted.
 
-## Documentation drift observed in the snapshot
+Research selects search/web or text-only synthesis, not broker execution. Both independent tool-free DeepSeek/GLM reviewers receive the same immutable proposal/hash and effective qualification capacity; they cannot replace executable fields. Broker credentials stay at the deterministic broker boundary, not in research evidence/model prompts.
 
-- The bridge sends **GTC** brackets, although the root README describes DAY brackets.
-- Configuration specifies **$40** planned stop risk, although the root README describes $25.
-- The configured IEX spread cap is **600 bps**. This is a single-venue execution-reference spread, not consolidated NBBO.
+## Independent watchdog and reporting
 
-These are descriptions of inspected code/configuration, not approval of those settings or changes to the trading mandate. This documentation change does not alter orders, schedules, credentials, or risk controls.
+The mechanical and daily tracks remain read-only monitoring, not trading approval gates. Mechanical eligibility is :05 inside an actual session; daily eligibility is close+15 / close+45, with reporting-only retry after committed observation. Code-defined cadence is not live scheduler readback. Their separate monitoring lock and monitoring state/outbox cannot authorize placement, cancellation, liquidation, operational journal repair or kill-switch changes.
+
+Public-source and classifier workers are credential-free; classifier accesses only the ephemeral provider-only gateway, with no broker/web/tools/memory or agent loop. Missing lineage, legacy baselines, incomplete financial content, exact earnings-time and benchmark gaps remain explicit; filing metadata is not extracted financial contents. Fully observed cancelled protection or expired holding horizon still forbids all-clear.
+
+Reports/public projections are allowlisted. Relay stdout is not a provider receipt: outbox stays pending and may repeat. Completion is not acknowledgment. Post-close candidate outcomes include untraded ideas; shadow calibration is separate from actual fills/performance. See [watchdog operations](../watchdog-operations.md) for the source-defined operational contract.
 
 ## Regeneration
 
-With Archify 3.0.1 installed, run from the repository root, replacing `ARCHIFY_CLI` with its installed absolute path and `EVIDENCE_DIR` with a fresh local evidence directory:
+Run from the isolated repository root, with Archify 3.0.1 and a fresh evidence directory. The process-local origin mapping below is required only for this local-path clone; a normal matching HTTPS/SSH origin does not need it.
 
 ```sh
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=url.https://github.com/Koktongkt/tradey-desk.git.insteadOf \
+GIT_CONFIG_VALUE_0=/opt/data/projects/tradey-desk \
 node "$ARCHIFY_CLI" finalize workflow \
   docs/process-flow/tradey-desk.workflow.json \
-  docs/process-flow/tradey-desk.html \
+  docs/process-flow/tradey-desk.workflow.html \
   --repo-root "$PWD" --quality showcase --out-dir "$EVIDENCE_DIR" --json
 
-node "$ARCHIFY_CLI" visual-check docs/process-flow/tradey-desk.html \
-  --out-dir "$EVIDENCE_DIR" --summary --require-provenance
+node "$ARCHIFY_CLI" visual-check docs/process-flow/tradey-desk.workflow.html \
+  --out-dir "$EVIDENCE_DIR/visual" --summary --require-provenance
 ```
 
-The specification intentionally pins the inspected source commit. Refresh source evidence before changing that revision. Keep machine-generated local receipts, browser profiles, captures and diagnostic paths out of Git. Re-export the static preview from the newly delivered SVG, not an older HTML or browser screenshot.
+Refresh inspected source ranges before changing revision. Never hand-edit generated HTML. Local machine receipts/captures are not portable publication artifacts; regenerate delivery provenance at the final publication location if needed.
 
-## Validation status — 2026-10-09
+## Actual validation of this refresh
 
-- **Showcase validation:** 9/9 checks, zero errors, zero warnings; pinned source evidence verified.
-- **Delivery and strict provenance/artifact checks:** passed.
-- **Automated Chromium browser evidence:** passed at 1440×900, 1600×1000, 1920×1080 and 2048×1320; light/dark theme and READ/Still state checks passed.
-- **Visual inspection:** light and dark captures inspected at both endpoint sizes, including the long dossier-to-reconciliation and journal-to-outcomes routes. Both monitoring tracks are distinct; no visible node/label clipping. Exported PNG also inspected.
-- **Regression suite:** canonical `full` tier passed: 838 tests, zero failures/errors/skips.
-- **Specification SHA-256:** `793471093a78b836ad8559fc14a02091d9c4b5a94edb15390211aa32dad884b2`.
-- **HTML artifact SHA-256:** `68fabbcf57f7838d9a18d5b1a2e0135462d88aefb152e05ba5685e50dc98bf51`.
-- **PNG preview:** 2448×1992; SHA-256 `8a579dad2c58a96711d0c2af68c0feec54c8474d0947d65485c854eefb6640ec`.
+- Showcase: **9/9**, zero errors, zero warnings; all 71 pinned diagram source citations bound to committed blobs at `0d3a5a554bf2c36b758f085ab46e56d2a317f7a8`. Delivery, strict provenance check and real Chromium browser-check all **passed** (Archify 3.0.1).
+- Browser evidence passed at 1440×900, 1600×1000, 1920×1080, 2048×1320; endpoint light/dark themes and READ/Still states checked.
+- Automated containment/readability/theme checks passed on all four endpoint captures. All four captures, the native PNG export, SVG-rendered capture and cards capture were subsequently inspected: no clipped nodes or overlapping labels; both watchdog tracks and deadline-observation branch are distinct. Supporting text is small at 1440px; use zoom and the explanation cards for detail. Advisory route-review hints remain for long dossier/reconciliation, journal/outcomes and expiry paths; disclosed detours, not machine failures.
+- Runtime tests were **not rerun by this artifact worker**. The runtime worker's offline remediation logs (SHA-256-frozen in `offline-log-evidence.json`) report fast=494, scenario=284, full=896 and raw=896 tests passing (raw retains 20 pre-existing SQLite ResourceWarning lines; the three canonical tiers have zero), plus the independent forced-escalation probe green with no living/zombie owned process before entry-lock release. These are offline candidate-source results awaiting parent independent review, not runtime activation or release evidence.
+- Specification SHA-256: `796af4921a6eaa5dbaee877378b3f4bbf11c25f53442a6d75d88ad0b07330415`.
+- HTML SHA-256: `7b973df42b103959bd0dece9f2496638def1d3b86a4d22e09d4c8f1395c933ce`.
+- SVG SHA-256: `558d6fcc06094ab3ee150e9b7733c01c90230f131de8c3a3c2d6fefb7e8ad50e`.
+- PNG SHA-256: `36cce47a8133fa07dfb0f1e9277d16289691e06806e9fb5b969c3f803e1b91e2`.
 
-These are diagram-validation results, not portfolio safety, performance, scheduler activation or delivery-receipt claims.
+Local audit bundle: `/opt/data/analysis/tradey-three-evidence/archify/final-pin/`; finalize receipt: `tradey-desk.workflow.finalize.json`; compact receipt: `tradey-desk.workflow.finalize-summary.json`; browser receipt: `tradey-desk.workflow.browser-check.json`; screenshots/contact sheet and strict visual receipt under `visual/`; source citations/excerpts in `source-audit.json`; native exports in `export-receipt.json`; frozen offline test-log digests in `offline-log-evidence.json`; final confinement and changed-file hashes in the bundle's `completion.json`. These paths are local evidence pointers, not proof of publication.

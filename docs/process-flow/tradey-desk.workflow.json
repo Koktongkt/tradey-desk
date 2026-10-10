@@ -5,10 +5,11 @@
     "title": "Tradey Desk — Protected Paper Execution + Portfolio Watchdog",
     "locale": "en",
     "quality_profile": "showcase",
-    "output": "docs/process-flow/tradey-desk.html",
+    "output": "docs/process-flow/tradey-desk.workflow.html",
     "repository": {
       "url": "https://github.com/Koktongkt/tradey-desk.git",
-      "revision": "d2bb7ee67c4bc0651a379eb59ae718f7df8f32d4"
+      "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+      "link_mode": "local-only"
     }
   },
   "lanes": [
@@ -58,8 +59,8 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 204,
-          "end_line": 222
+          "line": 209,
+          "end_line": 233
         }
       ]
     },
@@ -76,6 +77,11 @@
           "path": "alpha_radar.py",
           "line": 1375,
           "end_line": 1407
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 412,
+          "end_line": 439
         }
       ]
     },
@@ -91,7 +97,7 @@
         {
           "path": "alpha_radar.py",
           "line": 1408,
-          "end_line": 1468
+          "end_line": 1462
         }
       ]
     },
@@ -106,8 +112,13 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1469,
-          "end_line": 1495
+          "line": 1508,
+          "end_line": 1528
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 432,
+          "end_line": 435
         }
       ]
     },
@@ -122,8 +133,13 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1685,
-          "end_line": 1710
+          "line": 1344,
+          "end_line": 1356
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1689,
+          "end_line": 1703
         }
       ]
     },
@@ -138,8 +154,13 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1710,
-          "end_line": 1715
+          "line": 1703,
+          "end_line": 1709
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1233,
+          "end_line": 1254
         }
       ]
     },
@@ -148,21 +169,27 @@
       "lane": "decision",
       "col": 0,
       "type": "security",
-      "label": "Reconcile first",
-      "sublabel": "Exact lineage + protection",
+      "label": "Observe pending first",
+      "sublabel": "Observe; then candidate",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1287,
-          "end_line": 1332
+          "line": 1402,
+          "end_line": 1445
         },
         {
           "path": "managed_reconciliation.py",
           "line": 330,
-          "end_line": 425
+          "end_line": 448
+        },
+        {
+          "path": "sqlite_ledger.py",
+          "line": 319,
+          "end_line": 376
         }
-      ]
+      ],
+      "tag": "operational import"
     },
     {
       "id": "truth",
@@ -170,13 +197,13 @@
       "col": 1,
       "type": "cloud",
       "label": "Broker + market truth",
-      "sublabel": "Alpaca IEX / Massive bars",
+      "sublabel": "Gross cash / net BP",
       "width": 144,
       "sources": [
         {
           "path": "broker_mcp_bridge.py",
-          "line": 233,
-          "end_line": 248
+          "line": 211,
+          "end_line": 286
         }
       ]
     },
@@ -186,15 +213,26 @@
       "col": 2,
       "type": "backend",
       "label": "Canonical BUY plan",
-      "sublabel": "Ask, levels, shares + hash",
+      "sublabel": "Sealed proof; pending 3",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 305,
-          "end_line": 344
+          "line": 313,
+          "end_line": 363
+        },
+        {
+          "path": "pending_policy.py",
+          "line": 40,
+          "end_line": 86
+        },
+        {
+          "path": "entry_expiry.py",
+          "line": 40,
+          "end_line": 61
         }
-      ]
+      ],
+      "tag": "new deadline hashed"
     },
     {
       "id": "reviews",
@@ -207,8 +245,13 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 801,
-          "end_line": 873
+          "line": 874,
+          "end_line": 946
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1474,
+          "end_line": 1477
         }
       ]
     },
@@ -223,8 +266,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 354,
-          "end_line": 373
+          "line": 373,
+          "end_line": 392
         }
       ],
       "tag": "score >=0.55"
@@ -234,31 +277,51 @@
       "lane": "decision",
       "col": 5,
       "type": "security",
-      "label": "Fresh safety checks",
-      "sublabel": "Cash, risk, quote + earnings",
+      "label": "Three-stage safety",
+      "sublabel": "Fresh proof + entry lock",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1368,
-          "end_line": 1398
+          "line": 1354,
+          "end_line": 1385
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1488,
+          "end_line": 1527
+        },
+        {
+          "path": "entry_state.py",
+          "line": 17,
+          "end_line": 57
         }
       ],
-      "tag": "R/R >=1.6"
+      "tag": "daily 2; pending 3"
     },
     {
       "id": "submit",
       "lane": "execution",
       "col": 5,
       "type": "security",
-      "label": "Paper limit bracket",
-      "sublabel": "GTC + attached stop/target",
+      "label": "Paper GTC bracket",
+      "sublabel": "Outer custodian + inner",
       "width": 144,
       "sources": [
         {
-          "path": "broker_mcp_bridge.py",
-          "line": 250,
-          "end_line": 252
+          "path": "broker_process.py",
+          "line": 13,
+          "end_line": 57
+        },
+        {
+          "path": "broker_supervisor.py",
+          "line": 181,
+          "end_line": 211
+        },
+        {
+          "path": "broker_supervisor.py",
+          "line": 126,
+          "end_line": 163
         }
       ]
     },
@@ -267,14 +330,19 @@
       "lane": "execution",
       "col": 3,
       "type": "cloud",
-      "label": "Broker readback",
-      "sublabel": "Acceptance is not a fill",
+      "label": "Exact broker readback",
+      "sublabel": "Unknown: no resubmit",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1408,
-          "end_line": 1418
+          "line": 1527,
+          "end_line": 1547
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1185,
+          "end_line": 1210
         }
       ]
     },
@@ -284,13 +352,23 @@
       "col": 2,
       "type": "database",
       "label": "Durable journals",
-      "sublabel": "Only confirmed fills count",
+      "sublabel": "Lifecycle ≠ confirmed fill",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1410,
-          "end_line": 1414
+          "line": 679,
+          "end_line": 696
+        },
+        {
+          "path": "sqlite_ledger.py",
+          "line": 278,
+          "end_line": 316
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 424,
+          "end_line": 429
         }
       ]
     },
@@ -307,6 +385,11 @@
           "path": "candidate_outcomes.py",
           "line": 11,
           "end_line": 39
+        },
+        {
+          "path": "run_cycle.py",
+          "line": 228,
+          "end_line": 232
         }
       ]
     },
@@ -320,9 +403,14 @@
       "width": 144,
       "sources": [
         {
-          "path": "README.md",
-          "line": 84,
-          "end_line": 88
+          "path": "shadow_calibration.py",
+          "line": 25,
+          "end_line": 57
+        },
+        {
+          "path": "shadow_calibration.py",
+          "line": 95,
+          "end_line": 118
         }
       ]
     },
@@ -339,6 +427,11 @@
           "path": "public_dashboard.py",
           "line": 14,
           "end_line": 26
+        },
+        {
+          "path": "public_dashboard.py",
+          "line": 146,
+          "end_line": 181
         }
       ]
     },
@@ -353,8 +446,8 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 223,
-          "end_line": 228
+          "line": 228,
+          "end_line": 234
         }
       ]
     },
@@ -364,13 +457,23 @@
       "col": 4,
       "type": "security",
       "label": "Fail closed / HOLD",
-      "sublabel": "No new order submitted",
+      "sublabel": "Unknown / partial block",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1361,
-          "end_line": 1367
+          "line": 471,
+          "end_line": 623
+        },
+        {
+          "path": "pending_policy.py",
+          "line": 72,
+          "end_line": 86
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 227,
+          "end_line": 290
         }
       ]
     },
@@ -598,8 +701,8 @@
         },
         {
           "path": "watchdog/provider_gateway.py",
-          "line": 30,
-          "end_line": 47
+          "line": 35,
+          "end_line": 52
         },
         {
           "path": "watchdog/runtime.py",
@@ -657,6 +760,27 @@
         }
       ],
       "yOffset": 54
+    },
+    {
+      "id": "expiry",
+      "lane": "exceptions",
+      "col": 0,
+      "type": "security",
+      "label": "Deadline observation",
+      "sublabel": "Forward only; no cancel",
+      "width": 144,
+      "sources": [
+        {
+          "path": "entry_expiry.py",
+          "line": 64,
+          "end_line": 100
+        },
+        {
+          "path": "entry_expiry.py",
+          "line": 17,
+          "end_line": 61
+        }
+      ]
     }
   ],
   "edges": [
@@ -709,14 +833,16 @@
       "to": "truth",
       "variant": "default",
       "role": "main",
-      "from": "reconcile"
+      "from": "reconcile",
+      "label": "continue"
     },
     {
       "id": "truth-proposal",
       "to": "proposal",
       "variant": "default",
       "role": "main",
-      "from": "truth"
+      "from": "truth",
+      "label": "proof"
     },
     {
       "id": "proposal-reviews",
@@ -747,7 +873,7 @@
       "variant": "security",
       "role": "main",
       "from": "final",
-      "label": "all gates pass",
+      "label": "fresh gates + lock",
       "fromSide": "bottom",
       "toSide": "top"
     },
@@ -764,7 +890,7 @@
       "variant": "default",
       "role": "main",
       "from": "readback",
-      "label": "broker-confirmed state"
+      "label": "exact state"
     },
     {
       "id": "consensus-stop",
@@ -772,7 +898,7 @@
       "variant": "security",
       "role": "error",
       "from": "consensus",
-      "label": "veto / invalid / low score",
+      "label": "veto / invalid",
       "fromSide": "bottom",
       "toSide": "top"
     },
@@ -872,6 +998,14 @@
       "role": "async",
       "variant": "dashed",
       "label": "read only"
+    },
+    {
+      "id": "reconcile-expiry",
+      "from": "reconcile",
+      "to": "expiry",
+      "role": "branch",
+      "variant": "dashed",
+      "label": "observe"
     }
   ],
   "cards": [
@@ -888,27 +1022,28 @@
       "dot": "rose",
       "title": "Execution controls • checked-in configuration",
       "items": [
-        "Paper only; enabled flag and kill switch checked. $10,000 managed exposure; $500 per position; two orders/day; whole shares only.",
-        "Planned stop risk <=$40; IEX spread <=600 bps; limit deviation <=150 bps; quote age <=120 seconds; upcoming earnings blackout: two sessions.",
-        "Every required gate is fail-closed. Unknown submission state is reconciled, not blindly resubmitted. Stops bound planned risk, not guaranteed loss."
+        "Candidate pin: enabled=true, paper; exact_owned_zero_fill_v1 with three qualified pending parents. Daily submissions remain two, including unknown submissions by original New York submission date.",
+        "Unchanged observed limits: $10,000 managed exposure; $500 per position; planned risk <=$40; IEX spread <=600 bps; whole shares; no margin. These are checked-in settings, not new policy authorization.",
+        "Gross cash reserves exact pending notional once; available-net buying power is a separate cap and is not reduced twice. Pending notional also reserves exposure headroom. Unknown funding, manual/unlinked orders, partial fills and same-symbol pending entries block."
       ]
     },
     {
       "dot": "violet",
       "title": "Independent decision, not model-selected order fields",
       "items": [
-        "Python counts exchange sessions: 1–5 short; 6–30 swing. Completed Massive bars determine technical levels; fresh IEX ask determines BUY limit.",
-        "Both isolated tool-free reviewers receive the same hashed proposal. They cannot change its order fields. The lower rubric score must be >=0.55.",
-        "Conviction is uncalibrated, not win probability. Shadow calibration is separate from actual paper fills."
+        "Initial sealed exact-snapshot/local-state proof feeds sizing and pre-review checks; post-review checks revalidate it; fresh broker-review snapshot is independently requalified before durable intent, all under canonical cross-process .entry_state.lock.",
+        "Python fixes ask, completed-bar levels, shares and entry metadata before hashing. Both independent tool-free reviewers receive that immutable proposal and effective pending capacity; they cannot change order fields. Lower score >=0.55; R/R >=1.6.",
+        "New short 1–5-session intents expire at placement-session regular close; swing 6–30 at the next actual session close. Authoritative New York calendar handles early closes, DST and holidays. Entry deadline is not the investment holding deadline."
       ]
     },
     {
       "dot": "amber",
-      "title": "Code takes precedence over stale documentation",
+      "title": "Candidate-only boundaries • publication gated",
       "items": [
-        "Bridge sends GTC brackets; README says DAY. Configuration uses $40 planned risk; README says $25. Configuration spread cap is 600 bps.",
-        "SQLite transactional journals have JSONL compatibility projections. Broker orders and fills remain authoritative.",
-        "This is a source-backed workflow snapshot, not an account-status audit. No trading controls or orders were changed."
+        "Frozen candidate is under final independent review, NOT deployed. Artifact checks and offline tests are not release approval; publication requires parent PASS. No live broker, model, scheduler or deployment evidence is claimed.",
+        "Expiry is OBSERVATION ONLY: SAFE_PARENT_CANCEL_VERIFIED=False. Legacy intents without metadata, including legacy UBER, are never retrofitted. Passing a deadline never frees a slot, cash/exposure reservation or daily quota; exact confirmed lifecycle reconciliation is required.",
+        "Operational reconciliation explicitly imports projections when an existing database is present. verify_only qualification preserves business JSONL/SQLite bytes; typed repair-required or pending WAL/recovery fails closed. Coordination lock files may be created.",
+        "Stable per-launch outer Linux subreaper owns inner supervisor, wrapper and detached orphans. Internally controlled escalation preserves/resumes the custodian; cleanup/reap precedes return and entry-lock release. Offline probes found no living or zombie owned process. External custodian SIGKILL/OOM, container death and uninterruptible tasks are outside this guarantee; no sandbox or broker rollback."
       ]
     },
     {

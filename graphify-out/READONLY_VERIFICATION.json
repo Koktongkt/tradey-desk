@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "runtime_revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+  "selected_source_file_count": 91,
+  "selected_source_snapshot_git_tree_and_worktree_sha256_equal": true,
+  "head_unchanged": true,
+  "git_index_sha256_unchanged": true,
+  "git_index_sha256": "9c700f7e68791ce6d2986a431776bdc162709fde5804e7cfff1db2f461eec4e6",
+  "runtime_test_execution": "not performed by Graphify worker",
+  "publication_gate": "independent final review running; graph/browser checks do not authorize deployment",
+  "helpers": "Adapted existing confined helpers in fresh authorized workspace; current corpus-derived counts.",
+  "visual_review": "Actual preview inspected: rendered colored network, readable search and community sidebar and run_watchdog node details; overview dense, individual labels require search/zoom; no visible error.",
+  "network": "Only package/CDN visualization network; no broker, model, scheduler or credentials access."
+}

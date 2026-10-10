@@ -1,11 +1,25 @@
 {
-  "status": "pass",
-  "page_errors": [],
-  "canvas_count": 1,
-  "search_results": "run_watchdog()",
-  "viewport": {
-    "width": 1440,
-    "height": 900
+  "status": "PASS",
+  "html_sha256": "5680c708b3be068259d984085f172f9e5e80dc3eca3daf5356aa1c06e53f7d8b",
+  "html_bytes": 2559438,
+  "canvas": {
+    "x": 0,
+    "y": 0,
+    "width": 1220,
+    "height": 950
   },
-  "network_dependency": "vis-network 9.1.6 via integrity-checked unpkg CDN"
+  "search_results": {
+    "qualify": "qualify()\n.test_actual_qualify_unimported_existing_database_blocks_without_business_writes()",
+    "supervisor": ".test_supervisor_failure_after_launch_reaps_detached_child()\nbroker_supervisor.py\nStable per-launch custodian; the inner supervisor may be forcibly killed. Only\u2026",
+    "guard": "GatewayFallbackGuardTests\nScoutReliabilityGuardTests\nResearchBudgetGuardTests\nguardian_main()\n.test_operational_guard_matches_canonical_sqlite_streams()\nGuard tests for execution tolerances in the production config.\nGuard tests from the 2026-09-09 3-run fetch-failure streak. Causes addressed:\u2026\nGuard tests for the 540-second radar envelope and stage deadlines. The\u2026",
+    "metadata": "metadata()\nvalidate_metadata()\nconfirmed_fill_metadata()\n.test_http_link_is_preserved_as_metadata_not_fetched_or_repaired()\n.test_sec_filing_metadata_enrichment_is_bound_and_nonmutating()\n.test_pending_fill_propagates_intent_top_level_metadata()\n.test_retry_review_metadata_has_candidate_identity()\n.test_reviewer_rejection_private_metadata_not_public_disagreement()\n.test_submission_metadata_leaves_payload_hash_and_reviewer_bundle_unchanged()\n.test_broker_notification_preserves_metadata_error_before_price_rejection()\n_metadata()\n.test_malformed_calendar_and_forged_metadata_fail_closed()\nForward-only private persistence metadata. Never merge into executable plans.\nPersist only normalized status metadata and the immutable evidence hash.\nUse exact SEC submission metadata only for its matching archive document.\nVerify the archive document against official exact-CIK submission metadata.",
+    "reap": "reap_owned()\n.test_exited_wrapper_inherited_pipes_bounded_and_reaped()\n.test_fast_spawn_exit_reaps_orphan_without_ppid_polling()\n.test_forced_escalation_reaps_before_entry_lock_release()\n.test_normal_exit_reaps_detached_devnull_child_before_successor_lock()\n.test_parent_escalation_preserves_stopped_custodian_until_reaped()\n.test_running_wrapper_timeout_reaps_detached_child()\n.test_supervisor_failure_after_launch_reaps_detached_child()\nPer-launch Linux subreaper owns wrapper + detached orphans until reaped. Parent\u2026\nLinux-only, per-launch subreaper. Never changes the shared runtime's prctl.\u2026\nOnly this isolated subreaper's children; never unrelated runtime children."
+  },
+  "pageerrors": [],
+  "console_errors": [],
+  "network_nodes": 2299,
+  "stats": "2299 nodes \u00b7 5544 edges \u00b7 110 communities",
+  "cdn_dependency": "integrity-checked unpkg vis-network@9.1.6; internet required; actual browser load used CDN",
+  "browser": "installed Chromium via isolated Playwright 1.63.0",
+  "deployment": "not deployed; independent final review running; approval is parent-owned and separate"
 }

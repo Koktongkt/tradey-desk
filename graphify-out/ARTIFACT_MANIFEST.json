@@ -1,47 +1,68 @@
 {
-  "source_revision": "bb88070b998d5a406c99de2b252867e4caebdc2b",
-  "graphify_version": "0.9.75",
-  "nodes": 2152,
-  "edges": 5104,
-  "communities": 110,
-  "scope": "tracked source code and tests only",
-  "publication_normalization": "Audit source paths are repository-relative; local extractor installation path replaced with module path; graph HTML/JSON unchanged.",
+  "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+  "status": "prepared-not-published",
+  "publication_requires": "parent-owned independent approval; final review running",
   "files": {
-    "README.md": {
-      "sha256": "13956e6db48c2427874b7f90bf585064d97e90d128f16814e8cbfe4da6e81c10",
-      "bytes": 3409
+    ".graphify_labels.json": {
+      "sha256": "f417aab11e0c738ff8a545f61f5cce406ed001366bae39e09a090aed5716e58b",
+      "bytes": 3461
     },
-    "graph.html": {
-      "sha256": "141da195a11a6004821d0dbbb0352072c68a618ee094f441f229c86976876d43",
-      "bytes": 2394716
-    },
-    "graph.json": {
-      "sha256": "855c83eb42f26efddcfa561d46ed64539a0be4ea6f29aa0b143908904ca11fd5",
-      "bytes": 2924405
-    },
-    "GRAPH_REPORT.md": {
-      "sha256": "4191cea8876431838e7d50c2e9b37dbe7c35c7a8d4e1ab6731eb1b132eeb2857",
-      "bytes": 20400
-    },
-    "GRAPH_HEALTH.json": {
-      "sha256": "3a1e1d2cd9b1eb90c2f9d02fcb861de9a3abcdd895857d596eb2379b048e5fc3",
-      "bytes": 4854
-    },
-    "SOURCE_SCOPE.json": {
-      "sha256": "45466d909b08c22b4eba89010139246008b061f74606ff4070eb60e3f9e2cade",
-      "bytes": 3363
-    },
-    "EXTRACTION_AUDIT.json": {
-      "sha256": "49217d71315c4b97426334265ad3cb5eaf9eee564b3604d1aa8884dd46728561",
-      "bytes": 2111532
+    "BENCHMARK.txt": {
+      "sha256": "7be2b7970a02354ae8439841a0998c0ef30290853f698acbadde7eff6bf0081c",
+      "bytes": 717
     },
     "BROWSER_VERIFICATION.json": {
-      "sha256": "33ea9cb62fbfcd4cc296411f0e749b70aca0bd0e24ec5a23f61f6dbe56834b06",
-      "bytes": 237
+      "sha256": "feec1428c8bbef6143febc106e0f67085cf99d19d9483a73fc7d24dea2ada842",
+      "bytes": 2995
+    },
+    "EXTRACTION_AUDIT.json": {
+      "sha256": "f8ef4a16626264350b0e51b4874ec4cc673ab07187911bccfc6c7f8615196f82",
+      "bytes": 2753496
+    },
+    "GRAPH_HEALTH.json": {
+      "sha256": "40d9c428551d444439ce3066b28b599e9df382564bafbe1d7c9ab2d9ef0f5a64",
+      "bytes": 4863
+    },
+    "GRAPH_REPORT.md": {
+      "sha256": "4e528b89a930281b2cae81938ed8f0bd861bbf8a624803f8f1126b89253420e3",
+      "bytes": 19163
+    },
+    "README.md": {
+      "sha256": "a7bcb02b364e9f466345ba58d0c81a2d5aef5a95b128cf12b6a5ee1b4571e859",
+      "bytes": 3854
+    },
+    "READONLY_VERIFICATION.json": {
+      "sha256": "d149e6133f4a3c63a3481263abcff9fd36ea206d70dd08873f7a40b585621300",
+      "bytes": 957
+    },
+    "SOURCE_SCOPE.json": {
+      "sha256": "d0d63406496e3fee16d851f66b1c5f9317f2554930b7e6cf995d1555fc2b0769",
+      "bytes": 18778
+    },
+    "STRUCTURAL_QUERY.txt": {
+      "sha256": "75536e3721d983e4fed25e0934c9921dfc29b12f0d6d782f83ede43bdfd9fdef",
+      "bytes": 7487
+    },
+    "cost.json": {
+      "sha256": "0a4d1dc463e5fb827e3a3c90cbe13871090dca9b7d374bf29a1aabf9b512e3c9",
+      "bytes": 267
     },
     "graph-preview.png": {
-      "sha256": "173e02bf1fc57e2c4aa45ded46d34bf6bbc3f5d9745db56c16c2ae183bee41db",
-      "bytes": 697373
+      "sha256": "5a298becd90971c19ea510b5d14e2db98b80b5f5726eace0a712ced1e98b41cf",
+      "bytes": 953011
+    },
+    "graph.html": {
+      "sha256": "5680c708b3be068259d984085f172f9e5e80dc3eca3daf5356aa1c06e53f7d8b",
+      "bytes": 2559438
+    },
+    "graph.json": {
+      "sha256": "0174bd5797ff00f3fed9f0688795bf47a9fd77ace69a3b579738b87348d69427",
+      "bytes": 3138646
+    },
+    "manifest.json": {
+      "sha256": "4f26345a000e17be9252f25766649d5fdda8e2c5ba424f5248e3a9b46d265578",
+      "bytes": 16222
     }
-  }
+  },
+  "file_count_excluding_manifest": 15
 }
