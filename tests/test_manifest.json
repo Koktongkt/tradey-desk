@@ -39,6 +39,8 @@
       "test_candidate_alternatives",
       "test_order_notifications",
       "test_pending_capacity",
+      "test_three_runtime",
+      "test_release_blockers",
       "test_pipeline",
       "test_reconciliation_cli",
       "test_w2_w4",

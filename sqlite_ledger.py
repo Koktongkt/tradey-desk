@@ -46,6 +46,10 @@ class LedgerIntegrityError(LedgerError):
     """The SQLite history and compatibility projection do not agree."""
 
 
+class LedgerRepairRequired(LedgerError):
+    """Read-only verification requires an explicitly authorized storage import."""
+
+
 class LedgerConstraintError(LedgerError):
     """A record violates an append-only ledger invariant."""
 
@@ -310,6 +314,66 @@ def append_jsonl(path: Path | str, row: dict) -> None:
         raise
     except (OSError, sqlite3.Error) as error:
         raise LedgerDurabilityError("ledger durability unconfirmed") from error
+
+
+def read_jsonl_readonly(path: Path | str) -> list[dict]:
+    """Strict integrity read of all ledger projections, with zero business writes.
+
+    Cooperating writers hold the same lock. Reject outstanding recovery/WAL
+    state rather than creating SQLite shm/journals or ignoring uncheckpointed
+    rows. immutable is safe only after this check and under the writer lock.
+    Existing unsynchronized projections require the operational import stage.
+    """
+    path = Path(path).resolve()
+    root = _storage_root(path)
+    db = database_path(path)
+    lock_path = _lock_path(db)
+    _ensure_parent(lock_path)
+    with lock_path.open('a+') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        names = set(DEFAULT_STREAMS) | {_stream_name(path, root)}
+        names.update(_stream_name(p, root) for p in root.rglob('*.jsonl'))
+        connection = None
+        try:
+            if db.exists():
+                if any(p.exists() and p.stat().st_size for p in
+                       (Path(str(db) + '-wal'), Path(str(db) + '-journal'))):
+                    raise LedgerRepairRequired('storage recovery required')
+                connection = sqlite3.connect(db.as_uri() + '?mode=ro&immutable=1', uri=True)
+                if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
+                    raise LedgerIntegrityError('unsupported ledger schema')
+                if connection.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+                    raise LedgerIntegrityError('database integrity check failed')
+                if connection.execute('PRAGMA foreign_key_check').fetchall():
+                    raise LedgerIntegrityError('foreign key integrity check failed')
+                names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
+            result = []
+            repair = False
+            for name in sorted(names):
+                selected = root / name
+                if _stream_name(selected, root) != name:
+                    raise LedgerIntegrityError('invalid ledger stream path')
+                projected = _parse_projection(selected, strict=True)
+                canonical = [_canonical(row) for row in projected]
+                if connection is not None:
+                    stored = _database_rows(connection, name)
+                    sequences = [r[0] for r in connection.execute(
+                        'SELECT sequence FROM ledger_entries WHERE stream=? ORDER BY sequence', (name,))]
+                    if sequences != list(range(1, len(stored) + 1)):
+                        raise LedgerIntegrityError('invalid ledger sequence')
+                    if len(canonical) < len(stored) or canonical[:len(stored)] != stored:
+                        raise LedgerIntegrityError('compatibility projection diverged')
+                    repair |= len(canonical) != len(stored)
+                if selected == path:
+                    result = projected
+            if repair:
+                raise LedgerRepairRequired('projection import required')
+            return result
+        except sqlite3.Error as error:
+            raise LedgerIntegrityError('database unreadable') from error
+        finally:
+            if connection is not None:
+                connection.close()
 
 
 def read_jsonl(path: Path | str, strict: bool = False) -> list[dict]:

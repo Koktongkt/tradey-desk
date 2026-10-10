@@ -6,7 +6,7 @@ responses as JSON. It never calls a decision model.
 """
 from __future__ import annotations
 import asyncio,json,math,re,sys
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 from fastmcp import Client
@@ -156,6 +156,19 @@ def earnings_state(event_at:Any,calendar:Any,now:datetime|None=None)->tuple[str,
     except Exception:
         return "unknown",None
 
+async def complete_open_orders(a:Alpaca)->list[dict[str,Any]]:
+    """Bounded complete nested read; a full page might truncate, so block.
+
+    Do not paginate via exclusive timestamps: equal-time orders can be lost.
+    Unknown/manual orders remain in this exact list for shared reconciliation.
+    """
+    raw=await a.call("get_orders",{"status":"open","nested":True,"limit":500})
+    if isinstance(raw,dict) and set(raw)=={"orders"}:raw=raw["orders"]
+    if not isinstance(raw,list) or len(raw)>=500 or any(not isinstance(row,dict) for row in raw):
+        raise RuntimeError("managed_open_orders_unverified")
+    return raw
+
+
 async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
     if op=="portfolio":
         now=datetime.now(timezone.utc)
@@ -202,7 +215,7 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         account,positions,orders,asset,quote,technical_bars=await asyncio.gather(
             a.call("get_account_info"),
             a.call("get_all_positions"),
-            a.call("get_orders",{"status":"open","limit":100}),
+            complete_open_orders(a),
             a.call("get_asset",{"symbol":symbol}),
             a.call("get_stock_latest_quote",latest_quote_request(symbol)),
             asyncio.to_thread(consolidated_daily_bars,symbol),
@@ -210,7 +223,10 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         calendar=[]
         event_at=p.get("earnings_event_at")
         planned_exit_at=p.get("planned_exit_at")
-        calendar_end=None
+        # Fetch an authoritative bounded window even for a same-day exit: expiry
+        # metadata needs the next actual session (holidays are never inferred).
+        calendar_start=now.astimezone(ZoneInfo("America/New_York")).date()
+        calendar_end=calendar_start+timedelta(days=7)
         for raw in (event_at,planned_exit_at):
             try:
                 value=str(raw)
@@ -220,20 +236,40 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
                     calendar_end=max(calendar_end,parsed_date) if calendar_end else parsed_date
             except Exception:
                 pass
-        if calendar_end is not None:
-            calendar=await a.call("get_calendar",{"start":now.date().isoformat(),"end":calendar_end.isoformat(),"date_type":"TRADING"})
+        if calendar_end>calendar_start+timedelta(days=90):
+            raise RuntimeError("entry_calendar_unavailable")
+        calendar=await a.call("get_calendar",{"start":calendar_start.isoformat(),"end":calendar_end.isoformat(),"date_type":"TRADING"})
+        # Only broker regular open/close fields can authorize entry deadlines.
+        # Never substitute extended-session fields or guessed weekday hours.
+        import entry_expiry
+        rows=listish(calendar)
+        try:
+            parsed_calendar=entry_expiry.sessions(rows)
+        except (ValueError,TypeError,OverflowError,RuntimeError) as error:
+            token=str(error) if str(error) in {"entry_calendar_invalid","entry_calendar_unavailable"} else "entry_calendar_invalid"
+            raise RuntimeError(token) from error
+        if any(not calendar_start.isoformat()<=row[0]<=calendar_end.isoformat() for row in parsed_calendar):
+            raise RuntimeError("entry_calendar_invalid")
         earnings_status,earnings_sessions_away=earnings_state(event_at,calendar,now)
         trading_sessions=[]
         for row in listish(calendar):
             value=row.get("date") or row.get("session") if isinstance(row,dict) else row
             if value:trading_sessions.append(str(value)[:10])
         ac=find_mapping_with_keys(account,{"buying_power","cash"})
+        funding={key:finite_number(ac.get(key)) if not isinstance(ac.get(key),bool) else None
+                 for key in ("cash","buying_power")}
+        funding={key:value if value is not None and value>=0 else None for key,value in funding.items()}
         q=symbol_mapping(quote,symbol) or first_dict(quote)
         ar=symbol_mapping(asset,symbol) or first_dict(asset)
         return {
             "captured_at":now.isoformat().replace("+00:00","Z"),
-            "buying_power":float(ac["buying_power"]) if ac.get("buying_power") not in (None,"") else None,
-            "cash":float(ac["cash"]) if ac.get("cash") not in (None,"") else None,
+            "buying_power":funding["buying_power"],
+            "cash":funding["cash"],
+            # Cash changes on fill, not submission (Alpaca developer relations,
+            # forum t/12745/2). Official orders docs: BP already includes holds.
+            # Margin multiplier does not authorize strategy margin spending.
+            "cash_semantics":"gross",
+            "buying_power_semantics":"available_net",
             "positions":listish(positions),
             "open_orders":listish(orders),
             "asset":{"symbol":symbol,"tradable":ar.get("tradable"),"class":ar.get("class") or ar.get("asset_class"),"exchange":ar.get("exchange"),"name":ar.get("name"),"fractionable":ar.get("fractionable"),"leveraged":ar.get("leveraged",False),"inverse":ar.get("inverse",False)} if ar else None,
@@ -246,6 +282,7 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             "earnings_status":earnings_status,
             "earnings_sessions_away":earnings_sessions_away,
             "trading_sessions":trading_sessions,
+            "trading_calendar":[{key:row.get(key) for key in ("date","open","close")} for row in listish(calendar) if isinstance(row,dict)],
         }
     if op=="place":
         o=p["order"]
@@ -276,7 +313,7 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             raise RuntimeError("client_order_ids required")
         positions,opened=await asyncio.gather(
             a.call("get_all_positions"),
-            a.call("get_orders",{"status":"open","nested":True,"limit":500}),
+            complete_open_orders(a),
         )
         orders=await readback_orders(a,refs)
         return {

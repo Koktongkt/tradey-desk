@@ -76,6 +76,11 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "technical_bars_unavailable","trading_calendar_unavailable","unknown_buying_power",
     "unknown_cash","unknown_spread","unsupported_action","unsupported_technical_setup",
     "weak_reward_to_risk","whole_share_unaffordable",
+    "pending_entry_policy_invalid","pending_entry_limit","same_symbol_pending_entry","pending_qualification_required",
+    "pending_position_size_exceeded","pending_planned_risk_exceeded","funding_semantics_unverified",
+    "funding_state_invalid","managed_repair_required","entry_state_busy","entry_state_invalid",
+    "entry_calendar_unavailable","entry_calendar_invalid","entry_placement_outside_session",
+    "entry_expiry_invalid","entry_cancel_capability_unverified",
 })
 
 

@@ -205,8 +205,10 @@ def consensus(first: Any, second: Any, cfg: dict[str, Any]) -> dict[str, Any]:
 
 def runtime_blockers(cfg: dict[str, Any], ignore_disabled: bool = False) -> list[str]:
     errors: list[str] = []
-    if not ignore_disabled and not cfg.get("enabled", False):
+    if not ignore_disabled and cfg.get("enabled") is not True:
         errors.append("autonomy_disabled")
+    if any(key in cfg for key in ("pending_entry_policy","max_pending_entry_parents")) and not pending_policy.enabled(cfg):
+        errors.append("pending_entry_policy_invalid")
     if cfg.get("broker_mode") != "paper":
         errors.append("non_paper_mode_forbidden")
     kill = Path(str(cfg.get("kill_switch_path", "KILL_SWITCH")))
@@ -1400,7 +1402,7 @@ def _run_locked(args: argparse.Namespace) -> int:
         if not args.live_dry_run:
             expiry_reasons=entry_expiry_policy.process(ROOT,cfg,_broker_bridge)
             if expiry_reasons:
-                append_jsonl(PRIVATE_DIR/"blocker_diagnostics.jsonl", {"timestamp":utcnow(),"stage":"entry_expiry","reason":expiry_reasons[0]})
+                append_jsonl(ROOT/"private"/"blocker_diagnostics.jsonl", {"timestamp":utcnow(),"stage":"entry_expiry","reason":expiry_reasons[0]})
             try: pending_updates=reconcile_pending_orders(
                 ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl",
                 broker_mode=cfg.get("broker_mode"),
@@ -1471,7 +1473,7 @@ def _run_locked(args: argparse.Namespace) -> int:
     if not args.dry_run_fixture:
         review_bundle=build_review_bundle(candidate,snapshot,proposal)
         if proof is not None:
-            review_bundle["qualification"] = {"pending_entry_parents": len(proof.pending), "pending_reserved_notional_usd": str(proof.reserved), "max_pending_entry_parents": 2, "cash_headroom_usd": str(pending_policy.cash_headroom(proof, snapshot)), "buying_power_reservation": "broker_available_net_not_subtracted_again"}
+            review_bundle["qualification"] = {"pending_entry_parents": len(proof.pending), "pending_reserved_notional_usd": str(proof.reserved), "max_pending_entry_parents": cfg["max_pending_entry_parents"], "cash_headroom_usd": str(pending_policy.cash_headroom(proof, snapshot)), "buying_power_reservation": "broker_available_net_not_subtracted_again"}
         reviews=independent_reviews(review_bundle,cfg)
     else:
         reviews=[{**review,"proposal_hash":proposal["proposal_hash"]} for review in reviews]

@@ -15,6 +15,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from durable_jsonl import append_jsonl, read_jsonl
+from sqlite_ledger import read_jsonl_readonly, LedgerRepairRequired, migrate_jsonl, database_path
 from private_lineage import private_lineage, confirmed_fill_metadata
 
 
@@ -34,9 +35,11 @@ def market_window_open(now: dt.datetime | None = None) -> bool:
     return 9 * 60 + 35 <= minutes <= 16 * 60 + 15
 
 
-def read_rows(path):
+def read_rows(path, *, readonly=False):
     try:
-        return read_jsonl(path, strict=True)
+        return read_jsonl_readonly(path) if readonly else read_jsonl(path, strict=True)
+    except LedgerRepairRequired as error:
+        raise ReconciliationBlocked('managed_repair_required') from error
     except Exception as error:
         raise ReconciliationBlocked('managed_state_invalid') from error
 
@@ -335,10 +338,16 @@ def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
     root.mkdir(parents=True, exist_ok=True)
     with lock.open('a+') as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        ledger = read_rows(root / 'order_ledger.jsonl')
-        journal = read_rows(root / 'trade_journal.jsonl')
-        intents = read_rows(root / 'private/order_intents.jsonl')
-        registry = read_rows(root / 'private/protection_orders.jsonl')
+        # Only the operational stage is authorized to import compatibility rows.
+        if not verify_only and database_path(root / 'order_ledger.jsonl').exists():
+            try:
+                migrate_jsonl(root)
+            except Exception as error:
+                raise ReconciliationBlocked('managed_state_invalid') from error
+        ledger = read_rows(root / 'order_ledger.jsonl', readonly=verify_only)
+        journal = read_rows(root / 'trade_journal.jsonl', readonly=verify_only)
+        intents = read_rows(root / 'private/order_intents.jsonl', readonly=verify_only)
+        registry = read_rows(root / 'private/protection_orders.jsonl', readonly=verify_only)
         latest = {}
         for row in ledger:
             status, ref = row.get('status'), row.get('client_order_id')

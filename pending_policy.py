@@ -21,7 +21,7 @@ def state_digest(root):
 
 
 def enabled(cfg):
-    return cfg.get('pending_entry_policy') == 'exact_owned_zero_fill_v1' and type(cfg.get('max_pending_entry_parents')) is int and cfg['max_pending_entry_parents'] == 2
+    return cfg.get('pending_entry_policy') == 'exact_owned_zero_fill_v1' and type(cfg.get('max_pending_entry_parents')) is int and cfg['max_pending_entry_parents'] in (2, 3)
 
 
 @dataclass(frozen=True)

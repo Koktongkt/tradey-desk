@@ -62,6 +62,21 @@ class PendingCapacityTests(unittest.TestCase):
     def errors(self, proof, exposure=0):
         return a.validate_order(self.order,self.snapshot,self.cfg,0,exposure,set(),pending_proof=proof)
 
+    def test_checked_in_policy_permits_third_but_blocks_fourth(self):
+        import pending_policy as p
+        cfg=json.loads((Path(a.__file__).parent/'autonomy_config.json').read_text())
+        self.assertTrue(p.enabled(cfg))
+        self.assertEqual(cfg['max_pending_entry_parents'],3)
+        self.assertEqual(cfg['entry_expiry_policy'],'new_intents_session_close_v1')
+        self.cfg=cfg
+        self.add_pending('two','MSFT')
+        self.assertEqual(p.constraints(self.proof(),self.snapshot,cfg,'DELL'),[])
+        self.add_pending('three','NVDA')
+        self.assertIn('pending_entry_limit',p.constraints(self.proof(),self.snapshot,cfg,'DELL'))
+        for cap in (True,False,'3',0,-1,4,None,3.0):
+            self.assertFalse(p.enabled(dict(cfg,max_pending_entry_parents=cap)))
+        self.assertTrue(p.enabled(dict(cfg,max_pending_entry_parents=2)))
+
     def test_exact_owned_pending_permits_second_different_entry(self):
         self.assertEqual(self.errors(self.proof()),[])
         self.assertIn('active_broker_order',a.validate_order(self.order,self.snapshot,self.cfg,0))
