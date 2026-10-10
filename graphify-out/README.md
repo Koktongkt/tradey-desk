@@ -1,35 +1,33 @@
-# Tradey Desk structural code graph
+# Tradey pinned structural graph
 
-[Interactive graph](graph.html) · [Graph report](GRAPH_REPORT.md) · [Raw graph data](graph.json) · [Integrity diagnostics](GRAPH_HEALTH.json)
+Source revision: `0d3a5a554bf2c36b758f085ab46e56d2a317f7a8`. **Local candidate under independent review; not deployed. Independent final review running; approval is parent-owned and separate.**
 
-![Graphify navigation preview](graph-preview.png)
+READY pending independent final review (running, not approved). Frozen offline candidate; parent owns runtime approval separately; no live claim.
 
-## Snapshot and scope
+Fresh full rebuild: **91 Git-tree Python source/test files, 90,490 whitespace words; 2,299 graph nodes, 5,544 undirected edges, 110 freshly inspected and labeled communities.** Raw extraction: 2,252 nodes / 5,740 edges; builder adds 47 implicit endpoint nodes. No entire-checkout scan. Exact inventory, SHA-256 and excluded tracked paths: SOURCE_SCOPE.json. All source bytes come from `git show` at the pin; selected frozen worktree/snapshot bytes and Git index verified unchanged.
 
-Graphify 0.9.75 indexed **90 Git-tracked code/test files** at source commit [`bb88070b998d5a406c99de2b252867e4caebdc2b`](https://github.com/Koktongkt/tradey-desk/commit/bb88070b998d5a406c99de2b252867e4caebdc2b). The exported graph has **2,152 nodes, 5,104 edges and 110 named communities**.
+## Contents
 
-A separate, non-deployed source snapshot excluded credentials, private operational ledgers, account state and generated artifacts before detection. Documentation semantics were deliberately excluded. Structural extraction used no model/API calls. Community names were assigned by the host assistant; the extraction token counter does not count that conversation.
+- graph.html / graph.json: searchable visual and structural graph.
+- GRAPH_REPORT.md: raw cohesion, god nodes, inferred surprises and questions.
+- EXTRACTION_AUDIT.json / GRAPH_HEALTH.json: unfiltered extraction and diagnostics.
+- SOURCE_SCOPE.json / manifest.json: pinned complete selected-source hashes and portable incremental AST manifest.
+- BROWSER_VERIFICATION.json / graph-preview.png: actual HTML-bound Chromium receipt and inspected preview.
+- READONLY_VERIFICATION.json: confined-source/index read-only checks; not runtime activation evidence.
+- STRUCTURAL_QUERY.txt: vocabulary-expanded BFS and qualification-to-proposal/placing-notification paths with source locations.
+- BENCHMARK.txt / cost.json: estimate-only CLI benchmark and zero extraction LLM token accounting.
+- ARTIFACT_MANIFEST.json: exact byte hashes for every other payload file; deliberately does not hash itself.
 
-`SOURCE_SCOPE.json` lists the exact selected files and source revision. `EXTRACTION_AUDIT.json` retains raw extraction evidence with source paths made repository-relative. `ARTIFACT_MANIFEST.json` records publication-file hashes. Local interpreter pointers, scan-root pointers, caches, incremental manifests and the download ZIP are intentionally not committed.
+## Limits and warnings
 
-## Opening and querying
+Undirected AST/import/containment discovery is **not a runtime-verified call graph**. No broker/model/scheduler actions, credentials or operational state were accessed. Credential-loading modules are code mechanics, not credential stores. Tests are indexed symbols; this worker did not execute runtime tests. Scope excludes configs, docs, generated/private/public/state trees and test_artifacts; explicit included source `public_dashboard.py` is code, not public output data. Source-only AST extraction has empty semantics and zero extraction tokens; host-assisted community labels are outside that cost count.
 
-GitHub displays HTML source rather than executing it. Download `graph.html` and open it in a browser. The visualization loads **vis-network 9.1.6 from an integrity-checked unpkg CDN**, so internet access is required; no graph-hosting server was deployed. Search and canvas rendering passed a Chromium smoke check at 1440×900 with no page errors (`BROWSER_VERIFICATION.json`).
+Raw graph-health warnings: **535 dangling-endpoint edges, 20 self loops, 194 same-endpoint edge collapses** (both diagnostic directed and undirected counts). Missing endpoints: 0. Do not hide heuristic false links or treat them as runtime authority. Raw cohesion range: 0.031746031746031744–1.0.
 
-With Graphify installed, run from the repository root:
+Browser PASS: canvas 1220×950, 2299 loaded nodes; searches qualify, supervisor, readonly, metadata, run_watchdog all returned actual node results; no page errors or console errors. Actual preview inspected: network and sidebar rendered; dense overview requires search/zoom for labels. HTML requires internet to load **integrity-checked unpkg vis-network 9.1.6**; dependency was loaded in this browser check, not vendored.
 
-```sh
-graphify explain "run_watchdog"
-graphify query "protection lineage" --budget 2000
-graphify path "run_watchdog" "commit_observation"
-```
+Real benchmark stdout retained in BENCHMARK.txt. Actual scoped source count is 90490 words. CLI graph-derived corpus defaults are estimates, not measured token or runtime savings.
 
-The source revision is intentionally frozen: the graph does not automatically include future code changes. Before rebuilding, reproduce the tracked-source-only scope at the intended revision; never scan the live operational folder indiscriminately. No hooks, MCP servers or scheduled rebuilds were installed.
+Qualification paths with fresh source locations and exact edge confidence are in STRUCTURAL_QUERY.txt. This demonstrates structural co-connectivity, **not chronological placement**, approval, live activation or cancellation. No automatic cancellation edge has been authored.
 
-## Interpretation and known limitations
-
-This is Graphify's **default undirected structural graph**, not a verified runtime call graph or trading safety audit. A shortest path may traverse file containment/import relationships rather than function calls. Tests and standard-library references are included, so highly connected nodes are not automatically production bottlenecks.
-
-Raw diagnostics retain **468 dangling-endpoint edges, 19 self-loops and 190 collapsed same-endpoint relationships**. The builder can materialize unresolved references, which explains why exported node totals exceed explicitly extracted node totals. Inferred callback links—especially common names in tests linked to broker `pages()`—may be false positives. Preserve EXTRACTED/INFERRED labels and verify source evidence before treating any edge as architectural truth. These are graph representation limitations, not demonstrated trading defects.
-
-The original graph HTML/JSON is unchanged by publication preparation; only audit metadata paths were normalized. Full regression validation before publication: **838 tests, zero failures/errors/skips**. No trading behavior, broker orders, risk gates or scheduler configuration was changed.
+Refresh later only from another explicitly pinned, vetted code-only snapshot; full rebuild chosen here because historical source coverage was stale. No Git staging, commits or pushes occurred. Portable artifacts omit absolute host paths and analysis caches/source snapshots.

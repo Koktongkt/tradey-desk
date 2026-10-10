@@ -1,29 +1,29 @@
 {
-  "node_count": 2106,
+  "node_count": 2252,
   "unverified_node_count": 0,
-  "raw_edge_count": 5296,
+  "raw_edge_count": 5740,
   "non_object_edges": 0,
   "missing_endpoint_edges": 0,
-  "dangling_endpoint_edges": 468,
+  "dangling_endpoint_edges": 535,
   "external_reference_edges": 0,
-  "self_loop_edges": 19,
-  "valid_candidate_edges": 4828,
+  "self_loop_edges": 20,
+  "valid_candidate_edges": 5205,
   "exact_duplicate_edges": 0,
-  "directed_unique_endpoint_pairs": 4638,
-  "directed_same_endpoint_collapsed_edges": 190,
-  "undirected_unique_endpoint_pairs": 4638,
-  "undirected_same_endpoint_collapsed_edges": 190,
-  "same_endpoint_group_count": 187,
-  "relation_variant_groups": 153,
+  "directed_unique_endpoint_pairs": 5011,
+  "directed_same_endpoint_collapsed_edges": 194,
+  "undirected_unique_endpoint_pairs": 5011,
+  "undirected_same_endpoint_collapsed_edges": 194,
+  "same_endpoint_group_count": 191,
+  "relation_variant_groups": 156,
   "source_file_variant_groups": 0,
-  "source_location_variant_groups": 1,
+  "source_location_variant_groups": 2,
   "context_variant_groups": 33,
   "post_build_graph_type": "Graph",
-  "post_build_node_count": 2152,
-  "post_build_edge_count": 5104,
+  "post_build_node_count": 2299,
+  "post_build_edge_count": 5544,
   "post_build_error": "",
   "producer_suppression": {
-    "path": "graphify/extract.py",
+    "path": "graphify-package/extract.py",
     "total_sites": 12,
     "sites": [
       {
@@ -180,8 +180,8 @@
         "alpha_radar.py"
       ],
       "source_locations": [
-        "L293",
-        "L304"
+        "L294",
+        "L305"
       ],
       "contexts": [
         "",
@@ -200,8 +200,8 @@
         "alpha_radar.py"
       ],
       "source_locations": [
-        "L349",
-        "L358"
+        "L350",
+        "L359"
       ],
       "contexts": [
         "",

@@ -1,0 +1,15 @@
+Estimate only: CLI graph-derived default corpus differs from measured scoped source words in SOURCE_SCOPE.json. No measured runtime/token savings claimed.
+
+graphify token reduction benchmark
+──────────────────────────────────────────────────
+  Corpus:          114,950 words → ~153,266 tokens (naive)
+  Graph:           2,299 nodes, 5,544 edges
+  Avg query cost:  ~6,687 tokens
+  Reduction:       22.9x fewer tokens per query
+
+  Per question:
+    [40.0x] what is the main entry point
+    [20.0x] how are errors handled
+    [15.0x] what connects the data layer to the api
+    [30.6x] what are the core abstractions
+

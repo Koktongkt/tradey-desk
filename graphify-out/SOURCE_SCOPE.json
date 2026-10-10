@@ -1,104 +1,532 @@
 {
-  "repository": "https://github.com/Koktongkt/tradey-desk",
-  "revision": "bb88070b998d5a406c99de2b252867e4caebdc2b",
-  "scope": "Tracked source code and tests only; no semantic documentation extraction",
-  "exclusions": [
-    "private operational records",
-    "credentials",
-    "generated artifacts",
-    "documentation"
+  "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+  "scope": "Git-tree Python source and tests only; no operational state, credential stores, configs, docs or generated artifacts",
+  "source_files": [
+    {
+      "path": "alpha_radar.py",
+      "sha256": "f64b896d4afbc7ba4e70df9967058cd77fe94eeebbf22395fffe99722a1553a7",
+      "bytes": 97373
+    },
+    {
+      "path": "autotrader.py",
+      "sha256": "41e7537337e6d3aef56e038136b50df7c73a3c1a2fa86f508c6b37fda921da99",
+      "bytes": 82610
+    },
+    {
+      "path": "broker_credentials.py",
+      "sha256": "3260b263f4c26b17d1afb67ffacf0e02dd3fb5c1034b257557dd25433f4be077",
+      "bytes": 1094
+    },
+    {
+      "path": "broker_mcp_bridge.py",
+      "sha256": "cde0e69dcbf9335e7a7c791f198a928f419696c57d10465f57723bd8b197a76d",
+      "bytes": 19295
+    },
+    {
+      "path": "broker_normalization.py",
+      "sha256": "4f47bf9673d6cda03581a18a44ee0c1e5a162d62ca6d2ade8e8ea70051be40d8",
+      "bytes": 4906
+    },
+    {
+      "path": "broker_process.py",
+      "sha256": "d18c69bed3f3600d86ac88b231f28fed730884dff5bf7bc849da59379b634c00",
+      "bytes": 3058
+    },
+    {
+      "path": "broker_supervisor.py",
+      "sha256": "9baa546695f474b5ec624b4aa80021b999b3d54c2c59c69edfa0e84fcadcf574",
+      "bytes": 7770
+    },
+    {
+      "path": "candidate_outcomes.py",
+      "sha256": "eb49a69cff9921ce927a228871a7ff8a10e5a53ab623fecd12fab3e3ed8ebbb7",
+      "bytes": 2068
+    },
+    {
+      "path": "candidate_retry.py",
+      "sha256": "35994bfd9a2a81fde3a81ce00447a3cf5870ef7f6c63d897c1cc58a59aaf06c5",
+      "bytes": 4534
+    },
+    {
+      "path": "durable_jsonl.py",
+      "sha256": "e94370c72bc89712302ec124350bb06d2e8ea449e1fb314ab0a0ac809c4fcfb7",
+      "bytes": 655
+    },
+    {
+      "path": "earnings_calendar.py",
+      "sha256": "18ff4ca32c1f091fcb6aeff4c10751b0885e115a4e429f9dfbb503941bf9f7db",
+      "bytes": 15880
+    },
+    {
+      "path": "entry_expiry.py",
+      "sha256": "27d6e37dbb9541d929b4050899f3bd1eea2a33b141c2abe88e954455bf54b20e",
+      "bytes": 4672
+    },
+    {
+      "path": "entry_state.py",
+      "sha256": "e33c0405e4cc4ea95cf02481c7f0b35e1ec342736476d9343999b7edf5597433",
+      "bytes": 1826
+    },
+    {
+      "path": "json_parsing.py",
+      "sha256": "74777bbb240cebba69be0bb6df46bfd524cfbe944c7b87f6104482e632d8a0b6",
+      "bytes": 965
+    },
+    {
+      "path": "managed_reconciliation.py",
+      "sha256": "6bf7790a9ccb02b624e1e22cf89c269258ffbd935940f062b43b6b5cd7d5efd2",
+      "bytes": 28772
+    },
+    {
+      "path": "market_data.py",
+      "sha256": "5ffb0ab5bec454d14eb41088e22e64fc54a4dad52e78bb5f7a32e20124596169",
+      "bytes": 6047
+    },
+    {
+      "path": "mcp_config_process.py",
+      "sha256": "bf16eb5810b44d26b97c9584fce38fc18ae79ff5a2caed9f16167ab2506b9f7a",
+      "bytes": 303
+    },
+    {
+      "path": "pending_policy.py",
+      "sha256": "41049aae04b6606598e9213facfaf767cee943afd2d902d714f7ed746c973bc6",
+      "bytes": 3914
+    },
+    {
+      "path": "private_lineage.py",
+      "sha256": "ab3e954c4ed96714242628d76343c35814729bf2925fc5140286db894ca1b08e",
+      "bytes": 1295
+    },
+    {
+      "path": "public_dashboard.py",
+      "sha256": "5e0a60c12511a8063a8afebda6b9daaa35e038a675c5e904f176da6cb9305e25",
+      "bytes": 40636
+    },
+    {
+      "path": "research_budget.py",
+      "sha256": "3c9990ea1989a4ea4a984bc0fe703c39493b7aa8857ccc95228031cb0f1da694",
+      "bytes": 3293
+    },
+    {
+      "path": "run_cycle.py",
+      "sha256": "7cc55184f0715e7d30569510a8225e3e7a75846b6a2bf4079fdac1d2357b5bc8",
+      "bytes": 15379
+    },
+    {
+      "path": "scripts/repair_nul_jsonl.py",
+      "sha256": "924058072742a794cc31f190fb3b98f8e1aa6b6e2480aa51d6ba9ff6b3feea81",
+      "bytes": 1281
+    },
+    {
+      "path": "shadow_calibration.py",
+      "sha256": "eee7cd29d66b3bd4376014d7428c245e2eb2e376da758d3c438d51677cecc1eb",
+      "bytes": 6576
+    },
+    {
+      "path": "sqlite_ledger.py",
+      "sha256": "0e7442d6f92eaaea86d7e3b0609a56e5748bfac80c9d40539765f3df3c8740d9",
+      "bytes": 21077
+    },
+    {
+      "path": "tests/run_tests.py",
+      "sha256": "f2d9cd82ca55c491a1b22575a34246bc054cfee94c03451e21ce1b6e67e9c31f",
+      "bytes": 8189
+    },
+    {
+      "path": "tests/support_fixtures.py",
+      "sha256": "7a668f91824581b16f65b58d4d861961429e87ca98a0931424373690b4be0758",
+      "bytes": 1735
+    },
+    {
+      "path": "tests/test_alpha_radar.py",
+      "sha256": "c4d1ade81c8228d617ab58eff6dfe498ad0ddc0add3aade1fe6698d826439736",
+      "bytes": 112413
+    },
+    {
+      "path": "tests/test_autotrader_reconciliation.py",
+      "sha256": "097b27ed99d8d2700ad8fe45773f562be97774fece10794ee865c9f2e616856a",
+      "bytes": 24318
+    },
+    {
+      "path": "tests/test_blocker_diagnostics.py",
+      "sha256": "1e22c950a0e37943a3f62079d9660ef9de5e7e41a67949cffdfbeadefdb5a1d4",
+      "bytes": 24124
+    },
+    {
+      "path": "tests/test_bridge_and_reuse.py",
+      "sha256": "3d3acaaee8f6668b12f44cde0ed459e1f1b6444d70111c04640acba4f8b3905c",
+      "bytes": 13529
+    },
+    {
+      "path": "tests/test_broker_bridge.py",
+      "sha256": "2fdf83f4c23623884983dbe182f1ab87f3c02f5ae4cab203d1bf2b30de51909c",
+      "bytes": 14791
+    },
+    {
+      "path": "tests/test_broker_credentials.py",
+      "sha256": "b6c75722930b4dc3c67068b1e30cbd44ea92b20df26076f274dc965bb117f7f7",
+      "bytes": 2516
+    },
+    {
+      "path": "tests/test_broker_mcp_bridge.py",
+      "sha256": "86b939109f1a7641ab46abbdb199a1a8b7ad41a52c5abeb1f4895caaf663dbfe",
+      "bytes": 7460
+    },
+    {
+      "path": "tests/test_broker_normalization.py",
+      "sha256": "46f757d2bfdc5eb872a93665d38f723fbc2306451322332d4f91c078b816485a",
+      "bytes": 3806
+    },
+    {
+      "path": "tests/test_candidate_alternatives.py",
+      "sha256": "bae58440c0bd1f4ccb47ded58ba5f4025d3cf542a26ca1fe85dbe796b4d4a345",
+      "bytes": 28576
+    },
+    {
+      "path": "tests/test_concurrent_workflow.py",
+      "sha256": "9ff50ad021cd10432fedc85fae532f6dbf142c58a4866cf696f82dadf2d35a82",
+      "bytes": 6865
+    },
+    {
+      "path": "tests/test_cycle.py",
+      "sha256": "58b8a34a47684acddbd294f8beb25e0fc6e30021387ceb19d798b93ac55822fd",
+      "bytes": 18197
+    },
+    {
+      "path": "tests/test_durable_jsonl.py",
+      "sha256": "f088a700ae3c99ee02e70f6604a9da6d95430d91bcc041e9ec81e933208605fe",
+      "bytes": 7740
+    },
+    {
+      "path": "tests/test_earnings_calendar.py",
+      "sha256": "b679a32260061deeeb8ca7ca16ad6fd3f40bd58374da1b25182f9e15f51ac995",
+      "bytes": 18764
+    },
+    {
+      "path": "tests/test_entry_expiry.py",
+      "sha256": "9cec073e1f6ecadf86753b38b2c9fe340e5ac3736c023cdad1e04211245b1d73",
+      "bytes": 3299
+    },
+    {
+      "path": "tests/test_execution_policy.py",
+      "sha256": "23b9a9a20329c57814a6a5d38d58142fe4c00b675e8d4ed63cd435b5bfdd6002",
+      "bytes": 587
+    },
+    {
+      "path": "tests/test_managed_reconciliation.py",
+      "sha256": "05f630f35bbde8ec4887cf81f68851af0e94dccf61acd2a102d659b5145d53a0",
+      "bytes": 25492
+    },
+    {
+      "path": "tests/test_market_data.py",
+      "sha256": "0f8d2077b553af9b3ae2b4a5ccabd98d619de156eff93331e606a829d2c629af",
+      "bytes": 8428
+    },
+    {
+      "path": "tests/test_order_notifications.py",
+      "sha256": "7823915e0e78391a8494391ed9cceb2a333f7dba3a67d454f054124327397587",
+      "bytes": 10546
+    },
+    {
+      "path": "tests/test_pending_capacity.py",
+      "sha256": "61c14f4e8ff4dc4a9e1d968eef374c76b73dd922832afa20193ed277fe2bea41",
+      "bytes": 6915
+    },
+    {
+      "path": "tests/test_pipeline.py",
+      "sha256": "ffc1be94517ddb857061bc8ddfceff6386b55c1f10b2fa4bd0d1b4b53775da97",
+      "bytes": 30753
+    },
+    {
+      "path": "tests/test_radar_notifications.py",
+      "sha256": "38918a744a22115111fbebc4e7af3c487ba7c767dd86062bed1f52d30c4d9f53",
+      "bytes": 3839
+    },
+    {
+      "path": "tests/test_reconciliation_cli.py",
+      "sha256": "b8532aec3910371f44ef670d1f256c0bfd6c084ed2ecffd2d75b8e340347170d",
+      "bytes": 11619
+    },
+    {
+      "path": "tests/test_release_blockers.py",
+      "sha256": "98fe952131d7753e2e13c03f1c88ad79b36c1e3158e1b1714989170ee0ca743c",
+      "bytes": 15854
+    },
+    {
+      "path": "tests/test_repair_nul_jsonl.py",
+      "sha256": "66cf63937130138b4bf93d93cbbb2b8e504d5333de5d1b0ce65bd32a2370a417",
+      "bytes": 1120
+    },
+    {
+      "path": "tests/test_research_budget.py",
+      "sha256": "a3f58379bf6deb14f3a7685b0ad84b0e58a11b377d88034a18994a29829dca4c",
+      "bytes": 27599
+    },
+    {
+      "path": "tests/test_research_timestamp.py",
+      "sha256": "680bcff971679138b96852fc2446237453904547f1e2d8bfac07309186654574",
+      "bytes": 1719
+    },
+    {
+      "path": "tests/test_retrieval_improvements.py",
+      "sha256": "51d1a76f84cb1b79a4df98d35e42d8bb9b031e041e493d125632b5cff2c01203",
+      "bytes": 12495
+    },
+    {
+      "path": "tests/test_safety.py",
+      "sha256": "f755ad7a8615a2be15fdf0852949536571fb307ee40b8ad7c6a238614e56b10a",
+      "bytes": 51102
+    },
+    {
+      "path": "tests/test_shadow.py",
+      "sha256": "2e01f8834d18a1ee0b35f95d5b516f2aff9fb2096cceb01b74166079ca2e1825",
+      "bytes": 4786
+    },
+    {
+      "path": "tests/test_sqlite_ledger.py",
+      "sha256": "54034af2a87016f95de7f030b891e42c80749694bcfd27c9280d8a59ee334fff",
+      "bytes": 16418
+    },
+    {
+      "path": "tests/test_test_architecture.py",
+      "sha256": "a2adcf14706f1bced3c20f9835f4eb6a8693c9a29165ec25f5051226a14706f7",
+      "bytes": 8481
+    },
+    {
+      "path": "tests/test_three_runtime.py",
+      "sha256": "5d2be9e191433997f2f71df08602de2ae6bc8d9707756999f93e498a662f32f6",
+      "bytes": 17440
+    },
+    {
+      "path": "tests/test_w2_w4.py",
+      "sha256": "fed2eef0f4f704f967a307fa384bc55ad0c505a9b0395d6feccf986ab6f8720c",
+      "bytes": 11935
+    },
+    {
+      "path": "tests/test_watchdog_accounting.py",
+      "sha256": "b246193832b603bbc5734f122c71cd8d4ef908cfd1e8519f6a525f36fbb80829",
+      "bytes": 34889
+    },
+    {
+      "path": "tests/test_watchdog_benchmark.py",
+      "sha256": "ee40e8d00bef6bb19292bbb5c4621e6575cc454a66cc225f8f5fda61dd9b30f9",
+      "bytes": 8884
+    },
+    {
+      "path": "tests/test_watchdog_broker.py",
+      "sha256": "894474e943fa3e1b3dbda18bbd8c05fe62462f1a00241da8245a9bb4ef291e57",
+      "bytes": 26292
+    },
+    {
+      "path": "tests/test_watchdog_forward_lineage.py",
+      "sha256": "68e074276171128382f22e937d484c380f778a2f931841eabcd5236b35bbc1b3",
+      "bytes": 15056
+    },
+    {
+      "path": "tests/test_watchdog_lineage.py",
+      "sha256": "401b52e9b0a8d6202e93e1c425f782c5b80922bd061cc6015ea63db5f80489e5",
+      "bytes": 25674
+    },
+    {
+      "path": "tests/test_watchdog_mechanical.py",
+      "sha256": "c1b4758c1c6e975c74e9657b23321c4e7579f07485edfe01923301f7dedb7ea5",
+      "bytes": 15010
+    },
+    {
+      "path": "tests/test_watchdog_operational.py",
+      "sha256": "72fc352079516805f4cb285bffa999bdfeb04e460fbd40480de94f2d3284dce8",
+      "bytes": 15157
+    },
+    {
+      "path": "tests/test_watchdog_reports.py",
+      "sha256": "4eb533ed655eb1c477503c5cdfbbb416e6c10514180646efafec0f1c2a989ffd",
+      "bytes": 23867
+    },
+    {
+      "path": "tests/test_watchdog_schedule.py",
+      "sha256": "f7e68d7370cca7a659f5e05c483b6d36af548b16945a228d3d0ebe9af6a5870e",
+      "bytes": 8754
+    },
+    {
+      "path": "tests/test_watchdog_store.py",
+      "sha256": "896db22ee1434977d5e86e8cfc650955f4b5d333d59d41864e9884ef4355dc8b",
+      "bytes": 18680
+    },
+    {
+      "path": "tests/test_watchdog_thesis.py",
+      "sha256": "6121f437ae128c69addc4f5cada0d076ee54f0f508c04bdf47e51c02f78762bb",
+      "bytes": 38625
+    },
+    {
+      "path": "tests/test_watchdog_workflow.py",
+      "sha256": "ce31f962609ce17df26c800d73f3eba5330ea32b7429781e9629c0f1a3099302",
+      "bytes": 50944
+    },
+    {
+      "path": "watchdog/__init__.py",
+      "sha256": "f81856016378dce0331f258c9b72431abd31b3bc6fd44dbea973f3947259293f",
+      "bytes": 76
+    },
+    {
+      "path": "watchdog/accounting.py",
+      "sha256": "3f104799ecc797532e6aac980d9af84cf3d6586d52565c35aa06ba7d23b9b479",
+      "bytes": 30310
+    },
+    {
+      "path": "watchdog/benchmark.py",
+      "sha256": "05487042fcf47daa29f77b9c24c3a764cd4f1560eab8f37926d41b564f6e28db",
+      "bytes": 10398
+    },
+    {
+      "path": "watchdog/broker.py",
+      "sha256": "7313a91cfc10c8a8da4804cb3a9bb8c582c5d269807caeb54a686bfd5a845b8f",
+      "bytes": 21897
+    },
+    {
+      "path": "watchdog/classifier_worker.py",
+      "sha256": "bf9c8ef148c18c41d4344e34e17db00ce892a2ca5f3ed14202d0a43e64b7463f",
+      "bytes": 1253
+    },
+    {
+      "path": "watchdog/cli.py",
+      "sha256": "777cf8dd47afcd033f44ffd21629430b5b92d4e77317ec29ab8696162882afa6",
+      "bytes": 31344
+    },
+    {
+      "path": "watchdog/lineage.py",
+      "sha256": "df78a78b2bc41b633419f563f4e0da54481378934af47638b6306b965c6698cf",
+      "bytes": 19374
+    },
+    {
+      "path": "watchdog/mechanical.py",
+      "sha256": "7410afa1b338d9efd916be6fdf6d6fce62c8e9e03dabd18932149ef9a4da26bc",
+      "bytes": 10062
+    },
+    {
+      "path": "watchdog/operational.py",
+      "sha256": "dcbf1e48b87aed33e23637798c04eed059f798a338b91a0b320ee73efa1b645e",
+      "bytes": 6039
+    },
+    {
+      "path": "watchdog/provider_gateway.py",
+      "sha256": "e95eead7d1c25f12d798e20a84bc140a78bfdf1fe5a9626864f83b8a5d93610a",
+      "bytes": 6668
+    },
+    {
+      "path": "watchdog/reports.py",
+      "sha256": "5ec2bf7e5b3d7be3dbe85f2a963a8010a71e0f6684e6f0bc89e5f6d9cef47744",
+      "bytes": 15494
+    },
+    {
+      "path": "watchdog/runtime.py",
+      "sha256": "a3d9cad39333d4a9aeb75974f0f363a132f624ca4c8984df23371de938fc394b",
+      "bytes": 9330
+    },
+    {
+      "path": "watchdog/schedule.py",
+      "sha256": "84d3cd606be99e02c247190efab71a0b28cad94e49023fa43b407b20db17aa0d",
+      "bytes": 4455
+    },
+    {
+      "path": "watchdog/source_worker.py",
+      "sha256": "8584089b72db8a2ea2c45db0ec33793c2f2fbc3ec3b176b2c81d590ea27457e6",
+      "bytes": 10217
+    },
+    {
+      "path": "watchdog/store.py",
+      "sha256": "2c7aa1ce4d32a665fe115dc708563d874e063e190c511c6edbcc3473b13d3798",
+      "bytes": 23353
+    },
+    {
+      "path": "watchdog/thesis.py",
+      "sha256": "2de81ccef1a252937125382b07ce87fd12c54343149d1f4c646e66b364ea6e9b",
+      "bytes": 29320
+    },
+    {
+      "path": "watchdog/types.py",
+      "sha256": "b11a8097f93f971c1bd6b130edbb50f749efbcaaa68acef5c02f16f80315cdeb",
+      "bytes": 2984
+    },
+    {
+      "path": "watchdog_cli.py",
+      "sha256": "5050ce800a5d1729ff296e39d2799db92e8f9a3e43a90b487d706e5fab88c297",
+      "bytes": 408
+    },
+    {
+      "path": "watchdog_cron.py",
+      "sha256": "c5f9f34f6c54365bec44858f7de06b3c5cfbaae57196d68613b710ecb48db979",
+      "bytes": 1180
+    }
   ],
-  "path_basis": "repository-relative source paths",
-  "selected_files": [
-    "alpha_radar.py",
-    "autotrader.py",
-    "broker_credentials.py",
-    "broker_mcp_bridge.py",
-    "broker_normalization.py",
-    "broker_process.py",
-    "candidate_outcomes.py",
-    "candidate_retry.py",
+  "excluded_tracked_paths": [
+    ".gitignore",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-2-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-3-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-4-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-5-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-6-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-7-report.md",
+    ".superpowers/sdd/2026-10-07-position-portfolio-watchdog/task-8-report.md",
+    "AGENTS.md",
+    "README.md",
+    "autonomy_config.json",
     "cron/autotrader.sh",
     "cron/dashboard.sh",
     "cron/postclose.sh",
     "cron/premarket.sh",
     "cron/radar.sh",
     "deploy_dashboard.sh",
-    "durable_jsonl.py",
-    "earnings_calendar.py",
-    "managed_reconciliation.py",
-    "market_data.py",
-    "mcp_config_process.py",
-    "private_lineage.py",
-    "public_dashboard.py",
-    "research_budget.py",
-    "run_cycle.py",
-    "scripts/repair_nul_jsonl.py",
+    "docs/pending-bracket-reconciliation.md",
+    "docs/process-flow/README.md",
+    "docs/process-flow/tradey-desk-preview.png",
+    "docs/process-flow/tradey-desk.html",
+    "docs/process-flow/tradey-desk.workflow.json",
+    "docs/superpowers/plans/2026-10-07-position-portfolio-watchdog.md",
+    "docs/superpowers/specs/2026-10-07-position-portfolio-watchdog-design.md",
+    "docs/watchdog-operations.md",
+    "docs/watchdog-runtime-readiness.md",
+    "fixtures/candidate.json",
+    "fixtures/dry_run_bundle.json",
+    "fixtures/outcomes.json",
+    "graphify-out/ARTIFACT_MANIFEST.json",
+    "graphify-out/BROWSER_VERIFICATION.json",
+    "graphify-out/EXTRACTION_AUDIT.json",
+    "graphify-out/GRAPH_HEALTH.json",
+    "graphify-out/GRAPH_REPORT.md",
+    "graphify-out/README.md",
+    "graphify-out/SOURCE_SCOPE.json",
+    "graphify-out/graph-preview.png",
+    "graphify-out/graph.html",
+    "graphify-out/graph.json",
     "scripts/tradey_watchdog_daily.sh",
     "scripts/tradey_watchdog_mechanical.sh",
-    "shadow_calibration.py",
+    "skills/automated-trading-systems/SKILL.md",
+    "skills/automated-trading-systems/references/bounded-dual-review-alpaca.md",
+    "skills/automated-trading-systems/references/broker-normalization-and-account-isolation.md",
+    "skills/automated-trading-systems/references/canonical-proposal-review-workflow.md",
+    "skills/automated-trading-systems/references/dry-run-ledger-isolation.md",
+    "skills/automated-trading-systems/references/execution-blocker-diagnostics.md",
+    "skills/automated-trading-systems/references/feed-provenance-and-reviewer-sizing.md",
+    "skills/automated-trading-systems/references/fractional-order-capability-gates.md",
+    "skills/automated-trading-systems/references/hermes-portal-independent-reviewers.md",
+    "skills/automated-trading-systems/references/layered-deterministic-test-workflow.md",
+    "skills/automated-trading-systems/references/public-dashboard-activity-and-release.md",
+    "skills/automated-trading-systems/references/reviewer-threshold-calibration.md",
+    "skills/automated-trading-systems/references/scale-to-zero-cron-readiness.md",
+    "skills/automated-trading-systems/references/unattended-heartbeat-and-delivery-audit.md",
     "skills/automated-trading-systems/scripts/verify_public_dashboard.py",
-    "sqlite_ledger.py",
-    "tests/run_tests.py",
-    "tests/support_fixtures.py",
-    "tests/test_alpha_radar.py",
-    "tests/test_autotrader_reconciliation.py",
-    "tests/test_blocker_diagnostics.py",
-    "tests/test_bridge_and_reuse.py",
-    "tests/test_broker_bridge.py",
-    "tests/test_broker_credentials.py",
-    "tests/test_broker_mcp_bridge.py",
-    "tests/test_broker_normalization.py",
-    "tests/test_candidate_alternatives.py",
-    "tests/test_cycle.py",
-    "tests/test_durable_jsonl.py",
-    "tests/test_earnings_calendar.py",
-    "tests/test_execution_policy.py",
-    "tests/test_managed_reconciliation.py",
-    "tests/test_market_data.py",
-    "tests/test_order_notifications.py",
-    "tests/test_pipeline.py",
-    "tests/test_radar_notifications.py",
-    "tests/test_reconciliation_cli.py",
-    "tests/test_repair_nul_jsonl.py",
-    "tests/test_research_budget.py",
-    "tests/test_research_timestamp.py",
-    "tests/test_retrieval_improvements.py",
-    "tests/test_safety.py",
-    "tests/test_shadow.py",
-    "tests/test_sqlite_ledger.py",
-    "tests/test_test_architecture.py",
-    "tests/test_w2_w4.py",
-    "tests/test_watchdog_accounting.py",
-    "tests/test_watchdog_benchmark.py",
-    "tests/test_watchdog_broker.py",
-    "tests/test_watchdog_forward_lineage.py",
-    "tests/test_watchdog_lineage.py",
-    "tests/test_watchdog_mechanical.py",
-    "tests/test_watchdog_operational.py",
-    "tests/test_watchdog_reports.py",
-    "tests/test_watchdog_schedule.py",
-    "tests/test_watchdog_store.py",
-    "tests/test_watchdog_thesis.py",
-    "tests/test_watchdog_workflow.py",
-    "watchdog/__init__.py",
-    "watchdog/accounting.py",
-    "watchdog/benchmark.py",
-    "watchdog/broker.py",
-    "watchdog/classifier_worker.py",
-    "watchdog/cli.py",
-    "watchdog/lineage.py",
-    "watchdog/mechanical.py",
-    "watchdog/operational.py",
-    "watchdog/provider_gateway.py",
-    "watchdog/reports.py",
-    "watchdog/runtime.py",
-    "watchdog/schedule.py",
-    "watchdog/source_worker.py",
-    "watchdog/store.py",
-    "watchdog/thesis.py",
-    "watchdog/types.py",
-    "watchdog_cli.py",
-    "watchdog_cron.py"
-  ]
+    "test_artifacts/cleanup_dry_run_contamination.py",
+    "test_artifacts/probe_normalized_snapshot.py",
+    "tests/fixtures/watchdog_broker_schemas.json",
+    "tests/test_manifest.json",
+    "watchdog_config.json"
+  ],
+  "total_files": 91,
+  "total_words": 90490,
+  "credential_vet": "No private-key blocks, AWS access-key literals or long sk- literals found; broker_credentials.py is source mechanics, not a credential store. This is not a comprehensive secret scanner.",
+  "deployment": "local candidate under independent review; not deployed; approval is parent-owned and separate; independent final review running",
+  "graphify_version": "0.9.75",
+  "directed": false,
+  "semantic_extraction": "empty; deterministic AST only; no model API",
+  "runtime_review_note": "READY pending independent final review (running, not approved). Frozen offline candidate; parent owns runtime approval separately; no live claim."
 }
