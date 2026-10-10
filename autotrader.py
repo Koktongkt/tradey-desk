@@ -1299,7 +1299,6 @@ def run(args: argparse.Namespace) -> int:
                         update["_plan"], update["_broker_order"], cfg.get("broker_mode"),
                     ) is None:
                         print("SYSTEM_FAILURE broker_reconciliation_invalid"); return 4
-                return 0
             try: exit_updates=reconcile_managed_exits(ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl")
             except Exception:
                 print("SYSTEM_FAILURE managed_exit_reconciliation"); return 4

@@ -2,6 +2,10 @@ import hashlib
 import io
 import json
 import contextlib
+import copy
+import datetime as dt
+
+from support_fixtures import broker_snapshot, policy_config
 import tempfile
 import unittest
 from pathlib import Path
@@ -245,6 +249,212 @@ class RunIntegrationTests(unittest.TestCase):
         ):
             code, out = self.execute(patches=None)
         self.assertEqual(calls, ["bracket", "shared"])
+
+
+class PendingObservationContinuationTests(unittest.TestCase):
+    """Real saved-intent reconciliation and deterministic entry gates, offline."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "private").mkdir()
+        self.cfg = policy_config()
+        self.cfg["broker_mode"] = "paper"
+        (self.root / "autonomy_config.json").write_text(json.dumps(self.cfg))
+        (self.root / "private/broker_baseline.json").write_text(
+            json.dumps({"preexisting_symbols": []}))
+        now = dt.datetime.now(dt.timezone.utc)
+        self.now = now.isoformat()
+        self.candidate = {
+            "symbol": "DELL", "instrument_type": "cash_equity",
+            "researched_at": self.now, "sources_verified_at": self.now,
+            "sources": [{"url": "https://a.example/1", "title": "A"},
+                        {"url": "https://b.example/2", "title": "B"}],
+            "setup_type": "breakout", "horizon_rationale": "short",
+            "planned_exit_at": (now + dt.timedelta(days=3)).isoformat(),
+            "earnings_event_at": (now + dt.timedelta(days=30)).isoformat(),
+            "catalyst": "guidance raise", "thesis": "post-news drift",
+        }
+        self.candidate["dossier_hash"] = hashlib.sha256(json.dumps(
+            self.candidate, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        # The last dossier, not the older pending symbol, must be evaluated.
+        self.write_rows("candidates.jsonl", [_candidate_hash(self.root, "AAPL"), self.candidate])
+        self.plan = {"action": "BUY", "symbol": "AAPL", "quantity": 2,
+                     "order_type": "limit", "limit_price": 100, "stop": 95,
+                     "target": 110, "horizon": "3 sessions", "confidence": 0.9,
+                     "thesis": "saved intent"}
+        self.snapshot = broker_snapshot(
+            captured_at=self.now, quote={"bid": 99.98, "ask": 100.02, "timestamp": self.now},
+            cash=10000, earnings_status="reported", earnings_sessions_away=30,
+            trading_sessions=[(now.date() + dt.timedelta(days=i)).isoformat() for i in range(31)])
+        self.calls = []
+
+    def write_rows(self, name, rows):
+        (self.root / name).write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    def seed_pending(self, status="new"):
+        self.write_rows("order_ledger.jsonl", [{"client_order_id": "pending-parent", "status": "placed"}])
+        self.write_rows("private/order_intents.jsonl", [
+            {"client_order_id": "pending-parent", "plan": self.plan}])
+        self.order = {"client_order_id": "pending-parent", "symbol": "AAPL",
+                      "side": "buy", "position_intent": "buy_to_open", "type": "limit",
+                      "order_class": "bracket", "time_in_force": "gtc", "qty": "2",
+                      "limit_price": "100", "status": status,
+                      "filled_qty": "2" if status == "filled" else "1" if status == "partially_filled" else "0",
+                      "filled_avg_price": "100" if status == "filled" else None,
+                      "filled_at": self.now if status == "filled" else None,
+                      "legs": []}
+        for kind, price in (("stop", "95"), ("limit", "110")):
+            self.order["legs"].append({
+                "client_order_id": "pending-" + kind, "symbol": "AAPL", "side": "sell",
+                "position_intent": "sell_to_close", "order_class": "bracket", "type": kind,
+                "time_in_force": "gtc", "qty": "2", "filled_qty": "0", "status": "held",
+                "stop_price" if kind == "stop" else "limit_price": price})
+        self.snapshot["positions"] = ([{"symbol": "AAPL", "qty": "2", "market_value": "200"}]
+                                      if status == "filled" else [])
+        self.snapshot["open_orders"] = (copy.deepcopy(self.order["legs"]) if status == "filled"
+                                        else [copy.deepcopy(self.order)])
+        # A filled parent no longer blocks, so a real spread rejection keeps this
+        # test tool-free while exercising the unchanged pre-review validator.
+        if status == "filled":
+            self.snapshot["quote"]["bid"] = 80
+
+    def bridge(self, operation, payload=None):
+        self.calls.append((operation, payload))
+        if operation == "reconcile":
+            self.assertEqual(payload, {"client_order_id": "pending-parent"})
+            return copy.deepcopy(self.order)
+        if operation == "reconcile_many":
+            return {"orders": [copy.deepcopy(self.order)]}
+        if operation == "reconciliation_snapshot":
+            return {**copy.deepcopy(self.snapshot), "orders": [copy.deepcopy(self.order)]}
+        if operation == "snapshot":
+            self.assertEqual(payload["symbol"], "DELL")
+            return copy.deepcopy(self.snapshot)
+        raise AssertionError("unexpected broker authority: " + operation)
+
+    def execute(self):
+        out = io.StringIO()
+        with patch.object(autotrader, "ROOT", self.root), patch(
+            "autotrader.runtime_blockers", return_value=[]
+        ), patch("autotrader._broker_bridge", side_effect=self.bridge), patch(
+            "autotrader.reconcile_managed_exits", wraps=autotrader.reconcile_managed_exits
+        ) as exits, patch(
+            "autotrader.reconcile_managed_protection", wraps=autotrader.reconcile_managed_protection
+        ) as protection, patch(
+            "autotrader.pre_review_validation", wraps=autotrader.pre_review_validation
+        ) as precheck, patch(
+            "autotrader.independent_reviews", side_effect=AssertionError("must not review")
+        ) as reviewers, contextlib.redirect_stdout(out):
+            code = autotrader.run(autotrader.argparse.Namespace(dry_run_fixture=False, live_dry_run=False))
+        reviewers.assert_not_called()
+        self.assertFalse(any(op in {"place", "review", "cancel"} for op, _ in self.calls))
+        return code, out.getvalue(), exits, protection, precheck
+
+    def test_valid_pending_observations_reach_fresh_candidate_and_real_precheck(self):
+        for status in ("new", "accepted", "pending_new", "held", "filled"):
+            with self.subTest(status=status):
+                self.setUp()  # Fresh storage root; JSONL projections must not rewrite prior SQLite history.
+                self.seed_pending(status)
+                code, out, exits, protection, precheck = self.execute()
+                self.assertEqual(code, 2, out)
+                exits.assert_called_once()
+                protection.assert_called_once()
+                precheck.assert_called_once()
+                self.assertEqual(precheck.call_args.args[0]["symbol"], "DELL")
+                expected = "spread_too_wide" if status == "filled" else "active_broker_order"
+                self.assertIn(expected, out)
+                rows = autotrader.read_jsonl(self.root / "trade_journal.jsonl")
+                self.assertEqual(len(rows), int(status == "filled"))
+                if rows:
+                    self.assertEqual((rows[0]["symbol"], rows[0]["quantity"], rows[0]["entry"]),
+                                     ("AAPL", 2, 100))
+
+    def test_partial_fill_observation_reaches_existing_fail_closed_protection_gate(self):
+        self.seed_pending("partially_filled")
+        code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 2)
+        self.assertIn("managed_pending_entry_not_unfilled", out)
+        exits.assert_called_once()
+        protection.assert_called_once()
+        precheck.assert_not_called()
+        self.assertEqual(autotrader.read_jsonl(self.root / "trade_journal.jsonl"), [])
+
+    def test_malformed_or_inconsistent_readback_stops_before_managed_checks(self):
+        for field, value in (("client_order_id", "wrong"), ("symbol", "MSFT"),
+                             ("side", "sell"), ("qty", "3"), ("qty", "NaN"),
+                             ("order_class", "simple"), ("type", "market"),
+                             ("status", "unknown")):
+            with self.subTest(field=field, value=value):
+                self.setUp()
+                self.seed_pending()
+                self.order[field] = value
+                code, out, exits, protection, precheck = self.execute()
+                self.assertEqual(code, 4)
+                self.assertIn("pending_order_reconciliation", out)
+                exits.assert_not_called()
+                protection.assert_not_called()
+                precheck.assert_not_called()
+                self.assertEqual(autotrader.read_jsonl(self.root / "order_ledger.jsonl")[-1]["status"], "placed")
+
+    def test_invalid_update_from_pending_seam_retains_exact_second_readback_check(self):
+        self.seed_pending()
+        with patch("autotrader.reconcile_pending_orders", return_value=[{
+            "client_order_id": "wrong", "_plan": self.plan, "_broker_order": self.order}]):
+            code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 4)
+        self.assertIn("broker_reconciliation_invalid", out)
+        exits.assert_not_called()
+        protection.assert_not_called()
+        precheck.assert_not_called()
+
+    def test_managed_protection_failure_after_pending_stops_before_candidate(self):
+        self.seed_pending()
+        self.snapshot["open_orders"] = []
+        code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 2)
+        self.assertIn("managed_pending_entry_missing", out)
+        exits.assert_called_once()
+        protection.assert_called_once()
+        precheck.assert_not_called()
+        self.assertFalse(any(op == "snapshot" for op, _ in self.calls))
+
+    def test_managed_exit_failure_after_pending_remains_system_failure(self):
+        self.seed_pending("filled")
+        self.order["legs"] = []
+        code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 4)
+        self.assertIn("managed_exit_reconciliation", out)
+        exits.assert_called_once()
+        protection.assert_not_called()
+        precheck.assert_not_called()
+
+    def test_managed_bridge_exception_after_pending_remains_system_failure(self):
+        self.seed_pending()
+        real_bridge = self.bridge
+        def failing_bridge(operation, payload=None):
+            if operation == "reconciliation_snapshot":
+                raise RuntimeError("offline read failure")
+            return real_bridge(operation, payload)
+        self.bridge = failing_bridge
+        code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 4)
+        self.assertIn("SYSTEM_FAILURE managed_reconciliation", out)
+        protection.assert_called_once()
+        precheck.assert_not_called()
+
+    def test_already_reviewed_latest_dossier_stays_skipped_after_pending(self):
+        self.seed_pending()
+        self.write_rows("private/reviews.jsonl", [{
+            "dossier_hash": self.candidate["dossier_hash"], "reviews": [{"decision": "HOLD"}]}])
+        code, out, exits, protection, precheck = self.execute()
+        self.assertEqual(code, 0)
+        self.assertIn("DECISION skipped already_reviewed", out)
+        exits.assert_called_once()
+        protection.assert_called_once()
+        precheck.assert_not_called()
+        self.assertFalse(any(op == "snapshot" for op, _ in self.calls))
 
 
 if __name__ == "__main__":

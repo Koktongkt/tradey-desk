@@ -388,11 +388,16 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=second_bridge
+            ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
+            ), patch("autotrader.independent_reviews", side_effect=AssertionError("no second review")), patch(
+                "autotrader.emit_placing_notification_once", side_effect=AssertionError("no resubmission notice")
             ), contextlib.redirect_stdout(output):
                 self.assertEqual(autotrader.run(autotrader.argparse.Namespace(
                     dry_run_fixture=False, live_dry_run=False)), 0)
             self.assertEqual(second_calls, ["reconcile"])
-            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(output.getvalue(), "DECISION skipped already_reviewed\n")
+            self.assertNotIn("ORDER", output.getvalue())
 
 
 class DryRunDiagnosticsTests(unittest.TestCase):

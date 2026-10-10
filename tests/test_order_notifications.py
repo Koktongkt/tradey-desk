@@ -142,12 +142,15 @@ class PlacingNotificationTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=broker
+            ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
             ), contextlib.redirect_stdout(output):
                 code = autotrader.run(autotrader.argparse.Namespace(
                     dry_run_fixture=False, live_dry_run=False))
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)
             self.assertEqual(calls, ["reconcile"])
-            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(output.getvalue(), "BLOCKER no_candidate\n")
+            self.assertNotIn("ORDER", output.getvalue())
 
     def test_multiple_pending_parents_recover_silently(self):
         with tempfile.TemporaryDirectory() as td:
@@ -187,12 +190,15 @@ class PlacingNotificationTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(autotrader, "ROOT", root), patch(
                 "autotrader._broker_bridge", side_effect=broker
+            ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
+                "autotrader.reconcile_managed_protection", return_value=[]
             ), contextlib.redirect_stdout(output):
                 code = autotrader.run(autotrader.argparse.Namespace(
                     dry_run_fixture=False, live_dry_run=False))
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)
             self.assertEqual(calls, ["reconcile", "reconcile"])
-            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(output.getvalue(), "BLOCKER no_candidate\n")
+            self.assertNotIn("ORDER", output.getvalue())
 
 
 if __name__ == "__main__":
