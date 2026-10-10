@@ -248,6 +248,11 @@ class TradeySafetyTests(unittest.TestCase):
                 (source_root / "fixtures" / "dry_run_bundle.json").read_text()
             )
             cfg = autotrader.load_json(source_root / "autonomy_config.json")
+            # This legacy dry-run fixture predates forward-only deadline metadata.
+            # Preserve its original isolation assertions; real activated config is
+            # covered by test_three_runtime with broker-native calendar projection.
+            for key in ('pending_entry_policy','max_pending_entry_parents','entry_expiry_policy'):
+                cfg.pop(key,None)
             cfg["kill_switch_path"] = str(root / "KILL_SWITCH")
             (root / "autonomy_config.json").write_text(json.dumps(cfg))
 

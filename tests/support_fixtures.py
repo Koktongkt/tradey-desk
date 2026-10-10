@@ -6,6 +6,10 @@ from pathlib import Path
 def policy_config():
     cfg_path = Path(__file__).resolve().parents[1] / "autonomy_config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # Legacy safety fixtures retain the pre-activation all-active-order gate.
+    # Runtime activation is exercised separately using the untouched checked-in config.
+    for key in ('pending_entry_policy','max_pending_entry_parents','entry_expiry_policy'):
+        cfg.pop(key,None)
     cfg["min_price_usd"] = 10
     return cfg
 

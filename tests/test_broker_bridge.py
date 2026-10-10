@@ -19,7 +19,7 @@ class _FakeAlpaca:
             "get_orders": [],
             "get_asset": {"symbol": "AAPL", "tradable": True, "asset_class": "us_equity", "exchange": "NASDAQ", "name": "Apple Inc.", "fractionable": True},
             "get_stock_latest_quote": {"AAPL": {"bp": 100.0, "ap": 100.1, "t": "2026-09-01T14:00:00Z"}},
-            "get_calendar": [{"date": "2026-09-01"}, {"date": "2026-09-02"}, {"date": "2026-09-03"}],
+            "get_calendar": [dict(date=date,open="09:30",close="16:00") for date in ("2026-09-01","2026-09-02","2026-09-03")],
             "get_stock_bars": {
                 "AAPL": [{"t": f"2026-09-{index:02d}", "c": 100 + index} for index in range(1, 31)],
                 "SPY": [{"t": f"2026-09-{index:02d}", "c": 500 + index} for index in range(1, 31)],
@@ -121,7 +121,7 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         from copy import deepcopy
         for name, payload, bars, fixed, expected in cases:
             with self.subTest(case=name), patch("broker_mcp_bridge.consolidated_daily_bars", return_value=deepcopy(bars)), (
-                patch("broker_mcp_bridge.datetime", _FixedDateTime) if fixed else nullcontext()
+                patch("broker_mcp_bridge.datetime", _FixedDateTime)
             ):
                 result = await broker_mcp_bridge.operation(_FakeAlpaca(), "snapshot", deepcopy(payload))
                 for field, value in expected.items():
@@ -163,6 +163,64 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
             ("get_order_by_client_id", {"client_order_id": "tradey-a"}),
             ("get_order_by_client_id", {"client_order_id": "tradey-b"}),
         ])
+
+    async def test_snapshot_projects_regular_calendar_and_verified_funding(self):
+        calls=[]
+        class CalendarAlpaca(_FakeAlpaca):
+            async def call(self,name,values=None):
+                calls.append((name,values))
+                if name=='get_calendar':
+                    return [dict(date='2026-09-01',open='09:30',close='16:00',session_close='2000'),
+                            dict(date='2026-09-02',open='09:30',close='16:00',session_close='2000')]
+                if name=='get_account_info':return dict(cash='1000',buying_power='3200',multiplier='4')
+                return await super().call(name,values)
+        with patch('broker_mcp_bridge.datetime',_FixedDateTime),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
+            snap=await broker_mcp_bridge.operation(CalendarAlpaca(),'snapshot',{'symbol':'AAPL','planned_exit_at':'2026-09-01T20:00:00Z'})
+        self.assertEqual(snap.get('cash_semantics'),'gross')
+        self.assertEqual(snap.get('buying_power_semantics'),'available_net')
+        self.assertEqual(snap.get('trading_calendar'),[
+            dict(date='2026-09-01',open='09:30',close='16:00'),dict(date='2026-09-02',open='09:30',close='16:00')])
+        self.assertIn(('get_orders',{'status':'open','nested':True,'limit':500}),calls)
+        request=next(values for name,values in calls if name=='get_calendar')
+        self.assertGreaterEqual(request['end'],'2026-09-08')
+
+    async def test_snapshot_and_reconciliation_reject_truncated_or_malformed_open_list(self):
+        for raw in ([{'client_order_id':str(i)} for i in range(500)],{'unexpected':[]},[None]):
+            for op,payload in (('snapshot',{'symbol':'AAPL'}),('reconciliation_snapshot',{'client_order_ids':[]})):
+                class BadOrders(_FakeAlpaca):
+                    async def call(self,name,values=None):
+                        if name=='get_orders':return raw
+                        return await super().call(name,values)
+                with self.subTest(op=op,size=len(raw)),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
+                    with self.assertRaisesRegex(RuntimeError,'managed_open_orders_unverified'):
+                        await broker_mcp_bridge.operation(BadOrders(),op,payload)
+
+    async def test_calendar_missing_malformed_or_unbounded_fails_closed(self):
+        good=[dict(date='2026-09-01',open='09:30',close='16:00'),dict(date='2026-09-02',open='09:30',close='16:00')]
+        for rows in ([],good[:1],[dict(good[0],close=None),good[1]],
+                     [dict(good[0],close='2000'),good[1]],list(reversed(good)),[good[0],good[0]],
+                     [dict(good[0],date='2026-09-99'),good[1]]):
+            class BadCalendar(_FakeAlpaca):
+                async def call(self,name,values=None):
+                    if name=='get_calendar':return rows
+                    return await super().call(name,values)
+            with self.subTest(rows=rows),patch('broker_mcp_bridge.datetime',_FixedDateTime),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
+                with self.assertRaisesRegex(RuntimeError,'entry_calendar_(invalid|unavailable)'):
+                    await broker_mcp_bridge.operation(BadCalendar(),'snapshot',{'symbol':'AAPL'})
+        with patch('broker_mcp_bridge.datetime',_FixedDateTime),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
+            with self.assertRaisesRegex(RuntimeError,'entry_calendar_unavailable'):
+                await broker_mcp_bridge.operation(_FakeAlpaca(),'snapshot',{'symbol':'AAPL','planned_exit_at':'2030-01-01T20:00:00Z'})
+
+    async def test_snapshot_funding_preserves_numeric_domain_fail_closed(self):
+        for field in ('cash','buying_power'):
+            for value in (True,False,'nan','inf',-1,{},[]):
+                class InvalidFunding(_FakeAlpaca):
+                    async def call(self,name,values=None):
+                        if name=='get_account_info':return {'cash':'1000','buying_power':'1000',field:value}
+                        return await super().call(name,values)
+                with self.subTest(field=field,value=value),patch('broker_mcp_bridge.datetime',_FixedDateTime),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
+                    snap=await broker_mcp_bridge.operation(InvalidFunding(),'snapshot',{'symbol':'AAPL'})
+                    self.assertIsNone(snap[field])
 
     async def test_shadow_outcome_read_supports_thirty_sessions(self):
         rows = await broker_mcp_bridge.operation(_FakeAlpaca(), "outcomes", {"candidates": [{
