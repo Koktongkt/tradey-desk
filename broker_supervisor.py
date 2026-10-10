@@ -99,7 +99,10 @@ def supervise(request):
         raise OSError(ctypes.get_errno(), 'broker_subreaper_unavailable')
     # Fail before launching if safe process signalling is unavailable.
     fd = os.pidfd_open(os.getpid())
-    os.close(fd)
+    try:
+        signal.pidfd_send_signal(fd, 0)  # Kernel/permission check before launch.
+    finally:
+        os.close(fd)
     interrupted = []
     signal.signal(signal.SIGTERM, lambda *_: interrupted.append(True))
     output = [bytearray(), bytearray()]
@@ -175,5 +178,34 @@ def main():
     print(json.dumps(result), flush=True)
 
 
+def guardian_main():
+    """Stable per-launch custodian; the inner supervisor may be forcibly killed.
+
+    Only this dedicated process adopts/reaps orphans; the shared caller's
+    subreaper state and unrelated children are untouched. Its independent
+    deadline also handles a stopped inner supervisor. External SIGKILL/OOM
+    of this custodian is outside the internally controlled cleanup guarantee.
+    """
+    try:
+        request = json.load(sys.stdin)
+        result = supervise(dict(
+            command=[sys.executable, '-I', str(Path(__file__).resolve()), '--inner'],
+            input=json.dumps(request), timeout=request['timeout'] + .2, options={}))
+        # supervise has already killed/reaped every owned child before returning.
+        if result['timed_out']:
+            result = dict(returncode=None, stdout='', stderr='', timed_out=True)
+        elif result['returncode'] != 0:
+            result = {'error': 'broker_inner_supervisor_failure'}
+        else:
+            result = json.loads(result['stdout'])
+    except BaseException as error:
+        cleanup()
+        result = {'error': type(error).__name__}
+    print(json.dumps(result), flush=True)
+
+
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--inner']:
+        main()
+    else:
+        guardian_main()

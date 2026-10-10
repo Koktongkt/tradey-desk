@@ -132,6 +132,90 @@ class ProcessLifetimeTests(unittest.TestCase):
                         if fd is not None:
                             os.close(fd)
 
+    def forced_escalation_probe(self, stop_guardian=False):
+        # Subreaper instrumentation is confined to an isolated probe process.
+        probe = r'''
+import ctypes, json, os, signal, subprocess, sys, tempfile, time
+from pathlib import Path
+import broker_process, broker_supervisor, entry_state
+assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    record = root / 'pids.json'
+    child = 'import time; time.sleep(30)'
+    stop_guardian = sys.argv[1] == 'True'
+    extra = f"; inner=pathlib.Path('/proc/'+str(os.getppid())+'/cmdline').read_bytes(); g=int(pathlib.Path('/proc/'+str(os.getppid())+'/stat').read_text().rsplit(')',1)[1].split()[1]); ids=json.loads(pathlib.Path({str(record)!r}).read_text()); ids.append(g) if b'--inner' in inner.split(b'\\x00') else None; pathlib.Path({str(record)!r}).write_text(json.dumps(ids)); os.kill(g,signal.SIGSTOP) if {stop_guardian!r} and b'--inner' in inner.split(b'\\x00') else None"
+    wrapper = f"import subprocess,sys,os,signal,json,pathlib,time; p=subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); pathlib.Path({str(record)!r}).write_text(json.dumps([os.getppid(),os.getpid(),p.pid])){extra}; os.kill(os.getppid(),signal.SIGSTOP); time.sleep(30)"
+    started = time.monotonic()
+    try:
+        with entry_state.lock(root):
+            try:
+                broker_process.run_bridge([sys.executable, '-c', wrapper], input='', timeout=.3, run=subprocess.run)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                raise AssertionError('timeout must fail closed')
+            pids = json.loads(record.read_text())
+            states = {pid: (Path('/proc') / str(pid)).exists() for pid in pids}
+            elapsed = time.monotonic() - started
+            print('BEFORE_LOCK_RELEASE', elapsed, states, flush=True)
+            assert elapsed < 3, 'forced escalation must remain bounded'
+            assert not any(states.values()), 'internally forced escalation must reap every owned process before lock release'
+    finally:
+        if record.exists():
+            for pid in json.loads(record.read_text()):
+                observed = broker_supervisor.identity(pid)
+                if observed:
+                    fd = os.pidfd_open(pid)
+                    try:
+                        if broker_supervisor.identity(pid) == observed:
+                            signal.pidfd_send_signal(fd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        os.close(fd)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                try:
+                    pid, _ = os.waitpid(-1, os.WNOHANG)
+                    if not pid:
+                        time.sleep(.005)
+                except ChildProcessError:
+                    break
+            remaining = [pid for pid in json.loads(record.read_text()) if (Path('/proc') / str(pid)).exists()]
+            print('AFTER_PROBE_REAP', remaining, flush=True)
+            assert not remaining, 'probe cleanup left processes'
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', probe, str(stop_guardian)], text=True,
+                                capture_output=True, timeout=5)
+        print(result.stdout, end='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_forced_escalation_reaps_before_entry_lock_release(self):
+        self.forced_escalation_probe()
+
+    def test_parent_escalation_preserves_stopped_custodian_until_reaped(self):
+        self.forced_escalation_probe(stop_guardian=True)
+
+    def test_native_containment_capability_rejection_precedes_wrapper_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'launched'
+            command = [sys.executable, '-c', f"from pathlib import Path; Path({str(marker)!r}).write_text('unsafe-launch')"]
+            request = dict(command=command, input='', timeout=.3, options={})
+            faults = (
+                "patch.object(s.ctypes, 'CDLL', return_value=type('Denied', (), {'prctl': lambda *a: -1})())",
+                "patch.object(s.os, 'pidfd_open', side_effect=PermissionError('denied'))",
+                "patch.object(s.signal, 'pidfd_send_signal', side_effect=PermissionError('denied'))",
+            )
+            for fault in faults:
+                with self.subTest(fault=fault):
+                    marker.unlink(missing_ok=True)
+                    probe = "import broker_supervisor as s; from unittest.mock import patch; p=" + fault + "; p.start(); s.main()"
+                    result = subprocess.run([sys.executable, '-B', '-c', probe],
+                        input=__import__('json').dumps(request), text=True, capture_output=True, timeout=2)
+                    self.assertFalse(marker.exists(), 'unsupported containment must fail before wrapper launch')
+                    self.assertTrue(result.returncode != 0 or 'error' in __import__('json').loads(result.stdout))
+
     def test_normal_exit_reaps_detached_devnull_child_before_successor_lock(self):
         self.launch()
 
