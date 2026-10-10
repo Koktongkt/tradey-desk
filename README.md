@@ -5,7 +5,7 @@ A fail-closed, paper-first Alpaca trading desk. Submission requires `autonomy_co
 ## Safety boundary
 
 - US listed common stocks only; funds/ETFs/ETNs, options, crypto, OTC, short sales, margin usage, penny stocks, and illiquid names are rejected.
-- Aggregate managed-exposure cap: **$10,000**; per-position cap: **$500**; at most **2 submissions/day**, including unknown submissions by original New York submission date. The enabled `exact_owned_zero_fill_v1` policy separately allows up to **3 exactly qualified zero-fill pending parents** across sessions; capacity is not approval.
+- Aggregate managed-exposure cap: **$10,000**; per-position cap: **$500**; at most **3 submissions/day**, including unknown submissions by original New York submission date. The enabled `exact_owned_zero_fill_v1` policy separately allows up to **3 exactly qualified zero-fill pending parents** across sessions; capacity is not approval.
 - Each new position is also capped at **$40 of planned stop loss** in the observed checked-in configuration (a documentation correction, not a new risk-policy authorization). Whole-share quantity is the minimum allowed by stop risk, the $500 position cap/headroom, available cash, buying power, and remaining managed-exposure headroom. If one protected whole share does not fit, the trade is blocked.
 - Fractional-quantity validation is implemented but execution remains disabled because Alpaca currently rejects fractional bracket/OCO orders; it must not be enabled unless broker-attached stop/target protection is verified.
 - Orders are GTC limit brackets with an attached stop and target.

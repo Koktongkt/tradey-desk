@@ -165,7 +165,34 @@ class ThreeRuntimeTests(unittest.TestCase):
         self.assertIn('post_review_validation',stages)
         self.assertIn('broker_review_validation',stages)
 
+    def test_checked_in_daily_three_allows_third_current_session_submission(self):
+        self.intents[0]['submission_date']='2026-11-27'
+        self.write_state()
+        code,out=self.execute()
+        self.assertEqual(code,0,out)
+        self.assertEqual(self.cfg['max_daily_orders'],3)
+        self.assertEqual(sum(name=='place_stock_order' for name,_ in self.calls),1)
+        self.assertEqual(len(self.bundles),1)
+
+    def test_checked_in_daily_three_blocks_fourth_after_counting_submissions(self):
+        self.intents[0]['submission_date']='2026-11-27'
+        self.write_state()
+        code,out=self.execute()
+        self.assertEqual(code,0,out)
+        with patch.object(a.dt,'datetime',Clock):
+            daily=a._daily_order_count(self.root/'order_ledger.jsonl')
+        self.assertEqual(daily,3)
+        proposal=self.bundles[0]['proposal']
+        snapshot=self.bundles[0]['evidence']['broker_snapshot']
+        errors,_=a.validate_order_with_details(proposal,snapshot,self.cfg,daily)
+        self.assertIn('daily_order_limit',errors)
+        below,_=a.validate_order_with_details(proposal,snapshot,self.cfg,2)
+        self.assertNotIn('daily_order_limit',below)
+
     def test_daily_two_current_session_submissions_block_third_before_review(self):
+        # Preserve coverage of the stricter configurable two-submission policy.
+        self.cfg['max_daily_orders']=2
+        (self.root/'autonomy_config.json').write_text(json.dumps(self.cfg))
         self.intents[0]['submission_date']='2026-11-27'
         self.write_state()
         code,out=self.execute()
