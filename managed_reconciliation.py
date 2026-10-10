@@ -9,6 +9,7 @@ import os
 import subprocess
 from broker_process import bridge_command, run_bridge
 import sys
+import entry_state
 from pathlib import Path
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -63,7 +64,7 @@ def timestamp(value):
         raise ReconciliationBlocked('managed_evidence_invalid') from error
 
 
-ACTIVE = {'new', 'accepted', 'pending_new', 'held'}
+ACTIVE = {'new', 'accepted', 'pending_new', 'held', 'pending_cancel'}
 TERMINAL = {'canceled', 'expired', 'done_for_day', 'replaced', 'stopped', 'rejected', 'suspended', 'calculated'}
 
 
@@ -233,7 +234,8 @@ def pending_bracket(intent, parent):
             and parent.get('time_in_force') == 'gtc'
             and parent.get('extended_hours') in (None, False)
             and parent.get('notional') is None, 'managed_pending_entry_invalid')
-    require(parent.get('status') in ACTIVE and number(parent.get('filled_qty'), zero=True) == 0,
+    require(parent.get('status') in ACTIVE
+            and number(parent.get('filled_qty'), zero=True) == 0,
             'managed_pending_entry_not_unfilled')
     require(number(parent.get('qty')) == number(plan['quantity'])
             and number(parent.get('limit_price')) == number(plan['limit_price']),
@@ -316,7 +318,13 @@ def check_protection(snapshot, active, legs_by_parent, closing, pending_refs=())
                 if order.get('status') in ACTIVE | {'partially_filled'}), 'managed_open_order_unlinked')
 
 
-def reconcile_detailed(root: Path, broker):
+def reconcile_detailed(root: Path, broker, *, verify_only=False):
+    # Read-only reconciliation serializes behind a peer rather than failing a cycle.
+    with entry_state.lock(root, attempts=40):
+        return _reconcile_detailed_locked(root, broker, verify_only=verify_only)
+
+
+def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
     """Shared reconciler core: read-only broker, local journal/lifecycle repair.
 
     Returns (newly_journaled_rows, verified_summary). Raises
@@ -389,6 +397,8 @@ def reconcile_detailed(root: Path, broker):
             key = hashlib.sha256(f"{ref}|{fill['client_order_id']}|{fill['filled_at']}".encode()).hexdigest()
             updates.append(dict(timestamp=fill['filled_at'], symbol=plan['symbol'], action='SELL', entry=float(fill['filled_avg_price']), quantity=float(fill['filled_qty']), dollar_basis=float(Decimal(fill['filled_avg_price']) * Decimal(fill['filled_qty'])), stop=plan['stop'], target=plan['target'], status='filled', parent_client_order_id=ref, exit_client_order_id=fill['client_order_id'], closure_key=key, exit_reason='protective_stop' if fill['type'] == 'stop' else 'take_profit', **confirmed_fill_metadata(fill, {k: v for k, v in private_lineage(intent).items() if k != 'parent_client_order_id'})))
         known = {r.get('closure_key') for r in journal}
+        if verify_only:
+            require(not updates, 'managed_repair_required')
         if updates:
             snapshot = broker('reconciliation_snapshot', {'client_order_ids': []})
         try:
@@ -419,6 +429,12 @@ def reconcile_detailed(root: Path, broker):
             'positions': positions,
             'open_orders': len(snapshot.get('open_orders') or []),
             'repaired': [row['exit_client_order_id'] for row in written],
+            'pending': [{'client_order_id': i['client_order_id'],
+                         'symbol': i['plan']['symbol'],
+                         'remaining_notional': str(number(i['plan']['quantity']) * number(i['plan']['limit_price'])),
+                         'planned_risk': str(number(i['plan']['quantity']) * (number(i['plan']['limit_price']) - number(i['plan']['stop'])))}
+                        for i in pending],
+            'verified_open_refs': sorted(flatten_open(snapshot.get('open_orders'))),
         }
         return written, summary
 

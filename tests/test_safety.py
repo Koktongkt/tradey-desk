@@ -706,6 +706,7 @@ class TradeySafetyTests(unittest.TestCase):
             journal = root / "journal.jsonl"
             ref = "tradey-filled"
             ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
+            (root / "private").mkdir(exist_ok=True)
             intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
             journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
             parent = _protective_exit_parent(ref)

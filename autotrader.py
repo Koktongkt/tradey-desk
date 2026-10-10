@@ -23,6 +23,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
 import managed_reconciliation
+import pending_policy
+import entry_expiry
+import entry_state
+import entry_expiry as entry_expiry_policy
 from durable_jsonl import append_jsonl, read_jsonl
 from private_lineage import private_lineage, confirmed_fill_metadata
 from json_parsing import first_object
@@ -33,6 +37,7 @@ BROKER_FIELDS = (
     "buying_power", "cash", "positions", "open_orders", "asset", "quote",
     "quote_feed", "average_volume", "volume_feed", "technical_bars", "technical_bars_feed",
     "earnings_status", "earnings_sessions_away", "trading_sessions",
+    "trading_calendar", "cash_semantics", "buying_power_semantics",
 )
 CANDIDATE_BROKER_OWNED_MARKET_FIELDS = {"average_volume", "volume_feed", "quote", "quote_feed", "technical_bars", "technical_bars_feed", "earnings_status", "earnings_sessions_away"}
 REQUIRED_PLAN_FIELDS = ("action", "symbol", "stop", "target", "horizon", "confidence", "thesis", "risk_reward")
@@ -303,8 +308,14 @@ def derive_technical_levels(entry:Any,bars:Any,setup_type:str,assigned_rubric:st
     return {"stop":round(stop,2),"target":round(target,2),"atr_14":round(atr,4),"level_method":method},[]
 
 
-def build_canonical_proposal(candidate:dict[str,Any],snapshot:dict[str,Any],cfg:dict[str,Any],managed_exposure_usd:float)->tuple[dict[str,Any]|None,list[str]]:
+def build_canonical_proposal(candidate:dict[str,Any],snapshot:dict[str,Any],cfg:dict[str,Any],managed_exposure_usd:float, *, pending_proof=None)->tuple[dict[str,Any]|None,list[str]]:
     """Build one immutable BUY proposal from broker ask and fixed risk limits."""
+    reserved = Decimal(0)
+    if pending_proof is not None:
+        import pending_policy
+        errors = pending_policy.constraints(pending_proof, snapshot, cfg, str(candidate.get("symbol") or "").upper())
+        if errors: return None, errors
+        reserved = pending_proof.reserved
     horizon,errors=classify_horizon(candidate,snapshot)
     if errors:return None,errors
     quote=snapshot.get("quote") or {}
@@ -323,8 +334,8 @@ def build_canonical_proposal(candidate:dict[str,Any],snapshot:dict[str,Any],cfg:
     try:
         position_cap=Decimal(str(cfg["max_position_usd"]))
         risk_cap=Decimal(str(cfg["max_planned_risk_per_trade_usd"]))
-        account_headroom=max(Decimal("0"),Decimal(str(cfg["account_cap_usd"]))-Decimal(str(managed_exposure_usd)))
-        cash=Decimal(str(snapshot["cash"])); buying_power=Decimal(str(snapshot["buying_power"]))
+        account_headroom=max(Decimal("0"),Decimal(str(cfg["account_cap_usd"]))-Decimal(str(managed_exposure_usd))-reserved)
+        cash=pending_policy.cash_headroom(pending_proof, snapshot) if pending_proof is not None else Decimal(str(snapshot["cash"])); buying_power=Decimal(str(snapshot["buying_power"]))
     except (KeyError,TypeError,ValueError):return None,["sizing_state_unavailable"]
     current=sum((abs(Decimal(str(p.get("market_value") or 0))) for p in (snapshot.get("positions") or []) if str(p.get("symbol","")).upper()==symbol),Decimal("0"))
     position_headroom=max(Decimal("0"),position_cap-current)
@@ -340,6 +351,11 @@ def build_canonical_proposal(candidate:dict[str,Any],snapshot:dict[str,Any],cfg:
         "setup_type":candidate.get("setup_type"),"thesis":candidate.get("thesis"),
         "position_value_usd":float(entry*quantity),"planned_risk_usd":float(risk_per_share*quantity),
     }
+    if cfg.get("entry_expiry_policy") == entry_expiry.POLICY:
+        try:
+            proposal["entry_expiry"] = entry_expiry.metadata(proposal, snapshot.get("trading_calendar"), snapshot.get("captured_at"))
+        except RuntimeError as error:
+            return None, [str(error)]
     proposal=normalize_order_metrics(proposal)
     proposal["proposal_hash"]=hashlib.sha256(json.dumps(proposal,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     return proposal,[]
@@ -453,6 +469,7 @@ def has_blocking_active_order(open_orders: list[dict[str, Any]], positions: list
 def validate_order_with_details(
     order: dict[str, Any], snap: dict[str, Any], cfg: dict[str, Any], daily_orders: int,
     managed_exposure_usd: float = 0.0, preexisting_symbols: set[str] | None = None,
+    *, pending_proof=None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Deterministic validation; returns errors plus per-reason diagnostics.
 
@@ -463,6 +480,11 @@ def validate_order_with_details(
     e: list[str] = []
     d: dict[str, dict[str, Any]] = {}
     quote_obj = snap.get("quote") or {}
+    reserved = Decimal(0)
+    if pending_proof is not None:
+        import pending_policy
+        if pending_policy.valid(pending_proof, snap):
+            reserved = pending_proof.reserved
     action, symbol = order.get("action"), str(order.get("symbol", "")).upper()
     if symbol in (preexisting_symbols or set()): e.append("preexisting_position_conflict")
     if action not in {"BUY", "SELL"}: e.append("unsupported_action")
@@ -479,7 +501,7 @@ def validate_order_with_details(
         if limit_price < cfg["min_price_usd"]: e.append("price_below_minimum")
         if basis > position_cap: e.append("position_size_exceeded")
         if basis > account_cap: e.append("account_cap_exceeded")
-        if action == "BUY" and Decimal(str(managed_exposure_usd)) + basis > account_cap: e.append("account_cap_exceeded")
+        if action == "BUY" and Decimal(str(managed_exposure_usd)) + reserved + basis > account_cap: e.append("account_cap_exceeded")
     bp = snap.get("buying_power")
     if bp is None: e.append("unknown_buying_power")
     elif action == "BUY" and basis is not None and basis > min(Decimal(str(bp)), account_cap):
@@ -487,7 +509,7 @@ def validate_order_with_details(
         d["insufficient_buying_power"] = {"buying_power": bp, "dollar_basis": float(basis)}
     cash=snap.get("cash")
     if cash is None: e.append("unknown_cash")
-    elif action=="BUY" and basis is not None and basis > Decimal(str(cash)):
+    elif action=="BUY" and basis is not None and basis > (pending_policy.cash_headroom(pending_proof, snap) if pending_proof is not None and pending_policy.valid(pending_proof, snap) else Decimal(str(cash))):
         e.append("insufficient_cash")
         d["insufficient_cash"] = {"cash": cash, "dollar_basis": float(basis)}
     if daily_orders >= cfg["max_daily_orders"]: e.append("daily_order_limit")
@@ -560,7 +582,10 @@ def validate_order_with_details(
             e.append("near_term_earnings")
             d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
     else:e.append("earnings_unknown")
-    if has_blocking_active_order(snap.get("open_orders") or [], snap.get("positions") or []):
+    if pending_proof is not None:
+        import pending_policy
+        e.extend(pending_policy.constraints(pending_proof, snap, cfg, symbol))
+    elif has_blocking_active_order(snap.get("open_orders") or [], snap.get("positions") or []):
         e.append("active_broker_order")
     positions = snap.get("positions")
     if positions is None: e.append("positions_unknown")
@@ -585,15 +610,25 @@ def validate_order_with_details(
         if planned_risk>Decimal(str(risk_cap)):
             e.append("planned_risk_exceeded")
             d["planned_risk_exceeded"] = {"planned_risk_usd": float(planned_risk), "max_planned_risk_per_trade_usd": risk_cap}
+    if cfg.get("entry_expiry_policy") == entry_expiry.POLICY:
+        try:
+            meta = entry_expiry.validate_metadata(order.get("entry_expiry"), order, snap.get("trading_calendar"))
+            now = dt.datetime.now(dt.timezone.utc)
+            if now >= managed_reconciliation.timestamp(meta["expires_at"]) or now.astimezone(ZoneInfo("America/New_York")).date().isoformat() != meta["placement_session"]:
+                e.append("entry_deadline_passed")
+        except RuntimeError as error:
+            e.append(str(error))
     return sorted(set(e)), d
 
 
 def validate_order(
     order: dict[str, Any], snap: dict[str, Any], cfg: dict[str, Any], daily_orders: int,
     managed_exposure_usd: float = 0.0, preexisting_symbols: set[str] | None = None,
+    *, pending_proof=None,
 ) -> list[str]:
     return validate_order_with_details(
         order, snap, cfg, daily_orders, managed_exposure_usd, preexisting_symbols,
+        pending_proof=pending_proof,
     )[0]
 
 
@@ -639,14 +674,24 @@ def idempotency_ref(order: dict[str, Any], trading_date: str) -> str:
     return "tradey-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
-def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[str, Any], lineage: dict[str, Any] | None = None) -> None:
+def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[str, Any], lineage: dict[str, Any] | None = None):
+    # Idempotent local accounting under the same class of lock as reconciliation.
+    with entry_state.lock(path.parent, attempts=40):
+        return _journal_confirmed_fill_locked(path, plan, broker_order, lineage)
+
+
+def _journal_confirmed_fill_locked(path, plan, broker_order, lineage=None):
     if broker_order.get("status") != "filled":
         return
     qty = float(broker_order.get("filled_qty") or 0)
     entry = float(broker_order.get("filled_avg_price") or 0)
     if qty <= 0 or entry <= 0:
         return
-    append_jsonl(path, {"timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled", **confirmed_fill_metadata(broker_order, lineage)})
+    ref = broker_order.get("client_order_id")
+    fill_key = hashlib.sha256(json.dumps({"ref": ref, "filled_at": broker_order.get("filled_at"), "qty": str(qty), "price": str(entry)}, sort_keys=True).encode()).hexdigest() if ref else None
+    if fill_key and any(row.get("entry_fill_key") == fill_key for row in read_jsonl(path, strict=True)):
+        return
+    append_jsonl(path, {"entry_fill_key": fill_key, "timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled", **confirmed_fill_metadata(broker_order, lineage)})
 
 
 BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "filled"}
@@ -685,6 +730,33 @@ def placing_notification_line(plan: dict[str, Any], broker_mode: str) -> str | N
     )
 
 
+TERMINAL_ENTRY_STATUSES = {"canceled", "expired"}
+
+
+def exact_terminal_readback(ref, plan, broker_order):
+    """Validated zero-fill terminal cancellation; never claims a fill."""
+    if not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
+        return False
+    status = str(broker_order.get("status") or "").lower()
+    fields = _notification_plan(plan, validate=False)
+    if fields is None or status not in TERMINAL_ENTRY_STATUSES:
+        return False
+    action, symbol, quantity, limit_price, stop, target = fields
+    try:
+        broker_quantity = Decimal(str(broker_order.get("qty")))
+        filled = Decimal(str(broker_order.get("filled_qty") or 0))
+    except Exception:
+        return False
+    return (
+        str(broker_order.get("client_order_id") or "") == ref
+        and str(broker_order.get("symbol") or "").upper() == symbol
+        and str(broker_order.get("side") or "").lower() == action.lower()
+        and str(broker_order.get("type") or broker_order.get("order_type") or "").lower() == "limit"
+        and str(broker_order.get("order_class") or "").lower() == "bracket"
+        and broker_quantity == quantity and filled == 0
+    )
+
+
 def broker_order_notification_line(
     ref: str, plan: dict[str, Any], broker_order: dict[str, Any], broker_mode: str,
 ) -> tuple[str, str] | None:
@@ -692,6 +764,8 @@ def broker_order_notification_line(
     if broker_mode != "paper" or not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
         return None
     status = str(broker_order.get("status") or "").lower()
+    if status in TERMINAL_ENTRY_STATUSES and not exact_terminal_readback(ref, plan, broker_order):
+        return None
     fields = _notification_plan(plan, validate=False)
     if fields is None:
         return None
@@ -950,7 +1024,16 @@ def managed_entry_intents(ledger: list[dict[str, Any]], intents: list[dict[str, 
     ]
 
 
-def reconcile_managed_exits(
+def reconcile_managed_exits(ledger_path, intents_path, journal_path, broker=None):
+    # Broker reads + closure-key computation stay outside the append lock so two
+    # concurrent reconciles can race; the dedicated append-section lock below
+    # covers the authoritative re-read, closure-key check, SELL append and
+    # terminal lifecycle append (exactly-once). No entry-state lock here: exits
+    # do not write entry decisions, and nesting would serialize the read phase.
+    return _reconcile_managed_exits_locked(ledger_path, intents_path, journal_path, broker)
+
+
+def _reconcile_managed_exits_locked(
     ledger_path: Path, intents_path: Path, journal_path: Path, broker: Any = None,
 ) -> list[dict[str, Any]]:
     """Journal broker-confirmed bracket exits exactly once before new entries."""
@@ -1091,7 +1174,13 @@ def reconcile_managed_exits(
     return updates
 
 
-def reconcile_pending_orders(
+def reconcile_pending_orders(ledger_path, intents_path, journal_path, broker=None, broker_mode="paper"):
+    # Read-only broker reads; bounded contention retry, no execution retries.
+    with entry_state.lock(ledger_path.parent, attempts=40):
+        return _reconcile_pending_orders_locked(ledger_path, intents_path, journal_path, broker, broker_mode)
+
+
+def _reconcile_pending_orders_locked(
     ledger_path: Path, intents_path: Path, journal_path: Path, broker: Any = None,
     broker_mode: str = "paper",
 ) -> list[dict[str, Any]]:
@@ -1120,10 +1209,17 @@ def reconcile_pending_orders(
 
 
 def _daily_order_count(path: Path) -> int:
-    today=dt.datetime.now(dt.timezone.utc).date().isoformat()
+    today=dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     refs=set()
+    original={}
+    for intent in read_jsonl(path.parent / "private/order_intents.jsonl", strict=True):
+        date = intent.get("submission_date")
+        ref = intent.get("client_order_id")
+        if ref and date:
+            original[ref] = date
+            if date == today: refs.add(ref)
     for r in read_jsonl(path, strict=True):
-        if str(r.get("timestamp","")).startswith(today) and r.get("status") in {"placed","filled"}:
+        if r.get("client_order_id") not in original and str(r.get("timestamp","")).startswith(today) and r.get("status") in {"submission_started", "submission_unknown", "placed","filled"}:
             refs.add(str(r.get("client_order_id") or f"legacy-{len(refs)}"))
     return len(refs)
 
@@ -1253,27 +1349,43 @@ def record_shadow_if_live(args:argparse.Namespace,candidate:dict[str,Any],propos
         pass
 
 
-def pre_review_validation(proposal, snapshot, cfg, daily, exposure, preexisting_symbols):
+def pre_review_validation(proposal, snapshot, cfg, daily, exposure, preexisting_symbols, *, pending_proof=None):
     """Check the initial snapshot before paying for independent reviews."""
     return validate_order_with_details(
         {**proposal, "confidence": 1.0}, snapshot, cfg, daily, exposure, preexisting_symbols,
+        pending_proof=pending_proof,
     )
 
-def post_review_validation(plan, snapshot, cfg, daily, exposure, preexisting_symbols, scope_errors):
+def post_review_validation(plan, snapshot, cfg, daily, exposure, preexisting_symbols, scope_errors, *, pending_proof=None):
     """Check the approved plan and retain managed-scope blockers first."""
     errors, details = validate_order_with_details(
         plan, snapshot, cfg, daily, exposure, preexisting_symbols,
+        pending_proof=pending_proof,
     )
     return scope_errors + errors, details
 
-def broker_review_validation(plan, fresh, cfg, daily, fresh_exposure, preexisting_symbols, fresh_scope_errors):
+def broker_review_validation(plan, fresh, cfg, daily, fresh_exposure, preexisting_symbols, fresh_scope_errors, *, pending_proof=None):
     """Check the same reviewed plan against fresh broker truth before intent."""
     return post_review_validation(
         plan, fresh, cfg, daily, fresh_exposure, preexisting_symbols, fresh_scope_errors,
+        pending_proof=pending_proof,
     )
 
 def run(args: argparse.Namespace) -> int:
+    if args.dry_run_fixture or args.live_dry_run:
+        return _run_locked(args)
+    try:
+        with entry_state.lock(ROOT):
+            return _run_locked(args)
+    except RuntimeError as error:
+        if str(error) in {"entry_state_busy", "entry_state_invalid"}:
+            print("BLOCKER " + str(error)); return 2
+        raise
+
+
+def _run_locked(args: argparse.Namespace) -> int:
     cfg=load_json(ROOT/"autonomy_config.json")
+    proof = None
     ledger,reviews_path,disagreements_path=output_paths(ROOT,args.dry_run_fixture or args.live_dry_run)
     if args.dry_run_fixture:
         fixture=load_json(ROOT/"fixtures"/"dry_run_bundle.json")
@@ -1286,6 +1398,9 @@ def run(args: argparse.Namespace) -> int:
         if blockers:
             print("BLOCKER " + ",".join(blockers)); return 2
         if not args.live_dry_run:
+            expiry_reasons=entry_expiry_policy.process(ROOT,cfg,_broker_bridge)
+            if expiry_reasons:
+                append_jsonl(PRIVATE_DIR/"blocker_diagnostics.jsonl", {"timestamp":utcnow(),"stage":"entry_expiry","reason":expiry_reasons[0]})
             try: pending_updates=reconcile_pending_orders(
                 ledger,ROOT/"private"/"order_intents.jsonl",ROOT/"trade_journal.jsonl",
                 broker_mode=cfg.get("broker_mode"),
@@ -1339,17 +1454,24 @@ def run(args: argparse.Namespace) -> int:
         exposure,scope_errors=managed_exposure(snapshot.get("positions") or [],read_jsonl(ROOT/"trade_journal.jsonl"))
     immutable=authoritative_bundle(candidate,snapshot,snapshot.get("captured_at",utcnow()))
     private_id=hashlib.sha256(json.dumps(immutable,sort_keys=True).encode()).hexdigest()[:16]
-    proposal,proposal_errors=build_canonical_proposal(candidate,snapshot,cfg,exposure)
+    if pending_policy.enabled(cfg) and not (args.dry_run_fixture or args.live_dry_run):
+        try: proof = pending_policy.qualify(ROOT, snapshot, _broker_bridge)
+        except RuntimeError as error:
+            print("BLOCKER managed_reconciliation:" + str(error)); return 2
+    proof_args = {"pending_proof": proof} if proof is not None else {}
+    proposal,proposal_errors=build_canonical_proposal(candidate,snapshot,cfg,exposure,**proof_args)
     if proposal_errors or proposal is None:
         print("BLOCKER " + ",".join(proposal_errors)); return 2
     daily=_daily_order_count(ledger)
-    precheck,precheck_details=pre_review_validation(proposal,snapshot,cfg,daily,exposure,preexisting_symbols)
+    precheck,precheck_details=pre_review_validation(proposal,snapshot,cfg,daily,exposure,preexisting_symbols,**proof_args)
     if precheck:
         precheck=sorted(set(precheck))
         record_blocker_diagnostics("precheck",proposal.get("symbol"),proposal.get("action"),precheck,precheck_details,dry_run=args.dry_run_fixture or args.live_dry_run)
         print("BLOCKER " + ",".join(precheck)); return 2
     if not args.dry_run_fixture:
         review_bundle=build_review_bundle(candidate,snapshot,proposal)
+        if proof is not None:
+            review_bundle["qualification"] = {"pending_entry_parents": len(proof.pending), "pending_reserved_notional_usd": str(proof.reserved), "max_pending_entry_parents": 2, "cash_headroom_usd": str(pending_policy.cash_headroom(proof, snapshot)), "buying_power_reservation": "broker_available_net_not_subtracted_again"}
         reviews=independent_reviews(review_bundle,cfg)
     else:
         reviews=[{**review,"proposal_hash":proposal["proposal_hash"]} for review in reviews]
@@ -1363,7 +1485,7 @@ def run(args: argparse.Namespace) -> int:
         print("BLOCKER " + con["reason"]); return 2
     plan=normalize_order_metrics({k:con["order"].get(k) for k in con["order"] if k not in BROKER_FIELDS})
     daily=_daily_order_count(ledger)
-    errors,final_details=post_review_validation(plan,snapshot,cfg,daily,exposure,preexisting_symbols,scope_errors)
+    errors,final_details=post_review_validation(plan,snapshot,cfg,daily,exposure,preexisting_symbols,scope_errors,**proof_args)
     ref=idempotency_ref(plan,dt.datetime.now(dt.timezone.utc).date().isoformat())
     lineage={**lineage,"parent_client_order_id":ref}
     proposed={"timestamp":utcnow(),"status":"proposed","client_order_id":ref,"symbol":plan.get("symbol"),"action":plan.get("action"),"quantity":plan.get("quantity"),"order_type":plan.get("order_type"),"limit_price":plan.get("limit_price"),"evidence_id":private_id,**lineage}
@@ -1383,7 +1505,12 @@ def run(args: argparse.Namespace) -> int:
     try:
         fresh=_broker_bridge("review",{"order":plan,"earnings_event_at":candidate.get("earnings_event_at"),"planned_exit_at":candidate.get("planned_exit_at")})
         fresh_exposure,fresh_scope_errors=managed_exposure(fresh.get("positions") or [],read_jsonl(ROOT/"trade_journal.jsonl"))
-        fresh_errors,fresh_details=broker_review_validation(plan,fresh,cfg,daily,fresh_exposure,preexisting_symbols,fresh_scope_errors)
+        cfg=load_json(ROOT/"autonomy_config.json")
+        daily=_daily_order_count(ledger)
+        fresh_proof = pending_policy.qualify(ROOT, fresh, _broker_bridge) if pending_policy.enabled(cfg) else None
+        fresh_args = {"pending_proof": fresh_proof} if fresh_proof is not None else {}
+        fresh_errors,fresh_details=broker_review_validation(plan,fresh,cfg,daily,fresh_exposure,preexisting_symbols,fresh_scope_errors,**fresh_args)
+        fresh_errors += runtime_blockers(cfg)
         if fresh_errors:
             fresh_errors=sorted(set(fresh_errors))
             record_blocker_diagnostics("broker_review",plan.get("symbol"),plan.get("action"),fresh_errors,fresh_details)
@@ -1392,7 +1519,10 @@ def run(args: argparse.Namespace) -> int:
             if set(fresh_errors) <= RETRYABLE_EXECUTION_REASONS:
                 note_pre_submission_retryable(reviews_path,candidate,private_id)
             print("BLOCKER broker_review:"+",".join(fresh_errors)); return 2
-        append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"plan":plan,**lineage})
+        immediate_cfg=load_json(ROOT/"autonomy_config.json")
+        if immediate_cfg != cfg or runtime_blockers(immediate_cfg):
+            raise RuntimeError("runtime_policy_changed")
+        append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"submission_date":dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat(),"plan":plan,**lineage})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
         submission_started=True
         try:
