@@ -35,8 +35,10 @@ def _group_run(command, *, input, timeout, **kwargs):
             try:
                 process.communicate(timeout=1)
             except subprocess.TimeoutExpired:
-                freeze_kill_tree(process.pid)
-                process.wait(timeout=1)
+                # Never destroy the isolated custodian: kill its owned tree,
+                # resume it, and await its cleanup/reaping acknowledgement.
+                freeze_kill_tree(process.pid, include_root=False)
+                process.communicate(timeout=1)
             raise
         if process.returncode != 0:
             raise RuntimeError('broker_containment_unconfirmed')
