@@ -2,7 +2,7 @@
   "enabled": true,
   "broker_mode": "paper",
   "account_cap_usd": 10000,
-  "max_daily_orders": 2,
+  "max_daily_orders": 3,
   "pending_entry_policy": "exact_owned_zero_fill_v1",
   "max_pending_entry_parents": 3,
   "entry_expiry_policy": "new_intents_session_close_v1",

@@ -4,6 +4,10 @@
 
 The actual generated name is `tradey-desk.workflow.html`, matching `meta.output`. GitHub cannot execute HTML: download and open it locally. The standalone viewer has no external script dependency. Both static exports were freshly generated using the native Archify exporter from the delivered HTML; PNG is 4011×3450. Viewer controls and source badges are omitted from the export; its decorative grid remains. `tradey-desk.html` is an untouched historical artifact, not this refresh.
 
+## Current policy amendment
+
+The user authorized `max_daily_orders=3` (previously 2). This counts submissions, including pending/unknown submissions, not just fills. All other controls remain unchanged. The frozen diagram and source graph below describe the earlier `0d3a5a5` source pin and its daily cap of 2; they are historical artifacts, not a current configuration readback. The config-only amendment has focused pipeline coverage plus full/raw offline suites passing at 898 tests each.
+
 ## Frozen source and release status
 
 Source pin: `0d3a5a554bf2c36b758f085ab46e56d2a317f7a8`. This is a **frozen candidate-only local pin, NOT deployed**. The final independent offline review returned **PASS**, with all 16 reviewed source hashes verified against this pin. The user authorized commit and push of the reviewed code and finalized artifacts. This publication approval is separate from artifact checks and does not authorize or demonstrate live deployment, scheduler activation, model calls or broker execution. Changed runtime bytes require a new pin and artifact regeneration. The diagram establishes no account state, current broker capability, scheduler activation, eligible-run observation, performance, or alert delivery.
