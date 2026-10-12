@@ -35,26 +35,36 @@ class RetrievalImprovements(unittest.TestCase):
         self.assertIn(scout[0],alternates)
 
     def test_same_publisher_failures_do_not_suppress_sibling_attempts(self):
+        def ok(url):
+            return {"url":url,"text":"Material filing "*20,"published_at":"2026-09-29T00:00:00Z"}
+        def forbidden(url,timeout):
+            raise urllib.error.HTTPError(url,403,'forbidden',{},None)
+        def timeout_error(url,timeout):
+            raise TimeoutError('timed out')
         cases = (
-            ('forbidden', ['https://www.sec.gov/a','https://www.sec.gov/b'], 'source_http_forbidden'),
-            ('timeout', ['https://www.globenewswire.com/a','https://www.globenewswire.com/b'], 'source_fetch_timeout'),
+            ('forbidden', ['https://www.sec.gov/a','https://www.sec.gov/b'],
+             lambda url: forbidden(url,None), 2, 'source_http_forbidden', [], 3),
+            ('timeout', ['https://www.globenewswire.com/a','https://www.globenewswire.com/b'],
+             lambda url: timeout_error(url,None), 2, 'source_fetch_timeout', [], 3),
+            ('one_forbidden_url_allows_accessible_sibling', ['https://www.sec.gov/blocked','https://www.sec.gov/allowed'],
+             lambda url: forbidden(url,None) if url.endswith('blocked') else ok(url), None, None,
+             ['https://www.sec.gov/allowed'], 1),
         )
-        for label, urls, reason in cases:
+        for label, urls, behavior, call_count, reason, expected_pages, budget in cases:
             with self.subTest(case=label):
                 calls, diagnostics = [], []
-                def fail(url, timeout):
+                def fetch(url, timeout):
                     calls.append(url)
-                    if label == 'forbidden':
-                        raise urllib.error.HTTPError(url,403,'forbidden',{},None)
-                    raise TimeoutError('timed out')
-                with patch.object(radar, 'fetch_source', side_effect=fail), patch.object(
+                    return behavior(url)
+                with patch.object(radar, 'fetch_source', side_effect=fetch), patch.object(
                     radar, 'fetch_source_via_gateway', return_value=None
                 ):
-                    radar.gather_evidence(list(urls), diagnostics=diagnostics, collection_budget_seconds=3)
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(len(diagnostics), 2)
-                self.assertTrue(all(d['reason'] == reason for d in diagnostics))
-
+                    result = radar.gather_evidence(list(urls), diagnostics=diagnostics, collection_budget_seconds=budget)
+                self.assertEqual([p['url'] for p in result], expected_pages)
+                if call_count is not None:
+                    self.assertEqual(len(calls), call_count)
+                    self.assertEqual(len(diagnostics), call_count)
+                    self.assertTrue(all(d['reason'] == reason for d in diagnostics))
 
     def test_successful_same_publisher_urls_fetch_concurrently_within_budget(self):
         urls=["https://www.sec.gov/a","https://www.sec.gov/b"]
@@ -64,17 +74,6 @@ class RetrievalImprovements(unittest.TestCase):
         with patch.object(radar,"fetch_source",side_effect=slow):
             result=radar.gather_evidence(urls,collection_budget_seconds=0.2)
         self.assertEqual({p["url"] for p in result},set(urls))
-
-    def test_one_forbidden_url_does_not_suppress_accessible_sibling_page(self):
-        urls=["https://www.sec.gov/blocked","https://www.sec.gov/allowed"]
-        def direct(url,timeout):
-            if url==urls[0]:raise urllib.error.HTTPError(url,403,"forbidden",{},None)
-            return {"url":url,"text":"Material filing "*20,"published_at":"2026-09-29T00:00:00Z"}
-        with patch.object(radar,"fetch_source",side_effect=direct),patch.object(
-            radar,"fetch_source_via_gateway",return_value=None
-        ):
-            result=radar.gather_evidence(urls,collection_budget_seconds=1)
-        self.assertEqual([p["url"] for p in result],[urls[1]])
 
     def test_same_publisher_requests_launch_without_serial_wait(self):
         urls=["https://www.sec.gov/a","https://www.sec.gov/b"]
@@ -105,12 +104,22 @@ class RetrievalImprovements(unittest.TestCase):
         self.assertEqual(result,[page])
         self.assertEqual(calls,urls)
 
-    def test_gateway_wrong_url_cannot_enter_cache_or_evidence(self):
+    def test_misbound_page_cannot_enter_cache_or_evidence(self):
         url="https://requested.example/a"
-        with tempfile.TemporaryDirectory() as td, patch.object(radar,"fetch_source",side_effect=TimeoutError("fixture")), patch.object(radar,"fetch_source_via_gateway",return_value={"url":url+"/wrong"}):
-            cache,diagnostics=Path(td)/"cache.json",[]
-            self.assertEqual(radar.gather_evidence([url],diagnostics=diagnostics,cache_path=cache),[])
-            self.assertEqual((json.loads(cache.read_text()),diagnostics), ({},[{"url":url,"domain":"requested.example","reason":"source_url_mismatch"}]))
+        wrong={"url":"https://other.example/a","title":"Other","text":"body","published_at":"2026-09-08"}
+        for lane in ('direct','gateway'):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as td:
+                cache=Path(td)/"cache.json"
+                if lane=='direct':
+                    with patch.object(radar,"fetch_source",return_value=wrong), patch.object(radar,"fetch_source_via_gateway",return_value=None):
+                        pages=radar.gather_evidence([url,url],cache_path=cache)
+                    self.assertEqual(pages,[])
+                    self.assertNotIn(wrong["url"],json.loads(cache.read_text()))
+                else:
+                    diagnostics=[]
+                    with patch.object(radar,"fetch_source",side_effect=TimeoutError("fixture")), patch.object(radar,"fetch_source_via_gateway",return_value={"url":url+"/wrong"}):
+                        self.assertEqual(radar.gather_evidence([url],diagnostics=diagnostics,cache_path=cache),[])
+                    self.assertEqual((json.loads(cache.read_text()),diagnostics), ({},[{"url":url,"domain":"requested.example","reason":"source_url_mismatch"}]))
 
     def test_late_direct_and_gateway_pages_cannot_publish_after_collection(self):
         import threading

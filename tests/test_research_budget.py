@@ -32,17 +32,15 @@ class DeadlineContextTests(unittest.TestCase):
             with alpha_radar.timed_research_stage("discovery"):
                 pass
 
-    def test_active_deadline_clamps_individual_network_timeout(self):
-        with patch.object(research_budget, "monotonic", return_value=100):
-            with research_budget.active_deadline(108):
-                self.assertEqual(research_budget.remaining(30), 8)
-            self.assertEqual(research_budget.remaining(30), 30)
-
-    def test_expired_deadline_raises_non_suppressible_timeout(self):
-        with patch.object(research_budget, "monotonic", return_value=100):
-            with research_budget.active_deadline(100):
-                with self.assertRaises(research_budget.ResearchDeadlineExceeded):
-                    research_budget.remaining(30)
+    def test_active_deadline_clamps_remaining_and_raises_when_expired(self):
+        for label, deadline in (('clamps_individual_network_timeout_inside_deadline',108),
+                                ('expired_deadline_raises_non_suppressible_timeout',100)):
+            with self.subTest(case=label), patch.object(research_budget, 'monotonic', return_value=100):
+                with research_budget.active_deadline(deadline):
+                    if deadline==108:self.assertEqual(research_budget.remaining(30),8)
+                    else:
+                        with self.assertRaises(research_budget.ResearchDeadlineExceeded):research_budget.remaining(30)
+                if deadline==108:self.assertEqual(research_budget.remaining(30),30)
     def test_enrichment_http_refuses_to_start_after_deadline(self):
         with patch.object(research_budget, "monotonic", return_value=100), research_budget.active_deadline(100):
             with patch.object(earnings_calendar.urllib.request, "urlopen") as fetch:
@@ -124,14 +122,36 @@ class ResearchBudgetGuardTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,"research_focused_retrieval_timeout")
             run.assert_called_once()
 
-    def test_scout_timeout_covers_bounded_discovery_call(self):
+    def test_bounded_research_call_source_pins(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=", source)
-        self.assertNotIn("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240", source)
-        self.assertIn("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)", source)
-        self.assertIn("timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT", source)
+        pins = (
+            ("discovery_uses_bounded_prompt_and_dynamic_timeout",
+             ("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=",),
+             ("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240",)),
+            ("synthesis_deadline_and_timeout_clamped_to_remaining",
+             ("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)",
+              "timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT"), ()),
+            ("focused_retrieval_prompt_feeds_bounded_subprocess",
+             ("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",), ()),
+            ("discovery_enforces_five_total_urls",
+             ("scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)",), ()),
+        )
+        for label, required, forbidden in pins:
+            with self.subTest(case=label):
+                for fragment in required:
+                    self.assertIn(fragment, source)
+                for fragment in forbidden:
+                    self.assertNotIn(fragment, source)
+        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
+            command=alpha_radar.focused_retrieval_command()
+        self.assertEqual(command[command.index("--max-turns")+1],"4")
+        self.assertEqual(command[command.index("--run-budget")+1],"90")
 
-    def test_nine_minute_budget_clips_adaptive_caps_and_preserves_reserve(self):
+    def test_nine_minute_envelope_pins_stage_constants_and_run_cycle_timeout(self):
+        # Earlier caps remain 165/120/120. Synthesis phase can borrow up to 90,
+        # but launches reserve remaining shared enrichment inside active 510.
+        # The extra 30 seconds is borrowed from unused upstream caps, not
+        # additive; adaptive caps cannot all be added, outer 540 keeps final 30.
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 510)
         self.assertEqual(alpha_radar.DISCOVERY_TIMEOUT_SECONDS, 165)
         self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 120)
@@ -140,42 +160,24 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertEqual(alpha_radar.SYNTHESIS_PHASE_BUDGET_SECONDS, 90)
         self.assertEqual(alpha_radar.MIN_SYNTHESIS_WINDOW_SECONDS, 30)
         self.assertEqual(alpha_radar.ENRICHMENT_BUDGET_SECONDS, 45)
-        # The extra 30 seconds is borrowed from unused upstream caps, not additive.
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS+30,540)
-        self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
-
-    def test_scout_run_budget_bounds_discovery(self):
-        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
-            command = alpha_radar.discovery_command()
-        budget_index = command.index("--run-budget") + 1
-        self.assertEqual(command[budget_index], "130")
-        self.assertEqual(command[command.index("--max-turns")+1],"2")
-        self.assertEqual(command[command.index("-t")+1],"search")
-
-    def test_focused_retrieval_has_bounded_tool_budget_and_timeout(self):
-        with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
-            command=alpha_radar.focused_retrieval_command()
-        self.assertEqual(command[command.index("--max-turns")+1],"4")
-        self.assertEqual(command[command.index("--run-budget")+1],"90")
-        source=(alpha_radar.ROOT/"alpha_radar.py").read_text()
-        self.assertIn("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",source)
-
-    def test_cycle_budget_covers_serialized_worst_case(self):
-        # Earlier caps remain 165/120/120. Synthesis phase can borrow up to 90,
-        # but launches reserve remaining shared enrichment inside active 510.
-        # These adaptive caps cannot all be added; outer 540 keeps final 30.
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
-        self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS,120)
+        self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
         source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=540',
-            source,
+        pins = (
+            ("radar_runs_once_with_explicit_timeout", "timeout_seconds=540", False),
+            ("radar_launch_attempts_single", "attempts=1", False),
+            ("radar_launch_uses_540_envelope",
+             'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=540', False),
+            ("radar_launch_never_uses_legacy_1110",
+             'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110', True),
         )
-        self.assertNotIn(
-            'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110',
-            source,
-        )
-
+        for label, fragment, forbidden in pins:
+            with self.subTest(case=label):
+                if forbidden:
+                    self.assertNotIn(fragment, source)
+                else:
+                    self.assertIn(fragment, source)
 
 class ScoutReliabilityGuardTests(unittest.TestCase):
     """Guard tests from the 2026-09-09 3-run fetch-failure streak.
@@ -184,32 +186,6 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
     intermittent source timeouts (businesswire.com), and a too-thin URL
     surplus (5 candidates minus dedupe/walls/staleness left <2 usable).
     """
-
-    def test_scout_prompt_discovery_contracts(self):
-        cases = (
-            ("verified article URL", True, "confirmed article URL copied exactly from the web_search results"),
-            ("no guessed URLs", True, "Never construct or guess"),
-            ("candidate schema", True, '"candidates"'),
-            ("ranked groups", True, "one to five candidates in ranked order"),
-            ("one confirmed URL", True, "at least one confirmed article URL"),
-            ("focused stage", True, "focused retrieval stage"),
-            ("deferred two-domain gate", True, "apply the final two-domain evidence gate"),
-            ("four parallel searches", True, "call web_search exactly four times in parallel with limit 10 each"),
-            ("one tool turn", True, "Use exactly one tool-using turn"),
-            ("no extraction tool", False, "web_extract"),
-            ("no page extraction", True, "Do not extract pages"),
-        )
-        for label, present, phrase in cases:
-            with self.subTest(case=label):
-                if present:
-                    self.assertIn(phrase, alpha_radar.SCOUT_PROMPT)
-                else:
-                    self.assertNotIn(phrase, alpha_radar.SCOUT_PROMPT)
-
-
-    def test_live_research_enforces_five_total_discovery_urls(self):
-        source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
-        self.assertIn("scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)", source)
 
     def test_gather_evidence_timeout_goes_to_gateway_without_second_direct_attempt(self):
         attempts = {"n": 0}
@@ -250,16 +226,6 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         direct.assert_not_called()
         self.assertEqual(pages,[page])
 
-    def test_direct_page_for_different_url_cannot_enter_cache_or_evidence(self):
-        url="https://requested.example/a"
-        wrong={"url":"https://other.example/a","title":"Other","text":"body","published_at":"2026-09-08"}
-        with tempfile.TemporaryDirectory() as td:
-            cache=Path(td)/"cache.json"
-            with patch.object(alpha_radar,"fetch_source",return_value=wrong), patch.object(alpha_radar,"fetch_source_via_gateway",return_value=None):
-                pages=alpha_radar.gather_evidence([url,url],cache_path=cache)
-            self.assertEqual(pages,[])
-            self.assertNotIn(wrong["url"],json.loads(cache.read_text()))
-
     def test_clear_timeout_preserves_remaining_deadline_for_gateway(self):
         url="https://timed.example/a"
         deadline=alpha_radar.monotonic()+0.3
@@ -272,25 +238,6 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
         self.assertEqual(pages[0]["url"],url)
         direct.assert_called_once()
         self.assertTrue(0<seen[0]<=min(alpha_radar.GATEWAY_FALLBACK_TIMEOUT_SECONDS,0.3))
-
-    def test_gather_evidence_records_single_timeout_after_retry_exhausted(self):
-        diagnostics = []
-
-        def fetch(url, _timeout):
-            raise TimeoutError("read timed out")
-
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
-            alpha_radar, "fetch_source_via_gateway", return_value=None
-        ):
-            pages = alpha_radar.gather_evidence(
-                ["https://down.example/a"], diagnostics=diagnostics
-            )
-
-        self.assertEqual(pages, [])
-        self.assertEqual(
-            diagnostics,
-            [{"url":"https://down.example/a","domain": "down.example", "reason": "source_fetch_timeout"}],
-        )
 
     def test_gather_evidence_retries_connection_reset_once(self):
         for label, url, wrapped in (
@@ -414,21 +361,35 @@ class GatewayFallbackGuardTests(unittest.TestCase):
                     alpha_radar._gateway_provider_failure(True,error if explicit else None)
             self.assertEqual((caught.exception.code,caught.exception.__cause__,caught.exception.__context__,caught.exception.__suppress_context__), ("research_rescue_unavailable",error if explicit else None,error,explicit))
 
-    def test_gateway_fallback_failure_keeps_typed_timeout(self):
-        diagnostics = []
+    def test_unusable_gateway_fallback_yields_no_evidence_and_keeps_typed_timeout(self):
+        cases = (
+            ("gateway_fallback_timeout_keeps_typed_timeout",
+             subprocess.TimeoutExpired(cmd="x", timeout=30),
+             [{"url":"https://walled.example/a","domain": "walled.example", "reason": "source_fetch_timeout"}]),
+            ("whitespace_gateway_output_is_not_evidence",
+             subprocess.CompletedProcess([], 0, "   ", ""),
+             None),
+        )
+        for label, gateway_result, expected_diagnostics in cases:
+            with self.subTest(case=label):
+                diagnostics = []
 
-        def direct(url, _timeout):
-            raise TimeoutError("read timed out")
+                def direct(url, _timeout):
+                    raise TimeoutError("read timed out")
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="x", timeout=30)
-        ):
-            pages = alpha_radar.gather_evidence(
-                ["https://walled.example/a"], diagnostics=diagnostics
-            )
+                gateway_options = ({"side_effect": gateway_result}
+                                   if isinstance(gateway_result, BaseException)
+                                   else {"return_value": gateway_result})
+                with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
+                    alpha_radar.subprocess, "run", **gateway_options
+                ):
+                    pages = alpha_radar.gather_evidence(
+                        ["https://walled.example/a"], **({"diagnostics":diagnostics} if expected_diagnostics is not None else {})
+                    )
 
-        self.assertEqual(pages, [])
-        self.assertEqual(diagnostics, [{"url":"https://walled.example/a","domain": "walled.example", "reason": "source_fetch_timeout"}])
+                self.assertEqual(pages, [])
+                if expected_diagnostics is not None:
+                    self.assertEqual(diagnostics, expected_diagnostics)
 
     def test_strict_gateway_failure_propagates_as_global_research_failure(self):
         def direct(url, _timeout):
@@ -478,19 +439,6 @@ class GatewayFallbackGuardTests(unittest.TestCase):
 
         boot.assert_not_called()
         self.assertEqual([page["title"] for page in pages], ["Direct"])
-
-    def test_gateway_fallback_output_is_empty_is_not_evidence(self):
-        def direct(url, _timeout):
-            raise TimeoutError("read timed out")
-
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess,
-            "run",
-            return_value=subprocess.CompletedProcess([], 0, "   ", ""),
-        ):
-            pages = alpha_radar.gather_evidence(["https://walled.example/a"])
-
-        self.assertEqual(pages, [])
 
     def test_gateway_fallback_has_bounded_timeout(self):
         captured = {}

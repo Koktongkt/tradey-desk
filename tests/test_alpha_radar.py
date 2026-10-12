@@ -180,6 +180,14 @@ class AlphaRadarTests(unittest.TestCase):
             ('distinct_discovery_lanes', None,
              ('broad US-equity catalysts','SEC and issuer disclosures','independent financial reporting',
               'undercovered sectors or smaller liquid companies','one to five candidates','at most five URLs total'), ()),
+            ('scout_reliability_guard_fragments', None,
+             ('confirmed article URL copied exactly from the web_search results',
+              'Never construct or guess','"candidates"','one to five candidates in ranked order',
+              'at least one confirmed article URL','focused retrieval stage',
+              'apply the final two-domain evidence gate',
+              'call web_search exactly four times in parallel with limit 10 each',
+              'Use exactly one tool-using turn','Do not extract pages'),
+             ('web_extract',)),
         )
         for label, config, required, forbidden in cases:
             with self.subTest(case=label):
@@ -365,35 +373,23 @@ class AlphaRadarTests(unittest.TestCase):
         )
         self.assertLessEqual(sum(len(page["text"]) for page in evidence),18_000)
 
-    def test_evidence_failure_code_localizes_legacy_domain_only_diagnostics(self):
-        self.assertEqual(
-            alpha_radar.evidence_failure_code(
-                [{"domain":"missing.example","reason":"source_fetch_timeout"}],
-                [{"domain":"other.example","reason":"stale_source"}],
-                fetched_count=2,
-                candidate_urls=["https://a.example/1","https://missing.example/2"],
-                fetched_urls=["https://a.example/1","https://other.example/3"],
-            ),
-            "research_source_retrieval_failed",
+    def test_evidence_failure_code_maps_diagnostics_to_typed_blockers(self):
+        cases = (
+            ('legacy_domain_only_diagnostics_localize_to_retrieval',
+             [{"domain":"missing.example","reason":"source_fetch_timeout"}],
+             [{"domain":"other.example","reason":"stale_source"}], 2,
+             ["https://a.example/1","https://missing.example/2"],
+             ["https://a.example/1","https://other.example/3"], "research_source_retrieval_failed"),
+            ('freshness_binding_failure_class', [], [{"reason":"source_freshness_unknown"}], 2,
+             None, None, "research_source_freshness_insufficient"),
+            ('retrieval_failure_class', [{"reason":"source_fetch_timeout"}], [], 1,
+             None, None, "research_source_retrieval_failed"),
+            ('no_evidence_class', [], [], 3, None, None, "research_evidence_insufficient"),
         )
-
-    def test_evidence_failure_code_reports_binding_failure_class(self):
-        self.assertEqual(
-            alpha_radar.evidence_failure_code(
-                [],[{"reason":"source_freshness_unknown"}],fetched_count=2
-            ),
-            "research_source_freshness_insufficient",
-        )
-        self.assertEqual(
-            alpha_radar.evidence_failure_code(
-                [{"reason":"source_fetch_timeout"}],[],fetched_count=1
-            ),
-            "research_source_retrieval_failed",
-        )
-        self.assertEqual(
-            alpha_radar.evidence_failure_code([],[],fetched_count=3),
-            "research_evidence_insufficient",
-        )
+        for label, during, after, fetched_count, candidate_urls, fetched_urls, expected in cases:
+            with self.subTest(case=label):
+                kwargs = {} if candidate_urls is None else {"candidate_urls": candidate_urls, "fetched_urls": fetched_urls}
+                self.assertEqual(alpha_radar.evidence_failure_code(during, after, fetched_count=fetched_count, **kwargs), expected)
 
     def test_fetch_source_extracts_article_and_structured_publication_time(self):
         cases = (
@@ -469,28 +465,40 @@ class AlphaRadarTests(unittest.TestCase):
     def test_filter_evidence_quality_and_freshness_diagnostics(self):
         midnight = alpha_radar.dt.datetime(2026,9,9,tzinfo=alpha_radar.dt.timezone.utc)
         noon = midnight.replace(hour=12)
+        hardening_now = alpha_radar.dt.datetime(2026,9,15,tzinfo=alpha_radar.dt.timezone.utc)
         cases = (
             ('explicitly_stale_articles', [
                 {'url':'https://old.example/story','title':'Old','text':_body('old event'),'published_at':'2025-08-28T14:57:00Z'},
                 {'url':'https://new.example/release','title':'New','text':_body('current event'),'published_at':'2026-09-02T20:05:00Z'},
-            ], {'now':midnight}, ['https://new.example/release'], 'old.example', 'https://old.example/story', 'stale_source'),
+            ], {'now':midnight}, ['https://new.example/release'],
+             [{'url':'https://old.example/story','domain':'old.example','reason':'stale_source'}]),
             ('exact_timedelta_boundary', [
                 {'url':'https://old.example/story','title':'Old','text':_body('event'),'published_at':(noon-alpha_radar.dt.timedelta(days=180,seconds=1)).isoformat()},
-            ], {'now':noon,'max_age_days':180}, [], 'old.example', 'https://old.example/story', 'stale_source'),
+            ], {'now':noon,'max_age_days':180}, [],
+             [{'url':'https://old.example/story','domain':'old.example','reason':'stale_source'}]),
             ('navigation_only_body', [
                 {'url':'https://ir.example/quarterly-results','title':'Quarterly Results','text':'Investor Menu Site Search Investor Email Alerts Subscribe Unsubscribe Privacy Notice','published_at':None},
-            ], {'now':midnight}, [], 'ir.example', 'https://ir.example/quarterly-results', 'article_body_missing'),
-            ('empty_body', [{'url':'https://empty.example/story','title':'','text':'','published_at':None}], {}, [], 'empty.example', 'https://empty.example/story', 'article_body_missing'),
-            ('title_only_page', [{'url':'https://title.example/story','title':'Quarterly results','text':'   ','published_at':'2026-09-08T15:00:00Z'}], {'now':midnight}, [], 'title.example', 'https://title.example/story', 'article_body_missing'),
+            ], {'now':midnight}, [],
+             [{'url':'https://ir.example/quarterly-results','domain':'ir.example','reason':'article_body_missing'}]),
+            ('empty_body', [{'url':'https://empty.example/story','title':'','text':'','published_at':None}], {}, [],
+             [{'url':'https://empty.example/story','domain':'empty.example','reason':'article_body_missing'}]),
+            ('title_only_page', [{'url':'https://title.example/story','title':'Quarterly results','text':'   ','published_at':'2026-09-08T15:00:00Z'}], {'now':midnight}, [],
+             [{'url':'https://title.example/story','domain':'title.example','reason':'article_body_missing'}]),
+            ('tiny_and_future_dated_bodies', [
+                {"url":"https://tiny.example/x","text":"ok","published_at":"2026-09-14T00:00:00Z"},
+                {"url":"https://future.example/x","text":_body("substantive ")+("evidence "*30),"published_at":"2026-09-17T00:00:00Z"},
+            ], {'now':hardening_now}, [],
+             [{"url":"https://tiny.example/x","domain":"tiny.example","reason":"article_body_missing"},
+              {"url":"https://future.example/x","domain":"future.example","reason":"source_freshness_unknown"}]),
         )
-        for label, pages, kwargs, expected_urls, domain, url, reason in cases:
+        for label, pages, kwargs, expected_urls, expected_diagnostics in cases:
             with self.subTest(case=label):
                 accepted, diagnostics = alpha_radar.filter_evidence(copy.deepcopy(pages), **kwargs)
                 if expected_urls:
                     self.assertEqual([page['url'] for page in accepted], expected_urls)
                 else:
                     self.assertEqual(accepted, [])
-                self.assertEqual(diagnostics, [{'url':url,'domain':domain,'reason':reason}])
+                self.assertEqual(diagnostics, expected_diagnostics)
         for published in (None, 'not-a-date', '2026-13-99T99:00:00Z', '2026-09-08T15:00:00'):
             with self.subTest(case='freshness_unknown', published=published):
                 accepted, diagnostics = alpha_radar.filter_evidence([
@@ -501,23 +509,28 @@ class AlphaRadarTests(unittest.TestCase):
 
 
     def test_gather_evidence_records_typed_fetch_failures(self):
-        diagnostics = []
+        cases = (
+            ('timeout_on_sibling_does_not_suppress_success', ["https://slow.example/a","https://ok.example/b"],
+             ["https://ok.example/b"],
+             [{"url":"https://slow.example/a","domain":"slow.example","reason":"source_fetch_timeout"}]),
+            ('retry_exhaustion_records_single_timeout', ["https://down.example/a"], [],
+             [{"url":"https://down.example/a","domain":"down.example","reason":"source_fetch_timeout"}]),
+        )
+        for label, urls, expected_page_urls, expected_diagnostics in cases:
+            with self.subTest(case=label):
+                diagnostics = []
 
-        def fetch(url, _timeout):
-            if "slow.example" in url:
-                raise TimeoutError("read timed out")
-            return {"url": url, "title": "Current", "text": _body("usable evidence"), "published_at": None}
+                def fetch(url, _timeout):
+                    if "ok.example" in url:
+                        return {"url": url, "title": "Current", "text": _body("usable evidence"), "published_at": None}
+                    raise TimeoutError("read timed out")
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
-            alpha_radar, "fetch_source_via_gateway", return_value=None
-        ):
-            pages = alpha_radar.gather_evidence(
-                ["https://slow.example/a", "https://ok.example/b"],
-                diagnostics=diagnostics,
-            )
-
-        self.assertEqual([page["url"] for page in pages], ["https://ok.example/b"])
-        self.assertEqual(diagnostics, [{"url":"https://slow.example/a","domain": "slow.example", "reason": "source_fetch_timeout"}])
+                with patch.object(alpha_radar, "fetch_source", side_effect=fetch), patch.object(
+                    alpha_radar, "fetch_source_via_gateway", return_value=None
+                ):
+                    pages = alpha_radar.gather_evidence(list(urls), diagnostics=diagnostics)
+                self.assertEqual([page["url"] for page in pages], expected_page_urls)
+                self.assertEqual(diagnostics, expected_diagnostics)
 
 
     def test_record_research_diagnostics_private_projection_and_stage(self):
@@ -641,16 +654,35 @@ class AlphaRadarTests(unittest.TestCase):
         append.assert_not_called()
         gather.assert_not_called()
 
-    def test_main_reports_scout_timeout_without_generic_fallback(self):
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"fresh_verified_candidate",return_value=None
-        ), patch.object(
-            alpha_radar,"live_research",side_effect=alpha_radar.ResearchFailure("research_scout_timeout")
-        ), contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc,3)
-        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_scout_timeout")
+    def test_main_reports_typed_research_failures(self):
+        persistable=_persistable_candidate(researched_at='2026-09-05T14:00:00Z')
+        cases = (
+            ('research_failure_scout_timeout',
+             {'live_research': {'side_effect': alpha_radar.ResearchFailure("research_scout_timeout")}},
+             (3, "SYSTEM_FAILURE research_scout_timeout")),
+            ('runtime_error_synthesis_timeout',
+             {'live_research': {'side_effect': RuntimeError("research_synthesis_timeout")}}, (3, None)),
+            ('candidate_persistence_failure',
+             {'live_research': {'return_value': persistable}, 'candidate_preflight': {'return_value': []},
+              'qualified': {'return_value': True}, 'append': {'side_effect': OSError("disk")}},
+             (3, "SYSTEM_FAILURE research_persistence_failure")),
+        )
+        for label, seams, (expected_rc, expected_output) in cases:
+            with self.subTest(case=label):
+                out=io.StringIO()
+                with contextlib.ExitStack() as stack:
+                    if label=="runtime_error_synthesis_timeout":
+                        stack.enter_context(tempfile.TemporaryDirectory())
+                        stack.enter_context(patch.object(alpha_radar,"ROOT",alpha_radar.ROOT))
+                    stack.enter_context(patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None))
+                    stack.enter_context(patch.object(alpha_radar,"fresh_verified_candidate",return_value=None))
+                    for name, options in seams.items():
+                        stack.enter_context(patch.object(alpha_radar,name,**options))
+                    stack.enter_context(contextlib.redirect_stdout(out))
+                    rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+                self.assertEqual(rc, expected_rc)
+                if expected_output is not None:
+                    self.assertEqual(out.getvalue().strip(), expected_output)
 
     def test_main_normalizes_synthesis_none_outcomes(self):
         cases = (
@@ -982,28 +1014,6 @@ class AlphaRadarTests(unittest.TestCase):
                 append.assert_not_called()
 
 
-    def test_main_types_candidate_persistence_failure(self):
-        candidate=_persistable_candidate(researched_at='2026-09-05T14:00:00Z')
-        out=io.StringIO()
-        with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
-            alpha_radar,"fresh_verified_candidate",return_value=None
-        ), patch.object(alpha_radar,"live_research",return_value=candidate), patch.object(
-            alpha_radar,"candidate_preflight",return_value=[]
-        ), patch.object(alpha_radar,"qualified",return_value=True), patch.object(
-            alpha_radar,"append",side_effect=OSError("disk")
-        ), contextlib.redirect_stdout(out):
-            rc=alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc,3)
-        self.assertEqual(out.getvalue().strip(),"SYSTEM_FAILURE research_persistence_failure")
-
-    def test_main_reports_typed_research_timeout(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", alpha_radar.ROOT), \
-             patch.object(alpha_radar, "reusable_fresh_candidate", return_value=None), \
-             patch.object(alpha_radar, "fresh_verified_candidate", return_value=None):
-            with patch.object(alpha_radar, "live_research", side_effect=RuntimeError("research_synthesis_timeout")):
-                rc = alpha_radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-        self.assertEqual(rc, 3)
-
     def test_main_does_not_append_to_candidates_on_failure(self):
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)):
             source_config = Path(__file__).resolve().parents[1] / "autonomy_config.json"
@@ -1037,11 +1047,6 @@ class AlphaRadarTests(unittest.TestCase):
             self.assertEqual(lookup.call_count, 2)
             self.assertEqual(rc, 0)
             self.assertEqual(candidates.read_text(), before)
-
-    def test_run_cycle_radar_runs_once_with_explicit_timeout(self):
-        source = (alpha_radar.ROOT / "run_cycle.py").read_text()
-        self.assertIn("timeout_seconds=540", source)
-        self.assertIn("attempts=1", source)
 
 
 class BundleRescueTests(unittest.TestCase):
@@ -1580,13 +1585,32 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         self.assertIn("web_search exactly three times in parallel",prompt)
         self.assertIn("retrieval targets, not quotas",prompt)
 
-    def test_parse_focused_retrieval_keeps_only_requested_symbols_and_distinct_domains(self):
-        raw=json.dumps({"candidates":[
-            {"symbol":"AAA","urls":["https://www.sec.gov/a","https://www.sec.gov/b","https://www.reuters.com/c"]},
-            {"symbol":"ZZZ","urls":["https://www.cnbc.com/x"]},
-        ]})
-        parsed=alpha_radar.parse_focused_retrieval(raw,{"AAA","BBB"},max_urls=9)
-        self.assertEqual(parsed,{"AAA":["https://www.sec.gov/a","https://www.reuters.com/c"]})
+    def test_parse_focused_retrieval_symbol_filtering_and_merge_contract(self):
+        cases = (
+            ('keeps_only_requested_symbols_with_distinct_domains',
+             json.dumps({"candidates":[
+                 {"symbol":"AAA","urls":["https://www.sec.gov/a","https://www.sec.gov/b","https://www.reuters.com/c"]},
+                 {"symbol":"ZZZ","urls":["https://www.cnbc.com/x"]}]}), {"AAA","BBB"}, 9),
+            ('merges_duplicate_symbols_without_starving_others',
+             json.dumps({"candidates":[
+                 {"symbol":"AAA","urls":["https://a.example/1","https://b.example/2"]},
+                 {"symbol":"AAA","urls":["https://c.example/3","https://d.example/4"]},
+                 {"symbol":"BBB","urls":["https://e.example/5","https://f.example/6"]}]}), {"AAA","BBB"}, 9),
+            ('retains_fourth_source_for_ranked_initial_selection',
+             json.dumps({"candidates":[
+                 {"symbol":"AAA","urls":["https://wire.example/1","https://www.businesswire.com/2","https://www.reuters.com/3"]},
+                 {"symbol":"AAA","urls":["https://www.sec.gov/4"]}]}), {"AAA"}, 15),
+        )
+        for label, raw, allowed, max_urls in cases:
+            with self.subTest(case=label):
+                parsed=alpha_radar.parse_focused_retrieval(raw,allowed,max_urls=max_urls)
+                if label.startswith('keeps_only'):
+                    self.assertEqual(parsed,{"AAA":["https://www.sec.gov/a","https://www.reuters.com/c"]})
+                elif label.startswith('merges'):
+                    self.assertEqual(len(parsed["AAA"]),4);self.assertEqual(len(parsed["BBB"]),2)
+                else:
+                    merged=alpha_radar.merge_candidate_urls(["https://scout.example/0"],parsed["AAA"],limit=3)
+                    self.assertEqual(merged,["https://scout.example/0","https://www.sec.gov/4","https://www.reuters.com/3"])
 
     def test_live_research_deduplicates_urls_in_first_seen_order_without_quadratic_comparisons(self):
         class CountedURL(str):
@@ -1638,6 +1662,18 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         self.assertEqual(score,56.25)
         self.assertEqual([call.args[0] for call in lookup.call_args_list],
                          [page["url"] for page in pages])
+
+    def test_evidence_freshness_uses_bundle_average_not_freshest_page(self):
+        now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
+        mixed=[
+            {"url":"https://a.example/1","published_at":"2026-09-15T00:00:00Z"},
+            {"url":"https://b.example/2","published_at":"2026-03-20T00:00:00Z"},
+        ]
+        fresh=[
+            {"url":"https://c.example/3","published_at":"2026-09-14T00:00:00Z"},
+            {"url":"https://d.example/4","published_at":"2026-09-14T00:00:00Z"},
+        ]
+        self.assertLess(alpha_radar._evidence_rank_score(mixed,now),alpha_radar._evidence_rank_score(fresh,now))
 
     def test_rerank_verified_strength_then_scout_order(self):
         cases = (
@@ -1711,17 +1747,22 @@ class RetrievalHardeningTests(unittest.TestCase):
         fallback.assert_not_called()
         self.assertEqual(diagnostics[0]["reason"],"source_fetch_failed")
 
-    def test_safe_redirect_handler_rejects_internal_redirect(self):
-        handler=alpha_radar.SafeRedirectHandler(resolver=lambda host,port,*a,**k:[(2,1,6,"",("127.0.0.1",port))])
-        with self.assertRaises(ValueError):
-            handler.redirect_request(None,None,302,"Found",{},"http://localhost/private")
-
-    def test_safe_redirect_handler_rejects_cross_registered_domain_hop(self):
-        public=lambda host,port,*a,**k:[(2,1,6,"",("93.184.216.34",port))]
-        handler=alpha_radar.SafeRedirectHandler(resolver=public)
-        req=__import__('urllib.request',fromlist=['Request']).Request("https://www.reuters.com/story")
-        with self.assertRaises(alpha_radar.UnsafeURLTarget):
-            handler.redirect_request(req,None,302,"Found",{},"https://www.businesswire.com/story")
+    def test_safe_redirect_handler_rejects_internal_and_cross_domain_hops(self):
+        cases = (
+            ('internal_redirect_target',
+             lambda host,port,*a,**k:[(2,1,6,"",("127.0.0.1",port))],
+             None, "http://localhost/private", ValueError),
+            ('cross_registered_domain_hop',
+             lambda host,port,*a,**k:[(2,1,6,"",("93.184.216.34",port))],
+             "https://www.reuters.com/story", "https://www.businesswire.com/story",
+             alpha_radar.UnsafeURLTarget),
+        )
+        for label, resolver, request_url, new_url, expected in cases:
+            with self.subTest(case=label):
+                handler=alpha_radar.SafeRedirectHandler(resolver=resolver)
+                req=None if request_url is None else __import__('urllib.request',fromlist=['Request']).Request(request_url)
+                with self.assertRaises(expected):
+                    handler.redirect_request(req,None,302,"Found",{},new_url)
 
     def test_direct_fetch_rejects_cross_publisher_redirect_without_gateway_laundering(self):
         requested="https://www.reuters.com/story"
@@ -1750,34 +1791,6 @@ class RetrievalHardeningTests(unittest.TestCase):
         ):
             page=alpha_radar.fetch_source("https://reuters.com/story")
         self.assertEqual(page["url"],"https://reuters.com/story")
-
-    def test_filter_evidence_rejects_tiny_and_future_dated_bodies(self):
-        now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
-        accepted,diag=alpha_radar.filter_evidence([
-            {"url":"https://tiny.example/x","text":"ok","published_at":"2026-09-14T00:00:00Z"},
-            {"url":"https://future.example/x","text":_body("substantive ")+("evidence "*30),"published_at":"2026-09-17T00:00:00Z"},
-        ],now=now)
-        self.assertEqual(accepted,[])
-        self.assertEqual([d["reason"] for d in diag],["article_body_missing","source_freshness_unknown"])
-
-    def test_focused_parser_merges_duplicate_symbols_without_starving_others(self):
-        raw=json.dumps({"candidates":[
-            {"symbol":"AAA","urls":["https://a.example/1","https://b.example/2"]},
-            {"symbol":"AAA","urls":["https://c.example/3","https://d.example/4"]},
-            {"symbol":"BBB","urls":["https://e.example/5","https://f.example/6"]},
-        ]})
-        parsed=alpha_radar.parse_focused_retrieval(raw,{"AAA","BBB"},max_urls=9)
-        self.assertEqual(len(parsed["AAA"]),4)
-        self.assertEqual(len(parsed["BBB"]),2)
-
-    def test_focused_parser_retains_fourth_source_for_ranked_initial_selection(self):
-        raw=json.dumps({"candidates":[
-            {"symbol":"AAA","urls":["https://wire.example/1","https://www.businesswire.com/2","https://www.reuters.com/3"]},
-            {"symbol":"AAA","urls":["https://www.sec.gov/4"]},
-        ]})
-        focused=alpha_radar.parse_focused_retrieval(raw,{"AAA"},max_urls=15)
-        merged=alpha_radar.merge_candidate_urls(["https://scout.example/0"],focused["AAA"],limit=3)
-        self.assertEqual(merged,["https://scout.example/0","https://www.sec.gov/4","https://www.reuters.com/3"])
 
     def test_merge_initial_urls_preserves_scout_and_bounds_diverse_intake(self):
         cases = (
@@ -1855,18 +1868,6 @@ class RetrievalHardeningTests(unittest.TestCase):
                 alpha_radar.live_research({"focused_retrieval_enabled":True})
         history.assert_called_once()
         self.assertEqual(gathered.call_args.args[0][:3],[scout,independent,wire])
-
-    def test_evidence_freshness_uses_bundle_average_not_freshest_page(self):
-        now=__import__('datetime').datetime(2026,9,15,tzinfo=__import__('datetime').timezone.utc)
-        mixed=[
-            {"url":"https://a.example/1","published_at":"2026-09-15T00:00:00Z"},
-            {"url":"https://b.example/2","published_at":"2026-03-20T00:00:00Z"},
-        ]
-        fresh=[
-            {"url":"https://c.example/3","published_at":"2026-09-14T00:00:00Z"},
-            {"url":"https://d.example/4","published_at":"2026-09-14T00:00:00Z"},
-        ]
-        self.assertLess(alpha_radar._evidence_rank_score(mixed,now),alpha_radar._evidence_rank_score(fresh,now))
 
 
 if __name__ == "__main__":

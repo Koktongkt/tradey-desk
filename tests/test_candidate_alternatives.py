@@ -201,18 +201,43 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(market.call_count,2)
             self.assertFalse((root/'candidates.jsonl').exists())
 
-    def test_none_advances_to_second_candidate_and_persists_once(self):
-        with self.research_fixture([{'status':'none','none_reason':'no_fresh_setup'},self.candidate()]) as (_,root,calls,fetch,market):
-            output=io.StringIO()
-            with contextlib.redirect_stdout(output):
-                rc=radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-            self.assertEqual(output.getvalue().strip(),'DECISION candidate_qualified BBB')
-            self.assertEqual(rc,0)
-            rows=[json.loads(line) for line in (root/'candidates.jsonl').read_text().splitlines()]
-            self.assertEqual([r['symbol'] for r in rows],['BBB'])
-            self.assertEqual(calls.call_count,3)
-            self.assertEqual(fetch.call_count,1)
-            self.assertEqual(market.call_count,1)
+    def test_rejected_or_none_first_candidate_advances_to_next_qualified(self):
+        prices={'price':100,'spy_price':500}
+        cases = (
+            ('synthesis_none_advances_and_persists_once', lambda:[{'status':'none','none_reason':'no_fresh_setup'},self.candidate()], None, 'main',
+             {'rows_symbols':['BBB'],'fetch_count':1,'market_count':1}),
+            ('preflight_rejection_advances', lambda:[self.candidate('AAA',earnings_event_at=None), self.candidate()], None, 'main',
+             {'rows_len':1}),
+            ('malformed_sources_advance_without_market_lookup', lambda:[self.candidate('AAA',sources=None), self.candidate()], None, 'main',
+             {'market_called_with':'BBB'}),
+            ('symbol_local_market_failure_advances', lambda:[self.candidate('AAA'), self.candidate()],
+             [ValueError('invalid_symbol'), prices], 'main', {}),
+            ('direct_live_research_returns_only_fully_qualified', lambda:[self.candidate('AAA',earnings_event_at=None), self.candidate()], None, 'direct',
+             {}),
+        )
+        for label, responses, market_side, mode, checks in cases:
+            with self.subTest(case=label), self.research_fixture(responses()) as (cfg,root,calls,fetch,market):
+                if market_side is not None:
+                    market.side_effect=list(market_side)
+                if mode=='main':
+                    self.assertEqual(self.run_main(),(0,'DECISION candidate_qualified BBB'))
+                    self.assertEqual(calls.call_count,3)
+                    if 'rows_symbols' in checks or 'rows_len' in checks:
+                        rows=[json.loads(line)['symbol'] for line in (root/'candidates.jsonl').read_text().splitlines()]
+                        if 'rows_symbols' in checks:
+                            self.assertEqual(rows,checks['rows_symbols'])
+                        if 'rows_len' in checks:
+                            self.assertEqual(len(rows),checks['rows_len'])
+                    if 'fetch_count' in checks:
+                        self.assertEqual(fetch.call_count,checks['fetch_count'])
+                    if 'market_count' in checks:
+                        self.assertEqual(market.call_count,checks['market_count'])
+                    if 'market_called_with' in checks:
+                        market.assert_called_once_with(checks['market_called_with'])
+                else:
+                    self.assertEqual(radar.live_research(cfg)['symbol'],'BBB')
+                    self.assertEqual(calls.call_count,3)
+                    self.assertFalse((root/'candidates.jsonl').exists())
 
     def test_shared_enrichment_active_budget_stops_next_candidate_before_network(self):
         with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,_,market):
@@ -227,15 +252,6 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,'research_enrichment_timeout')
             self.assertEqual(market.call_count,1)
             self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_preflight_rejection_advances_to_qualified_alternative(self):
-        with self.research_fixture([self.candidate('AAA',earnings_event_at=None),self.candidate()]) as (_,root,calls,_,market):
-            output=io.StringIO()
-            with contextlib.redirect_stdout(output):
-                rc=radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-            self.assertEqual((rc,output.getvalue().strip()),(0,'DECISION candidate_qualified BBB'))
-            self.assertEqual(calls.call_count,3)
-            self.assertEqual(len((root/'candidates.jsonl').read_text().splitlines()),1)
 
     def test_at_most_three_distinct_symbols_are_attempted(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
@@ -261,26 +277,6 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,'research_synthesis_timeout')
             self.assertEqual(calls.call_count,2)
 
-    def test_market_persistence_fault_is_never_renamed_or_reused(self):
-        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market), patch.object(radar,'fresh_verified_candidate',return_value={'symbol':'OLD'}) as reuse:
-            market.side_effect=radar.DurableAppendError('private persistence fault')
-            output=io.StringIO()
-            with contextlib.redirect_stdout(output):
-                rc=radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-            self.assertEqual((rc,output.getvalue().strip()),(3,'SYSTEM_FAILURE research_persistence_failure'))
-            self.assertEqual(calls.call_count,2)
-            reuse.assert_not_called()
-            self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_symbol_local_market_failure_advances_but_provider_fault_stops(self):
-        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market):
-            market.side_effect=[ValueError('invalid_symbol'),{'price':100,'spy_price':500}]
-            output=io.StringIO()
-            with contextlib.redirect_stdout(output):
-                rc=radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
-            self.assertEqual((rc,output.getvalue().strip()),(0,'DECISION candidate_qualified BBB'))
-            self.assertEqual(calls.call_count,3)
-
     def run_main(self):
         output=io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -305,42 +301,47 @@ class CandidateAlternativesTests(unittest.TestCase):
             for check in checks:check.assert_called_once()
             self.assertEqual(calls.call_count,2)
 
-    def test_global_synthesis_faults_stop_without_candidate_or_new_discovery(self):
-        failures=[(subprocess.TimeoutExpired('synthesis',120),'research_synthesis_timeout'),
-                  (subprocess.CompletedProcess([],1,'','private provider error'),'research_synthesis_unavailable'),
-                  (subprocess.CompletedProcess([],0,'not JSON',''),'research_parse_failure')]
-        for fault,reason in failures:
-            with self.subTest(reason=reason), self.research_fixture([fault,self.candidate()]) as (_,root,calls,fetch,market):
-                self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
-                self.assertEqual(calls.call_count,2);fetch.assert_called_once();market.assert_not_called()
-                self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_global_market_faults_stop_without_alternatives(self):
-        for fault in (RuntimeError('massive_credentials_unavailable'),RuntimeError('massive_synchronized_prices_unavailable'),ValueError('unrecognized adapter failure'),OSError('network unavailable')):
-            with self.subTest(fault=type(fault)), self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market):
-                market.side_effect=fault
-                self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_market_data_unavailable'))
-                self.assertEqual(calls.call_count,2)
-                self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_trickling_market_response_deadline_is_typed_and_cannot_append(self):
+    def test_global_faults_stop_without_candidate_or_new_discovery(self):
         from research_budget import ResearchDeadlineExceeded
-        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market):
-            market.side_effect=ResearchDeadlineExceeded('stream deadline')
-            self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_enrichment_timeout'))
-            self.assertEqual(calls.call_count,2)
-            self.assertFalse((root/'candidates.jsonl').exists())
+        cases = (
+            ('synthesis_timeout', 'responses', subprocess.TimeoutExpired('synthesis',120), 'SYSTEM_FAILURE research_synthesis_timeout'),
+            ('synthesis_unavailable', 'responses', subprocess.CompletedProcess([],1,'','private provider error'), 'SYSTEM_FAILURE research_synthesis_unavailable'),
+            ('synthesis_parse_failure', 'responses', subprocess.CompletedProcess([],0,'not JSON',''), 'SYSTEM_FAILURE research_parse_failure'),
+            ('market_credentials_unavailable', 'market', RuntimeError('massive_credentials_unavailable'), 'SYSTEM_FAILURE research_market_data_unavailable'),
+            ('market_prices_unavailable', 'market', RuntimeError('massive_synchronized_prices_unavailable'), 'SYSTEM_FAILURE research_market_data_unavailable'),
+            ('market_adapter_fault', 'market', ValueError('unrecognized adapter failure'), 'SYSTEM_FAILURE research_market_data_unavailable'),
+            ('market_network_fault', 'market', OSError('network unavailable'), 'SYSTEM_FAILURE research_market_data_unavailable'),
+            ('market_trickling_deadline', 'market', ResearchDeadlineExceeded('stream deadline'), 'SYSTEM_FAILURE research_enrichment_timeout'),
+        )
+        for label, seam, fault, expected_output in cases:
+            with self.subTest(case=label):
+                if seam == 'responses':
+                    with self.research_fixture([fault,self.candidate()]) as (_,root,calls,fetch,market):
+                        self.assertEqual(self.run_main(),(3,expected_output))
+                        self.assertEqual(calls.call_count,2);fetch.assert_called_once();market.assert_not_called()
+                        self.assertFalse((root/'candidates.jsonl').exists())
+                else:
+                    with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market):
+                        market.side_effect=fault
+                        self.assertEqual(self.run_main(),(3,expected_output))
+                        self.assertEqual(calls.call_count,2)
+                        self.assertFalse((root/'candidates.jsonl').exists())
 
-    def test_earnings_persistence_fault_stops_without_fallback(self):
-        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market), patch.object(radar,'resolve_candidate_earnings',side_effect=radar.DurableAppendError('private')):
-            self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_persistence_failure'))
-            self.assertEqual(calls.call_count,2);market.assert_not_called()
-            self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_candidate_append_failure_is_never_retried(self):
-        with self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,_), patch.object(radar,'append',side_effect=radar.DurableAppendError('private')) as append:
-            self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_persistence_failure'))
-            self.assertEqual(calls.call_count,2);append.assert_called_once()
+    def test_persistence_faults_surface_typed_failure_without_retry_or_reuse(self):
+        cases = (('earnings', 'resolve_candidate_earnings', 'private'),
+                 ('append', 'append', 'private'),
+                 ('market', 'synchronized_completed_close_prices', 'private persistence fault'))
+        for label, seam, message in cases:
+            with self.subTest(case=label), self.research_fixture([self.candidate('AAA'),self.candidate()]) as (_,root,calls,_,market), contextlib.ExitStack() as stack:
+                fault=stack.enter_context(patch.object(radar,seam,side_effect=radar.DurableAppendError(message)))
+                if label=='market':
+                    reuse=stack.enter_context(patch.object(radar,'fresh_verified_candidate',return_value={'symbol':'OLD'}))
+                self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_persistence_failure'))
+                self.assertEqual(calls.call_count,2)
+                if label=='earnings':market.assert_not_called()
+                if label=='append':fault.assert_called_once()
+                else:self.assertFalse((root/'candidates.jsonl').exists())
+                if label=='market':reuse.assert_not_called()
 
     def test_exhaustion_preserves_single_attempt_downstream_blocker(self):
         cases=[(self.candidate('AAA',earnings_event_at=None),(2,'BLOCKER earnings_unknown')),
@@ -362,57 +363,41 @@ class CandidateAlternativesTests(unittest.TestCase):
             calls.assert_not_called();verify.assert_not_called()
             self.assertEqual(len((root/'candidates.jsonl').read_text().splitlines()),1)
 
-    def test_direct_live_research_also_returns_only_fully_qualified_candidate(self):
-        with self.research_fixture([self.candidate('AAA',earnings_event_at=None),self.candidate()]) as (cfg,root,calls,_,_):
-            candidate=radar.live_research(cfg)
-            self.assertEqual(candidate['symbol'],'BBB')
-            self.assertEqual(calls.call_count,3)
-            self.assertFalse((root/'candidates.jsonl').exists())
-
-    def test_discovery_parser_defaults_share_the_five_url_budget(self):
+    def test_discovery_budget_caps_five_candidates_and_five_urls_at_both_parser_entries(self):
         raw={'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event',
                             'urls':[f'https://source{i}.example/a' for i in range(6)]}]}
-        text=json.dumps(raw)
-        self.assertEqual(radar.extract_scout_candidates(text),[])
-        self.assertEqual(radar.scout_parse_result(text)[0],[])
+        with self.subTest(case='six_url_candidate_rejected_by_both_parser_entries'):
+            text=json.dumps(raw)
+            self.assertEqual(radar.extract_scout_candidates(text),[])
+            self.assertEqual(radar.scout_parse_result(text)[0],[])
+        with self.subTest(case='six_candidates_ranked_to_five_with_focused_budget'):
+            candidates=[{'symbol':s,'catalyst':'dated change','event_date':'2026-09-15',
+                         'urls':[f'https://{s.lower()}.example/story']} for s in ('AAA','BBB','CCC','DDD','EEE','FFF')]
+            parsed, diagnostic=radar.scout_parse_result(json.dumps({'candidates':candidates}))
+            self.assertEqual(len(parsed),5)
+            self.assertEqual(diagnostic['parsed_candidate_count'],5)
+            self.assertEqual(diagnostic['raw_candidate_count'],6)
+            targets=json.loads(radar.focused_retrieval_prompt(parsed).split('TARGETS:\n')[1])
+            self.assertEqual(len(targets),5)
+            output={'candidates':[{'symbol':c['symbol'],'urls':[f'https://{d}.example/{c["symbol"]}' for d in ('one','two','three','four')]} for c in parsed]}
+            focused=radar.parse_focused_retrieval(json.dumps(output),{c['symbol'] for c in parsed})
+            self.assertEqual([len(focused[c['symbol']]) for c in parsed],[3]*5)
+            self.assertIn('up to five',radar.discovery_prompt({'max_position_usd':500}))
+            self.assertIn('up to fifteen URLs total',radar.focused_retrieval_prompt(parsed))
 
-    def test_focused_provider_failure_stops_before_rescue_or_fetch(self):
-        with self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue:
-            # Exercise the real focused stage rather than the fixture's URL map.
-            with patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
-                calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),
-                                   subprocess.CompletedProcess([],1,'','private provider error')]
-                self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE research_focused_retrieval_unavailable'))
-            self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()
-
-    def test_focused_timeout_or_io_fault_is_not_a_thin_candidate(self):
-        for fault,reason in [(subprocess.TimeoutExpired('focused',240),'research_focused_retrieval_timeout'),
-                             (OSError('private'),'research_focused_retrieval_unavailable'),
-                             (radar.DurableAppendError('private'),'research_persistence_failure')]:
-            with self.subTest(reason=reason), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
+    def test_focused_stage_faults_stop_before_rescue_or_fetch(self):
+        faults=[('provider_exit_1',subprocess.CompletedProcess([],1,'','private provider error'),'research_focused_retrieval_unavailable'),
+                ('timeout',subprocess.TimeoutExpired('focused',240),'research_focused_retrieval_timeout'),
+                ('io_error',OSError('private'),'research_focused_retrieval_unavailable'),
+                ('durable_append_error',radar.DurableAppendError('private'),'research_persistence_failure')]
+        for label, fault, reason in faults:
+            with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
                 calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
                 self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()
 
     real_focused_retrieval=staticmethod(radar.focused_retrieval)
 
-    def test_malformed_candidate_sources_advance_without_market_lookup(self):
-        with self.research_fixture([self.candidate('AAA',sources=None),self.candidate()]) as (_,root,calls,_,market):
-            self.assertEqual(self.run_main(),(0,'DECISION candidate_qualified BBB'))
-            self.assertEqual(calls.call_count,3)
-            market.assert_called_once_with('BBB')
 
-    def test_five_discovery_candidates_reach_focused_retrieval(self):
-        candidates=[{'symbol':s,'catalyst':'dated change','event_date':'2026-09-15',
-                     'urls':[f'https://{s.lower()}.example/story']} for s in ('AAA','BBB','CCC','DDD','EEE','FFF')]
-        parsed, diagnostic=radar.scout_parse_result(json.dumps({'candidates':candidates}))
-        self.assertEqual(len(parsed),5)
-        self.assertEqual(diagnostic['parsed_candidate_count'],5)
-        self.assertEqual(diagnostic['raw_candidate_count'],6)
-        targets=json.loads(radar.focused_retrieval_prompt(parsed).split('TARGETS:\n')[1])
-        self.assertEqual(len(targets),5)
-        output={'candidates':[{'symbol':c['symbol'],'urls':[f'https://{d}.example/{c["symbol"]}' for d in ('one','two','three','four')]} for c in parsed]}
-        focused=radar.parse_focused_retrieval(json.dumps(output),{c['symbol'] for c in parsed})
-        self.assertEqual([len(focused[c['symbol']]) for c in parsed],[3]*5)
-        self.assertIn('up to five',radar.discovery_prompt({'max_position_usd':500}))
-        self.assertIn('up to fifteen URLs total',radar.focused_retrieval_prompt(parsed))
+if __name__ == "__main__":
+    unittest.main()
