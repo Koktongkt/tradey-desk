@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import autotrader
@@ -62,6 +63,112 @@ class ManagedReconciliationTests(unittest.TestCase):
                            qty='3', filled_qty='0', status='new', limit_price='162.79',
                            time_in_force='gtc', legs=[target, stop])
         self.open_orders = [copy.deepcopy(self.parent)]
+
+    def prepare_legacy_failure(self):
+        self.prepare_pending()
+        self.open_orders = []
+        (self.root / 'private/order_intents.jsonl').write_text('')
+        proposed: dict[str, Any] = dict(timestamp='2026-10-08T15:00:00Z', status='proposed',
+                        client_order_id='parent', parent_client_order_id='parent',
+                        symbol='ZS', action='BUY', quantity=3, order_type='limit',
+                        limit_price=162.79, evidence_id='evidence-a')
+        failed = dict(proposed, status='failed', reason='broker_mcp_failure')
+        self.write_legacy_rows([proposed, failed])
+        return proposed, failed
+
+    def write_legacy_rows(self, rows):
+        (self.root / 'order_ledger.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+
+    def test_legacy_never_submitted_failure_is_healthy_without_history_rewrite(self):
+        import managed_reconciliation as m
+        self.prepare_legacy_failure()
+        before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+        for verify_only in (False, True):
+            with self.subTest(verify_only=verify_only):
+                written, summary = m.reconcile_detailed(self.root, self.broker, verify_only=verify_only)
+                self.assertEqual(written, [])
+                self.assertTrue(summary['verified'])
+                self.assertEqual(summary['pending'], [])
+                self.assertEqual(self.calls[-1][1], {'client_order_ids': []})
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
+    def test_failed_rows_with_submission_or_intent_evidence_fail_before_broker_reads(self):
+        import managed_reconciliation as m
+        cases = ('intent', 'journal', 'registry', 'submission_started', 'submission_unknown',
+                 'placed', 'new', 'filled', 'closed', 'canceled', 'later_submission')
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                proposed, failed = self.prepare_legacy_failure()
+                if case == 'intent':
+                    self.write('private/order_intents.jsonl', {'client_order_id': 'parent', 'plan': self.plan})
+                elif case == 'journal':
+                    self.write('trade_journal.jsonl', {'parent_client_order_id': 'parent', 'action': 'BUY',
+                                                      'symbol': 'ZS', 'quantity': 3, 'status': 'filled'})
+                elif case == 'registry':
+                    self.write('private/protection_orders.jsonl', {'parent_client_order_id': 'parent'})
+                elif case == 'later_submission':
+                    self.write_legacy_rows([proposed, failed, dict(proposed, status='submission_started')])
+                else:
+                    self.write_legacy_rows([proposed, dict(proposed, status=case), failed])
+                before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+                for verify_only in (False, True):
+                    with self.assertRaises(m.ReconciliationBlocked):
+                        m.reconcile_detailed(self.root, self.broker, verify_only=verify_only)
+                self.assertEqual(self.calls, [])
+                self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
+    def test_malformed_failed_history_cannot_be_rescued_by_later_valid_status(self):
+        import managed_reconciliation as m
+        cases = ('bare', 'no_proposal', 'wrong_reason', 'wrong_identity', 'invalid_symbol',
+                 'invalid_quantity', 'invalid_price', 'filled_qty', 'filled_at',
+                 'broker_order_id', 'parent_mismatch', 'missing_ref', 'invalid_ref', 'unhashable_failed_ref')
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                proposed, failed = self.prepare_legacy_failure()
+                rows = [proposed, failed]
+                if case == 'bare':
+                    rows = [{'status': 'failed', 'client_order_id': 'parent'}]
+                elif case == 'no_proposal':
+                    rows = [failed]
+                elif case == 'wrong_reason':
+                    failed['reason'] = 'arbitrary_failure'
+                elif case == 'wrong_identity':
+                    failed['evidence_id'] = 'different'
+                elif case == 'unhashable_failed_ref':
+                    failed['client_order_id'] = []
+                else:
+                    field, value = {
+                        'invalid_symbol': ('symbol', 'bad symbol'),
+                        'invalid_quantity': ('quantity', -1), 'invalid_price': ('limit_price', 'NaN'),
+                        'filled_qty': ('filled_qty', '1'), 'filled_at': ('filled_at', '2026-10-08T15:00:00Z'),
+                        'broker_order_id': ('broker_order_id', 'unexpected'),
+                        'parent_mismatch': ('parent_client_order_id', 'different'),
+                        'missing_ref': ('client_order_id', None), 'invalid_ref': ('client_order_id', 'bad ref'),
+                    }[case]
+                    proposed[field] = failed[field] = value
+                rows.append(dict(proposed, status='rejected'))
+                self.write_legacy_rows(rows)
+                with self.assertRaises(m.ReconciliationBlocked):
+                    m.reconcile_detailed(self.root, self.broker)
+                self.assertEqual(self.calls, [])
+
+    def test_legacy_failure_does_not_release_an_unrelated_pending_reservation(self):
+        import managed_reconciliation as m
+        self.prepare_pending()
+        _, failed = self.prepare_legacy_failure()
+        proposed = dict(failed, status='proposed')
+        proposed.pop('reason')
+        proposed['client_order_id'] = proposed['parent_client_order_id'] = 'never-submitted'
+        failed = dict(proposed, status='failed', reason='broker_mcp_failure')
+        # Restore a real separate pending obligation and exact broker proof.
+        self.prepare_pending()
+        self.write_legacy_rows([proposed, failed, {'client_order_id': 'parent', 'status': 'new'}])
+        _, summary = m.reconcile_detailed(self.root, self.broker)
+        self.assertEqual([p['client_order_id'] for p in summary['pending']], ['parent'])
+        self.assertEqual(summary['pending'][0]['remaining_notional'], '488.37')
+        self.assertEqual(self.calls[-1][1], {'client_order_ids': ['parent']})
 
     def test_known_unfilled_bracket_is_verified_without_journaling(self):
         self.prepare_pending()

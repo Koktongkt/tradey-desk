@@ -22,13 +22,31 @@ def _group_run(command, *, input, timeout, **kwargs):
     options = {key: kwargs.pop(key) for key in ('cwd', 'env') if key in kwargs}
     if kwargs:
         raise TypeError('unsupported broker launch options')
-    request = json.dumps(dict(command=command, input=input, timeout=timeout, options=options))
-    process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('broker_supervisor.py'))],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, close_fds=True, start_new_session=True)
+    # Normalize only documented subprocess path fields, never arbitrary data.
+    if isinstance(options.get('cwd'), os.PathLike):
+        options['cwd'] = os.fsdecode(os.fspath(options['cwd']))
+    wire_command = [os.fsdecode(os.fspath(arg)) if isinstance(arg, os.PathLike) else arg
+                    for arg in command]
+    request: dict[str, object] = dict(command=wire_command, input=input, timeout=timeout, options=options)
+    import entry_state
+    lock_fds = tuple(getattr(entry_state._local, 'held', {}).values())
+    # A pidfd observes the exact caller lifetime, without PID-reuse polling.
+    caller_fd = os.pidfd_open(os.getpid())
+    request['caller_fd'] = caller_fd
+    try:
+        # Serialize once, before spawning; arbitrary data is not stringified.
+        serialized_request = json.dumps(request)
+        process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('broker_supervisor.py'))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, close_fds=True, start_new_session=True,
+            pass_fds=(caller_fd, *lock_fds))
+    finally:
+        os.close(caller_fd)
+    # Only the custodian inherits existing entry-lock open descriptions. Caller
+    # SIGKILL cannot release them while its broker descendants retain authority.
     try:
         try:
-            stdout, stderr = process.communicate(request, timeout=timeout + 1)
+            stdout, stderr = process.communicate(serialized_request, timeout=timeout + 1)
         except BaseException:
             # Do not kill/reap supervisor first: adopted children need its reaper.
             process.send_signal(signal.SIGTERM)

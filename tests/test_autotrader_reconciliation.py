@@ -236,6 +236,96 @@ class RunIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("TRADE SELL 3 ZS @ 184.44", out)
 
+    def execution_failure(self, failure_operation="review", fail_intent_write: bool | str = False):
+        """Exercise the real execution exception handler with offline authority seams."""
+        plan = {"action": "BUY", "symbol": "AAPL", "quantity": 2,
+                "order_type": "limit", "limit_price": 100, "stop": 95,
+                "target": 110, "proposal_hash": "proposal-a"}
+        snapshot = {"positions": [], "open_orders": [], "captured_at": "2026-09-16T14:00:00Z"}
+        (self.root / "private/broker_baseline.json").write_text(json.dumps({"preexisting_symbols": []}))
+        calls = []
+        def bridge(operation, payload):
+            calls.append(operation)
+            if operation == failure_operation:
+                raise RuntimeError("offline injected failure")
+            return copy.deepcopy(snapshot)
+        real_append = autotrader.append_jsonl
+        def append(path, row):
+            if fail_intent_write and path.name == "order_intents.jsonl":
+                # A durable append can succeed before its acknowledgement fails.
+                if fail_intent_write != "before":
+                    real_append(path, row)
+                raise OSError("offline lost write acknowledgement")
+            return real_append(path, row)
+        with contextlib.ExitStack() as stack:
+            for name, value in {
+                "reconcile_pending_orders": [], "reconcile_managed_exits": [],
+                "reconcile_managed_protection": [], "research_age_minutes": 0,
+                "research_acceptable": True, "independent_reviews": [],
+                "build_canonical_proposal": (plan, []),
+                "aggregate_proposal_reviews": {"approved": True, "order": plan},
+                "pre_review_validation": ([], {}), "post_review_validation": ([], {}),
+                "broker_review_validation": ([], {}),
+            }.items():
+                stack.enter_context(patch.object(autotrader, name, return_value=value))
+            stack.enter_context(patch.object(autotrader, "_broker_bridge", side_effect=bridge))
+            stack.enter_context(patch.object(autotrader, "append_jsonl", side_effect=append))
+            code, out = self.execute(None)
+        self.assertEqual(code, 4, out)
+        self.assertIn("SYSTEM_FAILURE broker_mcp_failure", out)
+        return autotrader.read_jsonl(self.root / "order_ledger.jsonl"), calls
+
+    def test_pre_submission_exception_is_terminal_and_next_reconciliation_is_healthy(self):
+        rows, calls = self.execution_failure()
+        self.assertEqual([row["status"] for row in rows], ["proposed", "rejected"])
+        self.assertNotIn("place", calls)
+        self.assertEqual(autotrader.read_jsonl(self.root / "private/order_intents.jsonl"), [])
+        self.assertEqual(autotrader._daily_order_count(self.root / "order_ledger.jsonl"), 0)
+        before = (self.root / "order_ledger.jsonl").read_bytes()
+        broker_calls = []
+        def broker(operation, payload):
+            broker_calls.append((operation, payload))
+            return {"orders": [], "positions": [], "open_orders": []}
+        _, summary = managed_reconciliation.reconcile_detailed(self.root, broker)
+        self.assertTrue(summary["verified"])
+        self.assertEqual(summary["pending"], [])
+        self.assertEqual(broker_calls, [("reconciliation_snapshot", {"client_order_ids": []})])
+        self.assertEqual(before, (self.root / "order_ledger.jsonl").read_bytes())
+
+    def test_intent_append_acknowledgement_failure_keeps_submission_unknown(self):
+        rows, calls = self.execution_failure(failure_operation="unused", fail_intent_write=True)
+        self.assertEqual(rows[-1]["status"], "submission_unknown")
+        intents = autotrader.read_jsonl(self.root / "private/order_intents.jsonl")
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(autotrader.pending_order_intents(rows, intents), intents)
+        self.assertEqual(autotrader._daily_order_count(self.root / "order_ledger.jsonl"), 1)
+        self.assertNotIn("place", calls)
+        def broker(operation, payload):
+            self.assertEqual(payload["client_order_ids"], [intents[0]["client_order_id"]])
+            raise RuntimeError("broker read unavailable")
+        with self.assertRaisesRegex(RuntimeError, "broker read unavailable"):
+            managed_reconciliation.reconcile_detailed(self.root, broker)
+
+    def test_intent_append_failure_before_write_does_not_release_obligation(self):
+        rows, calls = self.execution_failure(failure_operation="unused", fail_intent_write="before")
+        self.assertEqual(rows[-1]["status"], "submission_unknown")
+        self.assertEqual(autotrader.read_jsonl(self.root / "private/order_intents.jsonl"), [])
+        self.assertEqual(autotrader._daily_order_count(self.root / "order_ledger.jsonl"), 1)
+        self.assertNotIn("place", calls)
+        with self.assertRaisesRegex(managed_reconciliation.ReconciliationBlocked, "managed_pending_entry_missing"):
+            managed_reconciliation.reconcile_detailed(self.root,
+                lambda *args: self.fail("missing intent must block before broker calls"))
+
+    def test_place_exception_retains_submission_obligation(self):
+        rows, calls = self.execution_failure(failure_operation="place")
+        self.assertEqual([r['status'] for r in rows],
+                         ['proposed', 'submission_started', 'submission_unknown'])
+        intents = autotrader.read_jsonl(self.root / "private/order_intents.jsonl")
+        self.assertEqual(autotrader.pending_order_intents(rows, intents), intents)
+        self.assertEqual(autotrader._daily_order_count(self.root / "order_ledger.jsonl"), 1)
+        self.assertIn("place", calls)
+        self.assertEqual(autotrader.read_jsonl(self.root / "trade_journal.jsonl"), [])
+
     def test_shared_reconciliation_runs_after_bracket_reconciliation(self):
         calls = []
         with patch("autotrader.reconcile_pending_orders", return_value=[]), patch(

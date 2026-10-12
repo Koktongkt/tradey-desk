@@ -47,6 +47,22 @@ If a successful reviewer process returns no parseable JSON, the same isolated mo
 - `short_1_5`: catalyst 30%, price/volume confirmation 25%, technical structure 20%, market regime 10%, fundamental trajectory 10%, valuation expectations 5%.
 - `swing_6_30`: catalyst 20%, price/volume confirmation 20%, technical structure 20%, market regime 10%, fundamental trajectory 20%, valuation expectations 10%.
 
+## Scheduled execution cadence
+
+`cron/autotrader.schedule` records the intended UTC scheduler expression:
+`10,30,40,50 13-20 * * 1-5`. The live scheduler must be explicitly updated and
+read back against this contract; the file alone does not deploy a schedule.
+The broad DST-safe grid intersects the unchanged New York predicates to run
+once at **09:40 ET**, then **:10/:30/:50 from 10:00 through 15:59 ET**.
+The additional :40 triggers at other hours silently no-op before research,
+broker calls or audit writes. No new intraday execution slots are authorized.
+The opening consumer follows 09:00 ET premarket research; later consumers
+follow radar's :00/:20/:40 starts by ten minutes. Each cycle still requires
+fresh evidence and every unchanged review, reconciliation and risk gate.
+The regression intersects the versioned grid with the real slot/window code
+for EDT, EST and both DST-transition Mondays; deployment verification separately
+checks the installed job's expression, script, workdir, delivery and enabled state.
+
 ## Adaptive research budgets
 
 Premarket/radar retains its **540-second outer timeout**, with an active deadline
@@ -85,6 +101,19 @@ by a successful second 30-second synthesis, global clipping, minimum-window
 no-launch, shared deferred-rescue deadlines, and cumulative enrichment exhaustion.
 Do not validate these budgets with live research or broker calls.
 
+## Broker transport lifetime
+
+The Linux broker guardian monitors the exact caller lifetime with a pidfd and
+inherits any entry-lock open descriptions already held by that caller. If the
+outer scheduler kills autotrader, the guardian retains those locks while it
+kills and reaps owned broker descendants. The scheduler can return its timeout
+before cleanup finishes; successor execution remains blocked meanwhile.
+Known subprocess path fields accept PathLike arguments without stringifying
+arbitrary request data. External SIGKILL/OOM or an unresumed SIGSTOP of the
+guardian itself remains outside the controlled containment guarantee. Cleanup
+cannot undo an order already received by the broker; ambiguous submission
+continues to require authoritative reconciliation.
+
 ## Shadow calibration
 
 Every real review cycle also writes a private, no-execution shadow decision under `test_artifacts/shadow/`. It records the exact hypothetical canonical entry, stop, target, quantity, proposal hash, rubric, both reviewer scores, and whether the proposal would have traded. Fixture and live dry runs do not enter this dataset.
@@ -97,7 +126,7 @@ The configured Hermes MCP uses `${ALPACA_API_KEY}` and `${ALPACA_SECRET_KEY}` wi
 
 ## Transactional journal storage
 
-Operational journals use `private/trading_journal.sqlite3` as the transactional read store. Operational reconciliation explicitly imports compatibility projections when an existing database is present; `verify_only` qualification does not import, initialize, checkpoint or repair business data. It preserves JSONL/SQLite bytes under the cooperating storage lock, permits coordination-lock creation, and returns typed repair-required for unsynchronized projections/lifecycle repair. Nonempty WAL/recovery state and divergent/corrupt histories fail closed. WAL mode, full synchronous commits, append-only sequencing, payload digests, and uniqueness constraints protect order intents, confirmed-fill closure keys, notification transitions, and replacement-protection registrations. The existing JSONL files remain durable compatibility projections for established forensic and reporting workflows; every append updates both stores under the shared ledger lock, and readers fail closed if their histories diverge. Dry-run ledgers use an isolated database under `test_artifacts/private/` and never enter operational metrics.
+Operational journals use `private/trading_journal.sqlite3` as the transactional read store. Operational reconciliation explicitly imports compatibility projections when an existing database is present; `verify_only` qualification does not import, initialize, checkpoint or repair business data. Its integrity scope includes every canonical operational stream, the explicitly requested stream, and every SQLite-registered custom stream; unregistered forensic backups and shadow/test files do not become business journals merely because they end in `.jsonl`. Explicitly registered or requested archive paths still receive the same strict validation. It preserves JSONL/SQLite bytes under the cooperating storage lock, permits coordination-lock creation, and returns typed repair-required for unsynchronized projections/lifecycle repair. Nonempty WAL/recovery state and divergent/corrupt histories fail closed. WAL mode, full synchronous commits, append-only sequencing, payload digests, and uniqueness constraints protect order intents, confirmed-fill closure keys, notification transitions, and replacement-protection registrations. The existing JSONL files remain durable compatibility projections for established forensic and reporting workflows; every append updates both stores under the shared ledger lock, and readers fail closed if their histories diverge. Dry-run ledgers use an isolated database under `test_artifacts/private/` and never enter operational metrics.
 
 The initial cutover is deliberately non-rolling because old JSONL-only writers do not acquire the SQLite ledger lock:
 

@@ -93,7 +93,7 @@ def cleanup():
         time.sleep(.005)
 
 
-def supervise(request):
+def supervise(request, *, caller_fd=None) -> dict:
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         raise OSError(ctypes.get_errno(), 'broker_subreaper_unavailable')
@@ -109,11 +109,18 @@ def supervise(request):
     process = None
     timed_out = False
     try:
+        if caller_fd is not None:
+            selector = selectors.DefaultSelector()
+            # Validate monitoring before launch and reject an already-dead caller.
+            selector.register(caller_fd, selectors.EVENT_READ, 3)
+            if selector.select(0):
+                return dict(returncode=None, stdout='', stderr='', timed_out=True)
         process = subprocess.Popen(request['command'], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
             **request['options'])
         # Input is a small broker JSON request. Use nonblocking I/O throughout.
-        selector = selectors.DefaultSelector()
+        if caller_fd is None:
+            selector = selectors.DefaultSelector()
         payload = request['input'].encode('utf-8')
         for index, stream in enumerate((process.stdout, process.stderr)):
             os.set_blocking(stream.fileno(), False)
@@ -125,7 +132,7 @@ def supervise(request):
             process.stdin.close()
         deadline = time.monotonic() + request['timeout']
         cleaned = False
-        while selector.get_map() or process.returncode is None:
+        while any(key.data != 3 for key in selector.get_map().values()) or process.returncode is None:
             if process.poll() is not None and not cleaned:
                 # Wrapper exit is NOT descendant exit. Orphans now belong to us.
                 cleanup()
@@ -134,6 +141,11 @@ def supervise(request):
                 timed_out = True
                 break
             for key, _ in selector.select(min(.02, max(0, deadline - time.monotonic()))):
+                if key.data == 3:
+                    # The exact caller died (including scheduler SIGKILL).
+                    # Keep inherited entry locks until finally has reaped all.
+                    interrupted.append(True)
+                    break
                 if key.data == 2:
                     try:
                         sent = os.write(key.fd, payload)
@@ -183,14 +195,19 @@ def guardian_main():
 
     Only this dedicated process adopts/reaps orphans; the shared caller's
     subreaper state and unrelated children are untouched. Its independent
-    deadline also handles a stopped inner supervisor. External SIGKILL/OOM
-    of this custodian is outside the internally controlled cleanup guarantee.
+    deadline also handles a stopped inner supervisor. The caller pidfd triggers
+    bounded cleanup on caller death; inherited entry-lock descriptions remain
+    held here until broker descendants are reaped. After caller death, our own
+    exit status belongs to the adopting reaper/init (we cannot reap ourselves).
+    External SIGKILL/OOM or an unresumed SIGSTOP of this custodian is outside
+    the internally controlled cleanup guarantee.
     """
     try:
         request = json.load(sys.stdin)
         result = supervise(dict(
             command=[sys.executable, '-I', str(Path(__file__).resolve()), '--inner'],
-            input=json.dumps(request), timeout=request['timeout'] + .2, options={}))
+            input=json.dumps(request), timeout=request['timeout'] + .2, options={}),
+            caller_fd=request.get('caller_fd'))
         # supervise has already killed/reaped every owned child before returning.
         if result['timed_out']:
             result = dict(returncode=None, stdout='', stderr='', timed_out=True)

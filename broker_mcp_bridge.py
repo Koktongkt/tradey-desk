@@ -24,6 +24,18 @@ def text_result(result:Any)->Any:
 
 def unwrap(x:Any)->Any:
     if isinstance(x,dict):
+        if "_alpaca_mcp_security" in x:
+            if set(x)!={"_alpaca_mcp_security","data"} or not isinstance(x["_alpaca_mcp_security"],dict):
+                raise RuntimeError("broker_security_envelope_unverified")
+            # Transport metadata is untrusted; only data contains broker truth.
+            payload=x["data"]
+            while isinstance(payload,dict) and len(payload)==1:
+                key=next(iter(payload))
+                if key not in ("data","result","orders","positions","assets","bars","quotes"):break
+                payload=payload[key]
+            if not isinstance(payload,(dict,list)):
+                raise RuntimeError("broker_security_envelope_unverified")
+            return payload
         for k in ("data","result","orders","positions","assets","bars","quotes"):
             if k in x and len(x)==1:return x[k]
     return x
@@ -33,7 +45,13 @@ class Alpaca:
     async def call(self,name:str,values:dict[str,Any]|None=None)->Any:
         if name not in self.tools:raise RuntimeError(f"missing tool {name}")
         props=self.tools[name].get("properties",{}); vals=values or {}; args=tool_arguments(props,vals)
-        return unwrap(text_result(await self.s.call_tool(name,args)))
+        raw=text_result(await self.s.call_tool(name,args))
+        normalized=unwrap(raw)
+        if name=="get_all_positions" and isinstance(raw,dict) and "_alpaca_mcp_security" in raw:
+            # Unknown envelope payloads must not fall through listish to [].
+            if not isinstance(normalized,list) or any(not isinstance(row,dict) for row in normalized):
+                raise RuntimeError("managed_positions_unverified")
+        return normalized
 
 def first_dict(x:Any)->dict[str,Any]:
     if isinstance(x,dict):return x

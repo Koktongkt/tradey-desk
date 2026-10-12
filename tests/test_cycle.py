@@ -273,6 +273,28 @@ class CycleTests(unittest.TestCase):
             self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
             self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
 
+    def test_autotrader_cron_contract_preserves_opening_and_intraday_slots(self):
+        # Test the scheduler grid AND the real NY predicates, not either alone.
+        expression=(Path(run_cycle.__file__).parent/"cron"/"autotrader.schedule").read_text().strip()
+        minute_field,hour_field,dom,month,dow=expression.split()
+        self.assertEqual((dom,month,dow),("*","*","1-5"))
+        minutes={int(value) for value in minute_field.split(",")}
+        first_hour,last_hour=(int(value) for value in hour_field.split("-"))
+        self.assertEqual((first_hour,last_hour),(13,20))
+        ny=ZoneInfo("America/New_York")
+        expected=[(9,40)]+[(hour,minute) for hour in range(10,16) for minute in (10,30,50)]
+        # EDT, EST, and the Mondays following both DST transitions.
+        for day in (dt.date(2026,10,12),dt.date(2026,12,15),dt.date(2026,3,9),dt.date(2026,11,2),dt.date(2026,10,17),dt.date(2026,12,19)):
+            accepted=[]
+            for hour in range(first_hour,last_hour+1):
+                for minute in sorted(minutes):
+                    fire=dt.datetime.combine(day,dt.time(hour,minute),tzinfo=dt.timezone.utc)
+                    if run_cycle.scheduled_slot("autotrader",fire) and run_cycle.in_window("market",fire):
+                        local=fire.astimezone(ny)
+                        accepted.append((local.hour,local.minute))
+            with self.subTest(day=day):
+                self.assertEqual(accepted,expected if day.weekday()<5 else [])
+
     def test_slot_classification_is_dst_safe(self):
         summer=dt.datetime(2026,9,15,13,0,tzinfo=dt.timezone.utc)
         winter=dt.datetime(2026,12,15,14,0,tzinfo=dt.timezone.utc)

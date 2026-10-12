@@ -331,8 +331,10 @@ def read_jsonl_readonly(path: Path | str) -> list[dict]:
     _ensure_parent(lock_path)
     with lock_path.open('a+') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        # Migration's canonical manifest plus the explicit request define the
+        # projection scope; SQLite adds every registered custom stream below.
+        # A .jsonl extension alone does not register archives or test artifacts.
         names = set(DEFAULT_STREAMS) | {_stream_name(path, root)}
-        names.update(_stream_name(p, root) for p in root.rglob('*.jsonl'))
         connection = None
         try:
             if db.exists():

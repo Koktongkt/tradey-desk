@@ -308,6 +308,139 @@ ledger.append_jsonl(path, {"event": stage})
                 module.backup_database(root, projection)
             self.assertEqual(module.read_jsonl(projection), [{"status": "placed"}])
 
+    def test_readonly_ignores_unregistered_archives_and_shadow_files(self):
+        module = self.module()
+        for migrated in (False, True):
+            for name, content in (
+                ("private/ledger_recovery/20260916T002833Z/candidates.jsonl", "not-json\n"),
+                ("private/ledger_recovery/20260916T002833Z/private/research_diagnostics.jsonl", "not-json\n"),
+                ("test_artifacts/shadow/decision_audit.jsonl", "not-json\n"),
+                ("private/shadow_candidates.jsonl", '{"candidate_id":"shadow"}\n'),
+            ):
+                with self.subTest(migrated=migrated, name=name):
+                    with tempfile.TemporaryDirectory() as td:
+                        root = Path(td)
+                        target = root / "order_ledger.jsonl"
+                        expected = [{"status": "placed"}]
+                        target.write_text(json.dumps(expected[0]) + "\n", encoding="utf-8")
+                        if migrated:
+                            module.migrate_jsonl(root)
+                        unrelated = root / name
+                        unrelated.parent.mkdir(parents=True, exist_ok=True)
+                        unrelated.write_text(content, encoding="utf-8")
+                        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+                        self.assertEqual(module.read_jsonl_readonly(target), expected)
+
+                        self.assertEqual({p: p.read_bytes() for p in before}, before)
+                        created = {p.relative_to(root).as_posix() for p in root.rglob("*")
+                                   if p.is_file() and p not in before}
+                        self.assertLessEqual(created, {"private/trading_journal.sqlite3.lock"})
+
+    def test_readonly_checks_every_canonical_stream_when_reading_unrelated_target(self):
+        module = self.module()
+        for migrated in (False, True):
+            for name in module.DEFAULT_STREAMS:
+                with self.subTest(migrated=migrated, name=name):
+                    with tempfile.TemporaryDirectory() as td:
+                        root = Path(td)
+                        target = root / "private/requested_custom.jsonl"
+                        target.parent.mkdir()
+                        target.write_text('{"event":"target"}\n', encoding="utf-8")
+                        if migrated:
+                            module.migrate_jsonl(root, [target])
+                        canonical = root / name
+                        canonical.parent.mkdir(parents=True, exist_ok=True)
+                        canonical.write_text("not-json\n", encoding="utf-8")
+                        with self.assertRaises(module.LedgerIntegrityError):
+                            module.read_jsonl_readonly(target)
+                        # Valid but unregistered canonical data still needs import.
+                        canonical.write_text('{"status":"filled"}\n', encoding="utf-8")
+                        if migrated:
+                            with self.assertRaises(module.LedgerRepairRequired):
+                                module.read_jsonl_readonly(target)
+                        else:
+                            self.assertEqual(module.read_jsonl_readonly(target), [{"event": "target"}])
+
+    def test_readonly_checks_registered_custom_streams_without_directory_blacklists(self):
+        module = self.module()
+        for name in (
+            "private/custom_journal.jsonl",
+            "private/ledger_recovery/20260916T002833Z/candidates.jsonl",
+            "test_artifacts/shadow/decision_audit.jsonl",
+        ):
+            for damage in ("malformed", "rewritten", "missing", "suffix", "digest", "sequence"):
+                with self.subTest(name=name, damage=damage):
+                    with tempfile.TemporaryDirectory() as td:
+                        root = Path(td)
+                        target = root / "order_ledger.jsonl"
+                        module.append_jsonl(target, {"status": "placed"})
+                        # The writer registers one custom stream; explicit migration
+                        # can register any root-relative custom path, even in archives.
+                        module.append_jsonl(root / "private/other_custom.jsonl", {"event": "other"})
+                        custom = root / name
+                        custom.parent.mkdir(parents=True, exist_ok=True)
+                        custom.write_text('{"event":"original"}\n', encoding="utf-8")
+                        module.migrate_jsonl(root, [custom])
+                        self.assertEqual(module.read_jsonl_readonly(target), [{"status": "placed"}])
+                        if damage == "malformed":
+                            custom.write_text("not-json\n", encoding="utf-8")
+                        elif damage == "rewritten":
+                            custom.write_text('{"event":"rewritten"}\n', encoding="utf-8")
+                        elif damage == "missing":
+                            custom.unlink()
+                        elif damage == "suffix":
+                            with custom.open("a", encoding="utf-8") as stream:
+                                stream.write('{"event":"unimported"}\n')
+                        else:
+                            with closing(sqlite3.connect(module.database_path(target))) as connection:
+                                if damage == "digest":
+                                    connection.execute(
+                                        "UPDATE ledger_entries SET record_sha256=? WHERE stream=?",
+                                        ("0" * 64, name),
+                                    )
+                                else:
+                                    connection.execute(
+                                        "UPDATE ledger_entries SET sequence=2 WHERE stream=?", (name,),
+                                    )
+                                connection.commit()
+                        expected_error = (module.LedgerRepairRequired if damage == "suffix"
+                                          else module.LedgerIntegrityError)
+                        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                        with self.assertRaises(expected_error):
+                            module.read_jsonl_readonly(target)
+                        self.assertEqual({p: p.read_bytes() for p in before}, before)
+                        # A second registered custom stream is not lost from scope.
+                        if damage == "suffix":
+                            module.migrate_jsonl(root, [custom])
+                            other = root / "private/other_custom.jsonl"
+                            other.write_text("not-json\n", encoding="utf-8")
+                            with self.assertRaises(module.LedgerIntegrityError):
+                                module.read_jsonl_readonly(target)
+
+    def test_readonly_explicit_unregistered_custom_request_requires_import_after_cutover(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            custom = root / "private/shadow_candidates.jsonl"
+            custom.parent.mkdir()
+            custom.write_text('{"candidate_id":"custom"}\n', encoding="utf-8")
+            expected = [{"candidate_id": "custom"}]
+            self.assertEqual(module.read_jsonl_readonly(custom), expected)
+            target = root / "order_ledger.jsonl"
+            module.append_jsonl(target, {"status": "placed"})
+            self.assertEqual(module.read_jsonl_readonly(target), [{"status": "placed"}])
+            before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            with self.assertRaises(module.LedgerRepairRequired):
+                module.read_jsonl_readonly(custom)
+            self.assertEqual({p: p.read_bytes() for p in before}, before)
+            custom.write_text("not-json\n", encoding="utf-8")
+            with self.assertRaises(module.LedgerIntegrityError):
+                module.read_jsonl_readonly(custom)
+            custom.write_text('{"candidate_id":"custom"}\n', encoding="utf-8")
+            module.migrate_jsonl(root, [custom])
+            self.assertEqual(module.read_jsonl_readonly(custom), expected)
+
     def test_operational_readers_and_writers_use_shared_sqlite_ledger_boundary(self):
         import alpha_radar
         import autotrader

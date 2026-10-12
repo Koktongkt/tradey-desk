@@ -321,6 +321,41 @@ def check_protection(snapshot, active, legs_by_parent, closing, pending_refs=())
                 if order.get('status') in ACTIVE | {'partially_filled'}), 'managed_open_order_unlinked')
 
 
+def legacy_never_submitted_failure(row, prior, ledger, intents, journal, registry):
+    """Recognize only the old exception-handler shape, never a broker terminal.
+
+    Evidence anywhere in history wins over a failed row; accepting it must not
+    discard an intent, fill, protective link, or possible submission obligation.
+    """
+    ref = row.get('client_order_id')
+    fields = {'client_order_id', 'symbol', 'action', 'quantity', 'order_type',
+              'limit_price', 'evidence_id'}
+    allowed = fields | {'timestamp', 'status', 'reason', 'candidate_id',
+                        'dossier_hash', 'proposal_hash', 'parent_client_order_id'}
+    require(prior is not None and prior.get('status') == 'proposed'
+            and fields <= row.keys() and row.keys() <= allowed
+            and row.get('reason') == 'broker_mcp_failure', 'managed_state_invalid')
+    identity = lambda item: {k: v for k, v in item.items() if k not in {'timestamp', 'status', 'reason'}}
+    require(identity(row) == identity(prior), 'managed_state_invalid')
+    require(isinstance(row['symbol'], str) and row['symbol'].isalpha()
+            and row['symbol'].isupper() and row['action'] in {'BUY', 'SELL'}
+            and row['order_type'] == 'limit'
+            and isinstance(row['evidence_id'], str) and bool(row['evidence_id'])
+            and row.get('parent_client_order_id', ref) == ref, 'managed_state_invalid')
+    number(row['quantity'])
+    number(row['limit_price'])
+    timestamp(row.get('timestamp'))
+    require(all(r.get('status') in {'proposed', 'failed', 'rejected'}
+                for r in ledger if r.get('client_order_id') == ref)
+            and not any(i.get('client_order_id') == ref for i in intents)
+            and not any(ref in (r.get('client_order_id'), r.get('parent_client_order_id'),
+                                r.get('exit_client_order_id')) for r in journal)
+            and not any(ref in (r.get('parent_client_order_id'),
+                                r.get('protection_client_order_id')) for r in registry),
+            'managed_state_invalid')
+    return {**row, 'status': 'rejected'}  # In-memory compatibility only.
+
+
 def reconcile_detailed(root: Path, broker, *, verify_only=False):
     # Read-only reconciliation serializes behind a peer rather than failing a cycle.
     with entry_state.lock(root, attempts=40):
@@ -351,6 +386,11 @@ def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
         latest = {}
         for row in ledger:
             status, ref = row.get('status'), row.get('client_order_id')
+            if status == 'failed':
+                require(isinstance(ref, str) and bool(ref) and len(ref) <= 128
+                        and not any(ch.isspace() for ch in ref), 'managed_state_invalid')
+                row = legacy_never_submitted_failure(row, latest.get(ref), ledger, intents, journal, registry)
+                status = row['status']
             require(status in PENDING_ENTRY | TERMINAL | {'filled', 'closed', 'proposed'},
                     'managed_state_invalid')
             if 'filled_qty' in row and status not in {'filled', 'closed', 'partially_filled'}:

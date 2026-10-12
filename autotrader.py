@@ -1524,9 +1524,11 @@ def _run_locked(args: argparse.Namespace) -> int:
         immediate_cfg=load_json(ROOT/"autonomy_config.json")
         if immediate_cfg != cfg or runtime_blockers(immediate_cfg):
             raise RuntimeError("runtime_policy_changed")
+        # Once intent persistence starts, an exception may be a lost write
+        # acknowledgement. Preserve the obligation even before broker placement.
+        submission_started=True
         append_jsonl(ROOT/"private"/"order_intents.jsonl",{"timestamp":utcnow(),"client_order_id":ref,"submission_date":dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat(),"plan":plan,**lineage})
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"submission_started"})
-        submission_started=True
         try:
             emit_placing_notification_once(
                 ROOT/"private"/"order_notifications.jsonl", ref, plan, cfg.get("broker_mode"),
@@ -1542,7 +1544,7 @@ def _run_locked(args: argparse.Namespace) -> int:
         journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled,lineage)
         return 0
     except Exception:
-        failure_status="submission_unknown" if submission_started else "failed"
+        failure_status="submission_unknown" if submission_started else "rejected"
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":failure_status,"reason":"broker_mcp_failure"})
         print("SYSTEM_FAILURE broker_mcp_failure"); return 4
 

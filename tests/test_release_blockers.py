@@ -93,7 +93,160 @@ class ReadonlyQualificationTests(unittest.TestCase):
 
 
 
+class PathLikeLaunchTests(unittest.TestCase):
+    def test_dashboard_production_helper_accepts_path_cwd_through_real_supervision(self):
+        import public_dashboard
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts'
+        artifact_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=artifact_root) as directory:
+            root = Path(directory)
+            # Replace only command construction: production fetch/run_bridge and
+            # native guardian/inner/worker execute unchanged, with no broker calls.
+            command = [sys.executable, '-c', "import json,os,sys; assert sys.stdin.read() == '{}'; print(json.dumps({'fixture': True, 'cwd': os.getcwd()}))"]
+            with patch.object(public_dashboard, 'bridge_command', return_value=command):
+                result = public_dashboard.fetch_live_portfolio(root)
+            self.assertEqual(result, {'fixture': True, 'cwd': str(root)})
+
+    def test_pathlike_command_fields_preserve_completed_args_and_environment(self):
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts'
+        artifact_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=artifact_root) as directory:
+            root = Path(directory)
+            script = root / 'worker.py'
+            script.write_text("import os; print(os.environ['OFFLINE_FIXTURE'])")
+            command = [Path(sys.executable), script]
+            result = broker_process.run_bridge(command, input='', timeout=1, cwd=root,
+                                              env={'OFFLINE_FIXTURE': 'ok'}, run=subprocess.run)
+            self.assertEqual((result.returncode, result.stdout), (0, 'ok\n'))
+            self.assertIs(result.args, command)
+
+    def test_unknown_objects_are_not_stringified_or_launched(self):
+        for kwargs in ({'cwd': object()}, {'env': {'UNKNOWN': object()}}):
+            with self.subTest(field=next(iter(kwargs))):
+                with patch.object(broker_process.subprocess, 'Popen') as launch:
+                    with self.assertRaises(TypeError):
+                        broker_process.run_bridge([sys.executable, '-c', 'pass'], input='', timeout=1,
+                                                  run=broker_process._NATIVE_RUN, **kwargs)
+                    launch.assert_not_called()
+
+
 class ProcessLifetimeTests(unittest.TestCase):
+    def test_outer_scheduler_timeout_retains_lock_until_orphans_are_reaped(self):
+        # Run the exact execute seam; only gate its native timeout on an event so
+        # slow process startup cannot produce a false pass. SIGKILL is real.
+        probe = r'''
+import ctypes, json, os, signal, subprocess, sys, tempfile, time
+from pathlib import Path
+from unittest.mock import patch
+import broker_supervisor, entry_state, run_cycle
+assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+artifacts = Path.cwd() / 'test_artifacts'
+artifacts.mkdir(exist_ok=True)
+with tempfile.TemporaryDirectory(dir=artifacts) as directory:
+    root = Path(directory)
+    record = root / 'ready.json'
+    child = 'import time; time.sleep(30)'
+    wrapper = f"import subprocess,sys,os,json,pathlib,time; p=subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); inner=os.getppid(); guardian=int(pathlib.Path('/proc/'+str(inner)+'/stat').read_text().rsplit(')',1)[1].split()[1]); pathlib.Path({str(record)!r}).write_text(json.dumps([guardian,inner,os.getpid(),p.pid])); time.sleep(30)"
+    caller = f"import subprocess,sys; from pathlib import Path; import broker_process,entry_state; root=Path({str(root)!r});\nwith entry_state.lock(root):\n broker_process.run_bridge([sys.executable,'-c',{wrapper!r}],input='',timeout=30,run=subprocess.run)"
+    command = [sys.executable, '-B', '-c', caller]
+    direct = []
+    def event_gated_run(cmd, **kwargs):
+        p = subprocess.Popen(cmd, cwd=kwargs['cwd'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        direct.append(p)
+        ready_deadline = time.monotonic() + 3
+        while not record.exists() and p.poll() is None and time.monotonic() < ready_deadline:
+            time.sleep(.005)
+        assert record.exists(), 'caller must hold entry lock and launch broker tree before timeout'
+        try:
+            out, err = p.communicate(timeout=kwargs['timeout'])
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate(timeout=1)
+            raise
+        return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+    pids = []
+    try:
+        with patch.object(run_cycle.subprocess, 'run', side_effect=event_gated_run):
+            assert run_cycle.execute(command, timeout_seconds=.05, attempts=1) == 124
+        assert len(direct) == 1, 'timeout must never retry execution'
+        pids = json.loads(record.read_text())
+        deadline = time.monotonic() + 2
+        while True:
+            alive = [pid for pid in pids if Path('/proc', str(pid)).exists()]
+            try:
+                with entry_state.lock(root):
+                    # The isolated probe adopts the now-parentless custodian.
+                    # Reap its exit status; it cannot reap itself. Its broker
+                    # descendants must already be absent before lock release.
+                    try:
+                        os.waitpid(pids[0], os.WNOHANG)
+                    except ChildProcessError:
+                        pass
+                    remaining = [pid for pid in pids if Path('/proc', str(pid)).exists()]
+                    assert not remaining, f'successor acquired lock while orphan authority survived: {remaining}'
+            except RuntimeError as error:
+                assert str(error) == 'entry_state_busy'
+            if not alive:
+                break
+            assert time.monotonic() < deadline, 'caller-death containment/reaping must be bounded'
+            time.sleep(.005)
+        with entry_state.lock(root):
+            assert not any(Path('/proc', str(pid)).exists() for pid in pids)
+        print('OUTER_TIMEOUT_REAPED_BEFORE_SUCCESSOR', pids, flush=True)
+    finally:
+        if record.exists():
+            pids = json.loads(record.read_text())
+        for p in direct:
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=1)
+        for pid in pids:
+            observed = broker_supervisor.identity(pid)
+            if observed:
+                fd = os.pidfd_open(pid)
+                try:
+                    if broker_supervisor.identity(pid) == observed:
+                        signal.pidfd_send_signal(fd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                finally:
+                    os.close(fd)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                if not pid:
+                    time.sleep(.005)
+            except ChildProcessError:
+                break
+        assert not any(Path('/proc', str(pid)).exists() for pid in pids), 'offline probe cleanup leaked a process'
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', probe], text=True,
+                                capture_output=True, timeout=8)
+        print(result.stdout, end='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_dead_caller_is_rejected_before_inner_launch(self):
+        probe = r'''
+import os, subprocess, sys
+from unittest.mock import patch
+import broker_supervisor as supervisor
+caller = subprocess.Popen([sys.executable, '-c', 'pass'])
+fd = os.pidfd_open(caller.pid)
+caller.wait(timeout=1)
+try:
+    request = dict(command=[sys.executable, '-c', 'pass'], input='', timeout=1, options={})
+    with patch.object(supervisor.subprocess, 'Popen', side_effect=AssertionError('dead caller launched broker authority')) as launch:
+        result = supervisor.supervise(request, caller_fd=fd)
+    launch.assert_not_called()
+    assert result == dict(returncode=None, stdout='', stderr='', timed_out=True)
+finally:
+    os.close(fd)
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', probe], text=True,
+                                capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def launch(self, inherit=False, wrapper_sleep=.15, timeout=1):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
