@@ -15,8 +15,9 @@ python3 watchdog_cli.py eligibility           # print the proposed cron expressi
 
 **Concrete read/source/classification adapters are wired for bounded monitoring.**
 Non-fixture CLI invocations use `watchdog.runtime.configured_broker`: an isolated
-paper-only collector subprocess, with a 90-second deadline and process-group
-cleanup on normal exit or timeout. Submitted intents, confirmed lifecycle rows
+paper-only collector subprocess, with at most a 90-second timeout clamped to
+the remaining run active/outer deadline, and process-group cleanup on normal
+exit or timeout. Submitted intents, confirmed lifecycle rows
 and protective references are obligations; unsubmitted rejected proposals are
 not broker orders. A missing submitted reference still makes coverage unknown.
 The requested activity interval is 90 days, explicitly not lifetime accounting.
@@ -125,8 +126,42 @@ dedupe (equivalent-run skip) despite millisecond completion jitter.
   explicitly beneath `test_artifacts`. Operational input/output overlap and
   symlink escapes are rejected before any side effect.
 - Locking is a monitoring-only `flock` on `private/watchdog/monitor.lock`
-  (LOCK_EX|LOCK_NB). The trading writer lock and kill switch are never opened
-  here; a watchdog failure cannot prevent the autotrader.
+  (LOCK_EX|LOCK_NB). Operational snapshots separately open the **existing**
+  ledger lock read-only and acquire a nonblocking shared lock while copying
+  and validating authority. No writer lock is acquired, no lock is created or
+  repaired, and no ledger lock is held during broker network calls. The kill
+  switch is never opened; the watchdog has no trading authority.
+- Before worker startup, pure `operational_lock_busy` contention alone is
+  retried every at most 100 ms, for at most 5 seconds of monotonic retry window
+  and 51 reads. The window is further clamped to the existing active/outer
+  deadline (120 s mechanical; 840 s active within 900 s daily). Each attempt
+  reacquires a fresh read-only snapshot and repeats digest, sequence, canonical
+  JSON, projection parity and metadata gates. Corruption, mutation and missing
+  inputs are not contention and are never retried. An oversleep stops further
+  reads; measured wait/elapsed includes the oversleep, not just requested sleep.
+  No worker is launched at an exhausted deadline and no broker call is retried.
+- Eligibility still requires the authoritative broker session calendar. Even
+  an out-of-slot fire must first obtain that prerequisite; persistent contention
+  or worker failure remains fail-closed, not a guessed silent no-op. Crons,
+  source gates and budget constants are unchanged.
+- Broker-adapter failures retain a bounded private projection at
+  `<output_root>/private/watchdog/failure.json` (latest failure only, atomic
+  replacement, directory 0700, file 0600). It includes mode, trusted slot,
+  actual start/finish, normalized reason/stage, attempts, measured wait/elapsed,
+  worker exit and worker elapsed when available. A strict allowlist excludes
+  raw exceptions/stderr, credentials, identifiers, refs, payloads and paths.
+  Worker spawn, nonzero exit, decoding, schema, timeout and deadline failures
+  remain distinct privately; public failed results/cron text remain generic.
+  Untyped broker exceptions never export their text. This writes neither the
+  operational SQLite ledger nor a business stream, and fixture/smoke records
+  stay in the selected confined output root. The post-eligibility operational
+  coverage read retains its existing incomplete-snapshot semantics.
+- Diagnostics are best-effort: one <=4096-byte local write, no locks, fsync,
+  append stream or network, symlink-safe directory opens and replacement.
+  Storage errors do not mask the primary result. Kernel filesystem stalls,
+  abrupt termination and the cron hard alarm can still prevent a record;
+  this is not a guaranteed durable failure audit or a disk-I/O wall deadline.
+  Worker stderr is intentionally discarded, not recovered as historical truth.
 - Operational inputs are hashed/ stat-ed before and after every run; a change
   mid-run yields the typed `operational_input_changed_after_run` reason and
   the run is never all-clear. The ledger is WAL-mode, so the sqlite `-wal`/

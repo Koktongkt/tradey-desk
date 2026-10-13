@@ -2,6 +2,7 @@ import json
 import datetime as dt
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 import alpha_radar
 import candidate_outcomes
 import public_dashboard
+import run_cycle
 
 
 class PipelineTests(unittest.TestCase):
@@ -472,20 +474,169 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("private",json.dumps(data))
 
     def test_dashboard_deploy_supports_cached_vercel_cli_login(self):
+        private="token=secret account_id=acct project_id=prj order_id=ord https://private.invalid /private/path"
+        cases=(("cached",0,0,None,""),("token",0,0,"fixture-secret",""),
+               ("build",1,0,None,"dashboard_build_failed"),
+               ("deploy",0,1,None,"dashboard_deploy_failed"))
+        for label,build_rc,deploy_rc,token,expected in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                (root/"public").mkdir()
+                (root/"public_dashboard.py").write_text(f"import sys\nprint({private!r},file=sys.stderr)\nraise SystemExit({build_rc})\n")
+                source=Path(__file__).parents[1]
+                for name in ("deploy_dashboard.sh","dashboard_deployment.py","dashboard_process.py","broker_supervisor.py","run_cycle.py","durable_jsonl.py"):
+                    if (source/name).exists():(root/name).write_text((source/name).read_text())
+                fake_bin=root/"bin"; fake_bin.mkdir()
+                fake_npx=fake_bin/"npx"
+                fake_npx.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > \"$NPX_LOG\"\nprintf '%s\\n' '{private}' >&2\nexit {deploy_rc}\n")
+                fake_npx.chmod(0o755)
+                env=os.environ.copy(); env.pop("VERCEL_TOKEN",None)
+                if token:env["VERCEL_TOKEN"]=token
+                env["PATH"]=f"{fake_bin}:{env['PATH']}"; env["NPX_LOG"]=str(root/"npx.log")
+                result=subprocess.run(["bash",str(root/"deploy_dashboard.sh")],env=env,text=True,capture_output=True,timeout=10)
+                self.assertEqual(result.returncode,1 if expected else 0)
+                self.assertEqual(result.stdout,f"SYSTEM_FAILURE {expected}\n" if expected else "")
+                self.assertEqual(result.stderr,"")
+                if build_rc==0:
+                    args=(root/"npx.log").read_text()
+                    self.assertIn("--package=vercel@63.1.2",args)
+                    self.assertEqual("--token" in args,bool(token))
+                diagnostics=root/"private"/"dashboard_deploy_diagnostics"
+                self.assertEqual(diagnostics.stat().st_mode & 0o777,0o700)
+                records=list(diagnostics.glob("attempt-*.json"))
+                self.assertEqual(len(records),1 if build_rc else 2)
+                for record in records:
+                    self.assertEqual(record.stat().st_mode & 0o777,0o600)
+                    text=record.read_text()
+                    for unsafe in ("secret","acct","prj","ord","https://","/private/"):
+                        self.assertNotIn(unsafe,text)
+                    row=json.loads(text)
+                    self.assertIn(row["stage"],("build","deploy"))
+                    self.assertIn("duration_ms",row)
+                    self.assertIn("classification",row)
+
+    def test_dashboard_classified_retries_and_deadlines_are_offline(self):
+        import dashboard_deployment as deployment
+        cases=(
+            ("auth","Error: invalid token",False,False,"dashboard_deploy_auth",1),
+            ("auth over transient","Error: invalid token HTTP 503",False,False,"dashboard_deploy_auth",1),
+            ("vercel token","Error: The specified token is not valid",False,False,"dashboard_deploy_auth",1),
+            ("cached login absent","Error: No existing credentials found. Please run vercel login",False,False,"dashboard_deploy_auth",1),
+            ("config","Error: project not found",False,False,"dashboard_deploy_config",1),
+            ("vercel project","Error: The specified project does not exist",False,False,"dashboard_deploy_config",1),
+            ("remote build","Error: build failed",False,False,"dashboard_deploy_build",1),
+            ("unknown","private unknown",False,False,"dashboard_deploy_failed",1),
+            ("network","Error: ECONNRESET",True,False,"",2),
+            ("rate limit","Error: HTTP 429",True,False,"",2),
+            ("service","Error: HTTP 503",False,False,"dashboard_deploy_service",3),
+            ("deploy timeout","",False,True,"dashboard_deploy_timeout",3),
+            ("build timeout","",False,True,"dashboard_build_timeout",0),
+        )
+        for label,message,recover,hang,expected,count in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                root=Path(td); (root/"public").mkdir()
+                build="import time; time.sleep(2)" if label=="build timeout" else "raise SystemExit(0)"
+                (root/"public_dashboard.py").write_text(build)
+                fake_bin=root/"bin";fake_bin.mkdir()
+                fake=fake_bin/"npx"
+                fake.write_text("#!/usr/bin/env python3\nimport os,time\nfrom pathlib import Path\np=Path(os.environ['COUNT_FILE'])\nn=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\n"
+                                +("time.sleep(2)\n" if hang else "")
+                                +f"print({message!r})\nraise SystemExit(0 if {recover!r} and n>1 else 1)\n")
+                fake.chmod(0o755)
+                env={"PATH":f"{fake_bin}:{os.environ['PATH']}","COUNT_FILE":str(root/"count")}
+                output=__import__("io").StringIO()
+                with patch.dict(os.environ,env), patch.object(deployment,"ATTEMPT_TIMEOUT",0.15), patch.object(deployment,"TOTAL_BUDGET",2), patch.object(deployment,"BACKOFFS",(0.01,0.02),create=True), patch("sys.stdout",output):
+                    rc=deployment.deploy(root)
+                self.assertEqual(output.getvalue(),f"SYSTEM_FAILURE {expected}\n" if expected else "")
+                self.assertEqual(rc,1 if expected else 0)
+                self.assertEqual(int((root/"count").read_text()) if (root/"count").exists() else 0,count)
+                rows=[json.loads(p.read_text()) for p in (root/"private"/"dashboard_deploy_diagnostics").glob("attempt-*.json")]
+                self.assertEqual(len(rows),count+1)
+                if expected:
+                    self.assertTrue(any(row["classification"]!="success" for row in rows))
+                    self.assertEqual(run_cycle.parse_failure_event(output.getvalue()),output.getvalue().rstrip("\n"))
+
+    def test_dashboard_diagnostics_io_privacy_retention_and_subprocess_bounds(self):
+        import dashboard_deployment as deployment
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td)
-            (root/"public").mkdir()
-            (root/"public_dashboard.py").write_text("raise SystemExit(0)\n")
-            (root/"deploy_dashboard.sh").write_text((Path(__file__).parents[1]/"deploy_dashboard.sh").read_text())
-            fake_bin=root/"bin"; fake_bin.mkdir()
-            fake_npx=fake_bin/"npx"
-            fake_npx.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > \"$NPX_LOG\"\n")
-            fake_npx.chmod(0o755)
-            env=os.environ.copy(); env.pop("VERCEL_TOKEN",None)
-            env["PATH"]=f"{fake_bin}:{env['PATH']}"; env["NPX_LOG"]=str(root/"npx.log")
-            result=subprocess.run(["bash",str(root/"deploy_dashboard.sh")],env=env,text=True,capture_output=True)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertNotIn("--token",(root/"npx.log").read_text() if (root/"npx.log").exists() else "")
+            root=Path(td);outside=root/"outside";outside.mkdir()
+            (root/'private').mkdir()
+            private=root/"private"/"dashboard_deploy_diagnostics"
+            private.symlink_to(outside,target_is_directory=True)
+            deployment.record_attempt(root,"deploy",1,1,0.1,"failed")
+            self.assertEqual(list(outside.iterdir()),[])
+            private.unlink()
+            for attempt in range(45):deployment.record_attempt(root,"deploy",attempt,1,0.1,"failed")
+            self.assertEqual(len(list(private.glob("attempt-*.json"))),30)
+            sentinel=outside/"sentinel";sentinel.write_text("unchanged")
+
+            (private/("attempt-0-"+"a"*32+".json")).symlink_to(sentinel)
+            deployment.record_attempt(root,"deploy",1,1,0.1,"failed")
+            self.assertEqual(sentinel.read_text(),"unchanged")
+            (private/("attempt-0-"+"a"*32+".json")).unlink()
+            for record in private.iterdir():record.unlink()
+            private.rmdir();private.write_text("not a directory")
+            deployment.record_attempt(root,"deploy",1,1,0.1,"failed")
+            self.assertEqual(private.read_text(),"not a directory")
+            private.unlink()
+            for build_rc in (0,1):
+                (root/"public_dashboard.py").write_text(f"raise SystemExit({build_rc})")
+                output=__import__("io").StringIO()
+                with patch.object(deployment,"record_attempt",side_effect=OSError("secret /private/path")), patch.object(deployment,"run_attempt",return_value=subprocess.CompletedProcess([],build_rc,"private", ""),create=True), patch("sys.stdout",output):
+                    self.assertEqual(deployment.deploy(root),build_rc)
+                self.assertEqual(output.getvalue(),"SYSTEM_FAILURE dashboard_build_failed\n" if build_rc else "")
+            runner=getattr(deployment,"run_attempt",None)
+            self.assertTrue(callable(runner),"deadline/output bounded helper subprocess runner missing")
+            result=runner([sys.executable,"-c","print('x'*200000)"],root,1)
+            self.assertEqual(result.returncode,0)
+            self.assertLessEqual(len(result.stdout.encode()),65536)
+            result=runner([sys.executable,"-c","import time;time.sleep(5)"],root,0.05)
+            self.assertEqual(result.returncode,124)
+            result=runner([sys.executable,"-c","import sys;print('Error: invalid token');print('x'*200000);print('Error: HTTP 503');sys.exit(1)"],root,1)
+            self.assertEqual(deployment.classify("deploy",result),"auth")
+            with patch.object(deployment,"TOTAL_BUDGET",0), patch.object(deployment,"run_attempt") as attempt, patch("sys.stdout",__import__("io").StringIO()) as output:
+                self.assertEqual(deployment.deploy(root),1)
+            attempt.assert_not_called()
+            self.assertEqual(output.getvalue(),"SYSTEM_FAILURE dashboard_build_timeout\n")
+            with patch.object(deployment,"TOTAL_BUDGET",1), patch.object(deployment,"run_attempt",side_effect=[subprocess.CompletedProcess([],0,"",""),subprocess.CompletedProcess([],1,"HTTP 503","")]) as attempt, patch("sys.stdout",__import__("io").StringIO()) as output:
+                self.assertEqual(deployment.deploy(root),1)
+            self.assertEqual(attempt.call_count,2)  # Build + deploy, no retry beyond shared budget.
+            self.assertEqual(output.getvalue(),"SYSTEM_FAILURE dashboard_deploy_service\n")
+            missing=runner([str(root/"missing-cli")],root,1)
+            self.assertEqual(deployment.classify("deploy",missing),"cli_missing")
+            child="import time;from pathlib import Path;time.sleep(0.3);Path('escaped-child').write_text('leaked')"
+            parent=f"import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',{child!r}]);time.sleep(5)"
+            result=runner([sys.executable,"-c",parent],root,0.1)
+            self.assertEqual(result.returncode,124)
+            __import__("time").sleep(0.4)
+            self.assertFalse((root/"escaped-child").exists())
+
+    def test_dashboard_diagnostics_are_git_ignored_and_unpublished(self):
+        import dashboard_deployment as deployment
+        import shutil
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shutil.copy2(Path(__file__).parents[1]/'.gitignore', root/'.gitignore')
+            subprocess.run(['git','init','-q',str(root)],check=True)
+            deployment.record_attempt(root,'deploy',1,1,.1,'config')
+            records=list((root/'private/dashboard_deploy_diagnostics').glob('*.json'))
+            self.assertEqual(len(records),1)
+            self.assertEqual(subprocess.run(['git','check-ignore',str(records[0].relative_to(root))],cwd=root,capture_output=True).returncode,0)
+            self.assertNotIn('duration_ms',json.dumps(public_dashboard.build_data(root)))
+            self.assertFalse((root/'public/private').exists())
+            for directory in (root/'private',records[0].parent):
+                self.assertEqual(directory.stat().st_mode & 0o777,0o700)
+            self.assertEqual(records[0].stat().st_mode & 0o777,0o600)
+            for directory in (root/'private',records[0].parent):
+                with tempfile.TemporaryDirectory() as outside:
+                    # Refuse each directory component, not just the leaf.
+                    import shutil
+                    if (root/'private').exists(): shutil.rmtree(root/'private')
+                    if directory.name!='private': (root/'private').mkdir()
+                    directory.symlink_to(outside,target_is_directory=True)
+                    deployment.record_attempt(root,'deploy',1,1,.1,'config')
+                    self.assertEqual(list(Path(outside).iterdir()),[])
+                    directory.unlink()
 
     def test_dashboard_html_has_glanceable_sections_without_raw_json_dumps(self):
         html=public_dashboard.html_template()
@@ -493,5 +644,106 @@ class PipelineTests(unittest.TestCase):
             self.assertIn(label,html)
         self.assertNotIn("<pre>",html)
         self.assertIn("aria-label=\"Tradey Desk dashboard\"",html)
+
+class DashboardContainmentTests(unittest.TestCase):
+    def _wait_ready(self, root):
+        import time
+        deadline=time.monotonic()+3
+        while not (root/'ready').exists() and time.monotonic()<deadline: time.sleep(.01)
+        self.assertTrue((root/'ready').exists())
+
+    def _child(self):
+        return "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path('ready').write_text(str(os.getpid()));time.sleep(1);Path('escaped').write_text('side effect')"
+
+    def _assert_reaped(self, root):
+        import time
+        pid=int((root/'ready').read_text())
+        deadline=time.monotonic()+1
+        while Path(f'/proc/{pid}').exists() and time.monotonic()<deadline: time.sleep(.01)
+        try:
+            self.assertFalse(Path(f'/proc/{pid}').exists(),'owned child not reaped')
+            time.sleep(1.1)
+            self.assertFalse((root/'escaped').exists())
+        finally:
+            try: os.kill(pid,9)
+            except ProcessLookupError: pass
+
+    def _helper(self, root):
+        import dashboard_deployment as deployment
+        source=str(Path(deployment.__file__).parent)
+        # Detached grandchild ignores TERM and closes every inherited pipe.
+        parent=f"import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',{self._child()!r}],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);time.sleep(5)"
+        return [sys.executable,'-c',f"import sys;sys.path.insert(0,{source!r});from pathlib import Path;import dashboard_deployment as d;d.run_attempt([sys.executable,'-c',{parent!r}],Path({str(root)!r}),10)"]
+
+    def test_real_execute_outer_timeout_reaps_tree_before_return(self):
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            with patch.object(run_cycle,'ROOT',root),patch.object(run_cycle,'audit_result'),patch('sys.stdout',io.StringIO()) as output:
+                rc=run_cycle.execute(self._helper(root),timeout_seconds=.3,attempts=3,audit_mode='dashboard',audit_stage='deployment')
+            self.assertEqual(rc,124)
+            self.assertEqual(output.getvalue(),'SYSTEM_FAILURE dashboard_timeout\n')
+            self._wait_ready(root)
+            self._assert_reaped(root)
+
+    def test_helper_term_kill_and_caller_death_stop_detached_children(self):
+        import signal
+        for sig in (signal.SIGTERM,signal.SIGKILL):
+            with self.subTest(signal=sig),tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                proc=subprocess.Popen(self._helper(root),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                try:
+                    self._wait_ready(root)
+                    proc.send_signal(sig);proc.wait(timeout=3)
+                    self._assert_reaped(root)
+                finally:
+                    if proc.poll() is None: proc.kill();proc.wait()
+
+    def test_normal_exit_reaps_closed_pipe_descendants_before_retry(self):
+        import dashboard_deployment as deployment
+        for detached in (False,True):
+            for rc in (0,1):
+                with self.subTest(detached=detached,rc=rc),tempfile.TemporaryDirectory() as td:
+                    root=Path(td)
+                    parent=f"import subprocess,sys,time;from pathlib import Path;subprocess.Popen([sys.executable,'-c',{self._child()!r}],start_new_session={detached!r},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);\nwhile not Path('ready').exists(): time.sleep(.005)\nprint('HTTP 503');sys.exit({rc})"
+                    result=deployment.run_attempt([sys.executable,'-c',parent],root,2)
+                    self.assertEqual(result.returncode,rc)
+                    self.assertFalse(Path('/proc/'+(root/'ready').read_text()).exists(),'return preceded reap acknowledgement')
+                    self._assert_reaped(root)
+                    # A new attempt cannot overlap any surviving prior process.
+                    result=deployment.run_attempt([sys.executable,'-c',f"from pathlib import Path;assert not Path('/proc/'+Path('ready').read_text()).exists()"],root,2)
+                    self.assertEqual(result.returncode,0)
+
+    def test_execute_caller_sigkill_stops_detached_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            source=str(Path(run_cycle.__file__).parent)
+            script=f"import sys;sys.path.insert(0,{source!r});from pathlib import Path;import run_cycle as r;r.ROOT=Path({str(root)!r});r.audit_result=lambda *a:None;r.execute({self._helper(root)!r},timeout_seconds=10,audit_mode='dashboard',audit_stage='deployment')"
+            proc=subprocess.Popen([sys.executable,'-c',script],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            try:
+                self._wait_ready(root)
+                proc.kill();proc.wait(timeout=3)
+                self._assert_reaped(root)
+            finally:
+                if proc.poll() is None: proc.kill();proc.wait()
+
+    def test_classified_retries_never_overlap_detached_attempts(self):
+        import dashboard_deployment as deployment
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);(root/'public').mkdir();(root/'public_dashboard.py').write_text('')
+            (root/'bin').mkdir()
+            fake=root/'bin/npx'
+            fake.write_text("#!/usr/bin/env python3\nimport subprocess,sys,time\nfrom pathlib import Path\np=Path('ready')\nif p.exists():\n assert not Path('/proc/'+p.read_text()).exists(), 'overlapping retries'\n p.unlink()\nn=Path('count');i=int(n.read_text())+1 if n.exists() else 1;n.write_text(str(i))\n"+f"subprocess.Popen([sys.executable,'-c',{self._child()!r}],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"+"while not p.exists(): time.sleep(.005)\nprint('HTTP 503')\nsys.exit(1 if i<3 else 0)\n")
+            fake.chmod(0o700)
+            with patch.dict(os.environ,{'PATH':str(root/'bin')+os.pathsep+os.environ['PATH']}),patch.object(deployment,'BACKOFFS',(.01,.01)):
+                self.assertEqual(deployment.deploy(root),0)
+            self.assertEqual((root/'count').read_text(),'3')
+            self.assertFalse(Path('/proc/'+(root/'ready').read_text()).exists())
+            self._assert_reaped(root)
+
+    def test_permission_error_outranks_transient(self):
+        import dashboard_deployment as deployment
+        for text in ('permission denied HTTP 503','EACCES ECONNRESET'):
+            self.assertEqual(deployment.classify('deploy',subprocess.CompletedProcess([],1,text,'')),'config')
 
 if __name__ == "__main__": unittest.main()

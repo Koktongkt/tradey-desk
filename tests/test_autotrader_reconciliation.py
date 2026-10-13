@@ -15,6 +15,15 @@ import autotrader
 import managed_reconciliation
 
 
+class SessionDateTime(dt.datetime):
+    """One fixed instant for UTC evidence and New York submission/quota dates."""
+
+    @classmethod
+    def now(cls, tz=None):
+        instant = cls(2026, 9, 16, 14, tzinfo=dt.timezone.utc)
+        return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+
 def _candidate_hash(root, symbol="AAPL"):
     candidate = {"symbol": symbol, "price": 100.0, "spy_price": 400.0, "researched_at": "2026-09-16T10:00:00Z"}
     body = {k: v for k, v in candidate.items() if k != "dossier_hash"}
@@ -185,6 +194,11 @@ class ExactQuantityExposureTests(unittest.TestCase):
 
 class RunIntegrationTests(unittest.TestCase):
     def setUp(self):
+        # Keep the clock patched through quota assertions, not just run(): a
+        # missing intent must still reserve one slot via the legacy ledger row.
+        clock = patch("autotrader.dt.datetime", SessionDateTime)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -345,6 +359,11 @@ class PendingObservationContinuationTests(unittest.TestCase):
     """Real saved-intent reconciliation and deterministic entry gates, offline."""
 
     def setUp(self):
+        # Evidence freshness, derived session dates, and validation share one
+        # clock rather than depending on the host's date or a midnight rollover.
+        clock = patch("autotrader.dt.datetime", SessionDateTime)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

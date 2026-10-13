@@ -1,3 +1,4 @@
+import datetime as dt
 import hashlib
 import json
 import subprocess
@@ -520,7 +521,15 @@ class TradeySafetyTests(unittest.TestCase):
         )
 
     def test_daily_order_count_deduplicates_order_lifecycle_rows(self):
-        with tempfile.TemporaryDirectory() as td:
+        class SessionDateTime(dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                instant = cls(2026, 9, 16, 14, tzinfo=dt.timezone.utc)
+                return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+        # Legacy ledger timestamps and the NY quota day must refer to the same
+        # fixed session, even when the host's UTC and NY dates differ.
+        with patch("autotrader.dt.datetime", SessionDateTime), tempfile.TemporaryDirectory() as td:
             path = Path(td) / "ledger.jsonl"
             today = autotrader.utcnow()[:10]
             rows = [

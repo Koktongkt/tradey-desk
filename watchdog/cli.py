@@ -78,6 +78,7 @@ from pathlib import Path
 import time
 
 from . import operational, schedule
+from .diagnostics import write_failure
 from .lineage import build_lineage
 from .mechanical import aggregate_exposure, observe_positions
 from .reports import render_alert
@@ -310,11 +311,22 @@ def run_watchdog(mode: str, root, output_root, adapters: dict, now: datetime,
 
 def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, clock) -> dict:
     db = output_root / 'private/watchdog/monitoring.sqlite3'
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
-        broker = adapters['broker']()
-    except TimeoutError:
-        raise
-    except Exception:
+        if callable(adapters.get('broker_with_deadline')):
+            broker = adapters['broker_with_deadline'](
+                deadline=budget.start + min(budget.budgets['active'], budget.budgets['outer']), clock=clock)
+        else:
+            broker = adapters['broker']()
+    except Exception as error:
+        from .runtime import BrokerFailure
+        details = (error.details if isinstance(error, BrokerFailure) else
+                   dict(reason='broker_adapter_failed', stage='broker_adapter',
+                        elapsed_seconds=clock() - budget.start))
+        try:
+            write_failure(output_root, mode, now, started_at, details)
+        except Exception:
+            pass
         return _failed(mode, before, root, ['broker_adapter_failed'], db)
     budget.check('outer')
     # Session/cron gate: silent no-op outside eligibility; a missing or

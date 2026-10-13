@@ -278,7 +278,7 @@ class OperationalTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = read_operational(self.root)
         self.assertFalse(result.complete)
-        self.assertIn('operational_snapshot_changed', result.reasons)
+        self.assertEqual(['operational_lock_busy'], result.reasons)
         self.assertEqual(before, self.state())
 
     def state(self):

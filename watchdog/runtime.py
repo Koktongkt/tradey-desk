@@ -10,6 +10,7 @@ import signal
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 from .operational import read_operational
 from .types import BrokerSnapshot, aware_timestamp
@@ -36,15 +37,46 @@ def _run_worker(argv, *, input, timeout, cwd, capture_output=True, text=True):
                 stream.close()
 
 
-def configured_broker(root, now):
+class BrokerFailure(ValueError):
+    """Private structural evidence only; never retain a raw exception/payload."""
+    def __init__(self, reason, **details):
+        super().__init__(reason)
+        self.details = dict(reason=reason, **details)
+
+
+def configured_broker(root, now, *, deadline=None, clock=time.monotonic, sleep=time.sleep):
     """Read exact durable references, then collect a bounded 90-day snapshot.
 
     The requested interval is not a lifetime accounting baseline. Missing
     history remains unknown in the accounting layer. Never truncate references.
     """
-    snapshot = read_operational(Path(root))
-    if not snapshot.complete:
-        raise ValueError('broker_operational_snapshot_incomplete')
+    started = clock()
+    deadline = started + 120 if deadline is None else deadline
+    retry_until = min(started + 5, deadline)
+    attempts, wait = 0, 0.0
+    while True:
+        if clock() >= deadline:
+            raise BrokerFailure('broker_deadline_exceeded', stage='operational',
+                reasons=['operational_lock_busy'] if attempts else [], attempts=attempts,
+                wait_seconds=wait, elapsed_seconds=clock() - started)
+        if attempts and clock() >= retry_until:
+            raise BrokerFailure('broker_operational_snapshot_incomplete', stage='operational',
+                reasons=list(snapshot.reasons), attempts=attempts, wait_seconds=wait,
+                elapsed_seconds=clock() - started)
+        attempts += 1
+        snapshot = read_operational(Path(root))
+        if snapshot.complete:
+            break
+        # Only pure contention is retryable. Every attempt releases its lock,
+        # obtains fresh copied authority, and repeats all integrity/parity gates.
+        if snapshot.reasons != ['operational_lock_busy'] or clock() >= retry_until or attempts >= 51:
+            raise BrokerFailure('broker_operational_snapshot_incomplete', stage='operational',
+                reasons=list(snapshot.reasons), attempts=attempts, wait_seconds=wait,
+                elapsed_seconds=clock() - started)
+        delay = min(0.1, max(0, retry_until - clock()))
+        wait_started = clock()
+        sleep(delay)
+        wait += max(0, clock() - wait_started)
     submitted_rows = [row for stream in ('private/order_intents.jsonl',
                       'private/protection_orders.jsonl', 'trade_journal.jsonl')
                       for row in snapshot.streams.get(stream, [])]
@@ -53,20 +85,36 @@ def configured_broker(root, now):
     fields = ('client_order_id', 'parent_client_order_id', 'protection_client_order_id')
     values = [row[field] for row in submitted_rows for field in fields if field in row]
     if any(not isinstance(ref, str) or not ref or len(ref) > 128 for ref in values):
-        raise ValueError('broker_references_invalid')
+        raise BrokerFailure('broker_references_invalid', stage='references', attempts=attempts,
+            wait_seconds=wait, elapsed_seconds=clock() - started)
     refs = sorted(set(values))
     if len(refs) > 500 or any(len(ref) > 128 for ref in refs):
-        raise ValueError('broker_references_invalid')
+        raise BrokerFailure('broker_references_invalid', stage='references', attempts=attempts,
+            wait_seconds=wait, elapsed_seconds=clock() - started)
     payload = dict(refs=refs, start=(now - timedelta(days=90)).isoformat(),
                    end=(now + timedelta(days=1)).isoformat())
+    worker_started = clock()
+    stage, worker_exit = 'worker_deadline', None
     try:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise BrokerFailure('broker_deadline_exceeded', stage=stage,
+                attempts=attempts, wait_seconds=wait, elapsed_seconds=clock() - started,
+                worker_exit=None, worker_elapsed_seconds=0)
+        stage = 'worker_spawn'
         result = _run_worker([sys.executable, '-m', 'watchdog.broker'],
             input=json.dumps(payload), capture_output=True, text=True,
-            timeout=90, cwd=CHECKOUT)
-        if result.returncode != 0 or len(result.stdout) > 4_000_000:
+            timeout=min(90, remaining), cwd=CHECKOUT)
+        worker_exit = result.returncode
+        stage = 'worker_exit'
+        if worker_exit != 0:
+            raise ValueError('broker_runtime_failed')
+        stage = 'worker_decode'
+        if len(result.stdout) > 4_000_000:
             raise ValueError('broker_runtime_failed')
         row = json.loads(result.stdout)
-        if set(row) != set(BrokerSnapshot.__dataclass_fields__):
+        stage = 'worker_schema'
+        if not isinstance(row, dict) or set(row) != set(BrokerSnapshot.__dataclass_fields__):
             raise ValueError('broker_runtime_failed')
         aware_timestamp(row['captured_at'])
         if (type(row['complete']) is not bool or not isinstance(row['account'], dict)
@@ -74,11 +122,20 @@ def configured_broker(root, now):
                 or any(not isinstance(row[k], list) or any(not isinstance(x, dict) for x in row[k])
                        for k in ('positions', 'orders', 'activities', 'sessions'))):
             raise ValueError('broker_runtime_failed')
+        if clock() >= deadline:
+            stage = 'worker_deadline'
+            raise ValueError('broker_runtime_failed')
         return BrokerSnapshot(**row)
-    except subprocess.TimeoutExpired:
-        raise TimeoutError('broker_runtime_timeout') from None
-    except (OSError, ValueError, TypeError, RecursionError):
-        raise ValueError('broker_runtime_failed') from None
+    except BrokerFailure:
+        raise
+    except (OSError, ValueError, TypeError, RecursionError, subprocess.TimeoutExpired) as error:
+        if isinstance(error, subprocess.TimeoutExpired):
+            stage = 'worker_timeout'
+        reason = ('broker_runtime_timeout' if stage == 'worker_timeout' else
+                  'broker_deadline_exceeded' if stage == 'worker_deadline' else 'broker_runtime_failed')
+        raise BrokerFailure(reason, stage=stage, attempts=attempts, wait_seconds=wait,
+            elapsed_seconds=clock() - started, worker_exit=worker_exit,
+            worker_elapsed_seconds=clock() - worker_started) from None
 
 
 def configured_benchmark(strategy):
@@ -174,8 +231,8 @@ def live_adapters(mode, root, now, transport):
     from .schedule import eligibility
     gateway = ProviderSession()
     adapters = dict(transport=transport, benchmark=configured_benchmark)
-    def broker():
-        snapshot = configured_broker(root, now)
+    def broker(*, deadline=None, clock=time.monotonic):
+        snapshot = configured_broker(root, now, deadline=deadline, clock=clock)
         if mode == 'daily' and eligibility(mode, now, snapshot.sessions)[0]:
             try:
                 gateway.start()
@@ -185,6 +242,7 @@ def live_adapters(mode, root, now, transport):
             adapters['thesis'] = dict(gateway.commands(), now=now.isoformat())
         return snapshot
     adapters['broker'] = broker
+    adapters['broker_with_deadline'] = broker
     try:
         yield adapters
     finally:

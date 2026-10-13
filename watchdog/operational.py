@@ -80,7 +80,7 @@ def read_operational(root: Path) -> OperationalSnapshot:
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             return _read_operational(root)
     except BlockingIOError:
-        reason = 'operational_snapshot_changed'
+        reason = 'operational_lock_busy'
     except OSError:
         reason = 'operational_lock_unavailable'
     return OperationalSnapshot({name: [] for name in DEFAULT_STREAMS}, frozenset(), datetime.now(timezone.utc).isoformat(), False, [reason])

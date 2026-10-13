@@ -355,6 +355,245 @@ class RuntimeAdapterTests(WorkflowCase):
         kill.assert_called_once_with(12345, signal.SIGKILL)
         process.wait.assert_called_once()
 
+    def test_contention_retries_fresh_snapshot_only_within_deadline(self):
+        from watchdog.runtime import configured_broker
+        from unittest.mock import patch
+        from dataclasses import asdict
+        import subprocess
+        from watchdog.operational import read_operational
+        for case in ('temporary', 'persistent', 'deadline', 'corruption'):
+            with self.subTest(case=case):
+                ticks = [0.0]
+                waits = []
+                def sleep(seconds):
+                    waits.append(seconds)
+                    ticks[0] += seconds
+                    if case == 'temporary':
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+                with (self.root / 'private/trading_journal.sqlite3.lock').open('rb') as lock:
+                    if case != 'corruption':
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    else:
+                        (self.root / 'order_ledger.jsonl').write_text('{"corrupt":')
+                    with patch('watchdog.runtime.read_operational', wraps=read_operational) as read, \
+                         patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess(
+                             [], 0, json.dumps(asdict(broker_snapshot()), default=str), '')) as worker:
+                        if case == 'temporary':
+                            self.assertTrue(configured_broker(self.root, NOW, deadline=120,
+                                clock=lambda: ticks[0], sleep=sleep).complete)
+                            self.assertEqual(read.call_count, 2)
+                            self.assertLessEqual(worker.call_args.kwargs['timeout'], 120 - ticks[0])
+                        else:
+                            with self.assertRaises(ValueError) as failure:
+                                configured_broker(self.root, NOW, deadline=0.2 if case == 'deadline' else 120,
+                                    clock=lambda: ticks[0], sleep=sleep)
+                            details = failure.exception.details
+                            self.assertEqual(details['reasons'], ['operational_history_incomplete'] if case == 'corruption'
+                                             else ['operational_lock_busy'])
+                            self.assertEqual(details['stage'], 'operational')
+                            self.assertEqual(details['attempts'], read.call_count)
+                            worker.assert_not_called()
+                            if case == 'corruption':
+                                self.assertEqual(waits, [])
+                                self.assertEqual(read.call_count, 1)
+                        self.assertLessEqual(sum(waits), 0.2 if case == 'deadline' else 5)
+                        self.assertLessEqual(read.call_count, 51)
+
+    def test_worker_stages_and_remaining_budget_are_private_typed_evidence(self):
+        from watchdog.runtime import configured_broker
+        from unittest.mock import patch
+        import subprocess
+        for case, outcome in (
+            ('exit', subprocess.CompletedProcess([], 3, '', 'secret-account-id')),
+            ('schema', subprocess.CompletedProcess([], 0, '{"secret-account-id":1}', '')),
+            ('decode', subprocess.CompletedProcess([], 0, 'secret-account-id', '')),
+            ('spawn', OSError('secret-account-id')),
+            ('timeout', subprocess.TimeoutExpired('secret-account-id', 0.2)),
+            ('deadline', None),
+        ):
+            ticks = [0.0]
+            def read(root):
+                from watchdog.operational import read_operational
+                result = read_operational(root)
+                ticks[0] = 0.1 if case != 'deadline' else 0.2
+                return result
+            with self.subTest(case=case), patch('watchdog.runtime.read_operational', side_effect=read), \
+                 patch('watchdog.runtime._run_worker', side_effect=outcome if isinstance(outcome, Exception) else None,
+                       return_value=outcome) as worker:
+                with self.assertRaises(ValueError) as failure:
+                    configured_broker(self.root, NOW, deadline=0.2, clock=lambda: ticks[0])
+                details = failure.exception.details
+                self.assertEqual(details['stage'], 'worker_' + case)
+                self.assertEqual(details['attempts'], 1)
+                self.assertEqual(details['wait_seconds'], 0)
+                self.assertEqual(details['elapsed_seconds'], ticks[0])
+                self.assertNotIn('secret-account-id', str(details) + str(failure.exception))
+                if case == 'deadline':
+                    worker.assert_not_called()
+                else:
+                    self.assertLessEqual(worker.call_args.kwargs['timeout'], 0.1)
+                if case == 'exit':
+                    self.assertEqual(details['worker_exit'], 3)
+                    self.assertEqual(details['worker_elapsed_seconds'], 0)
+
+    def test_failed_out_of_slot_run_keeps_private_evidence_and_diagnostics_are_best_effort(self):
+        from watchdog.cli import run_watchdog
+        from watchdog.runtime import BrokerFailure
+        from unittest.mock import patch
+        outside = NOW.replace(hour=17, minute=15)
+        path = self.output_root / 'private/watchdog/failure.json'
+        private = dict(stage='worker_exit', attempts=2, wait_seconds=0.1,
+                       elapsed_seconds=0.2, worker_exit=3, worker_elapsed_seconds=0.1,
+                       reasons=['operational_lock_busy', 'secret-account-id'],
+                       payload='secret-account-id', error='secret-account-id')
+        def broker():
+            raise BrokerFailure('broker_runtime_failed', **private)
+        before = self.input_digest()
+        result = run_watchdog('daily', self.root, self.output_root, self.adapters(broker=broker), outside)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['reasons'], ['broker_adapter_failed'])
+        self.assertFalse(result['committed'])
+        self.assertFalse(self.db.exists())
+        record = json.loads(path.read_text())
+        self.assertEqual(record['reason'], 'broker_runtime_failed')
+        self.assertEqual(record['stage'], 'worker_exit')
+        self.assertEqual(record['worker_exit'], 3)
+        self.assertEqual(record['attempts'], 2)
+        self.assertEqual(record['reasons'], ['operational_lock_busy'])
+        self.assertEqual(record['mode'], 'daily')
+        self.assertEqual(record['slot_at'], outside.isoformat())
+        self.assertLessEqual(record['started_at'], record['finished_at'])
+        self.assertNotIn('secret-account-id', path.read_text() + str(result))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertLessEqual(path.stat().st_size, 4096)
+        original_open = os.open
+        for fault in ('writer', 'open', 'replace'):
+            target = {'writer': 'watchdog.cli.write_failure', 'open': 'watchdog.diagnostics.os.open',
+                      'replace': 'watchdog.diagnostics.os.replace'}[fault]
+            def fail(*args, **kwargs):
+                if fault == 'open' and Path(args[0]).name == 'monitor.lock':
+                    return original_open(*args, **kwargs)
+                raise OSError('secret-account-id')
+            with self.subTest(fault=fault), patch(target, side_effect=fail):
+                again = run_watchdog('daily', self.root, self.output_root, self.adapters(broker=broker), outside)
+                self.assertEqual(again, result)
+        self.assertEqual(self.input_digest(), before)
+        self.assertEqual(list(path.parent.glob('.failure-*')), [])
+
+    def test_live_broker_consumes_existing_active_deadline_not_a_new_budget(self):
+        from watchdog.cli import run_watchdog
+        from watchdog.runtime import live_adapters
+        from unittest.mock import patch
+        for mode, instant, active in (('mechanical', NOW, 120), ('daily', DAILY_NOW, 840)):
+            ticks = [3.0]
+            def configured(root, now, **kwargs):
+                self.assertEqual(kwargs['deadline'], 3 + active)
+                self.assertIs(kwargs['clock'], clock)
+                return broker_snapshot()
+            clock = lambda: ticks[0]
+            with self.subTest(mode=mode), patch('watchdog.runtime.configured_broker', side_effect=configured), \
+                 patch('watchdog.runtime.ProviderSession.start', side_effect=ValueError('offline')), \
+                 patch('watchdog.runtime.ProviderSession.commands', return_value={}):
+                with live_adapters(mode, self.root, instant, None) as adapters:
+                    adapters['clock'] = clock
+                    result = run_watchdog(mode, self.root, self.output_root, adapters, instant, smoke=True)
+                self.assertEqual(result['status'], 'ok')
+
+    def test_untyped_timeout_and_reference_failures_never_expose_raw_errors(self):
+        from watchdog.cli import run_watchdog
+        from watchdog.runtime import configured_broker
+        from watchdog.types import OperationalSnapshot
+        from unittest.mock import patch
+        def unavailable():
+            raise TimeoutError('secret-account-id')
+        result = run_watchdog('mechanical', self.root, self.output_root, self.adapters(broker=unavailable), NOW)
+        self.assertNotIn('secret-account-id', str(result))
+        path = self.output_root / 'private/watchdog/failure.json'
+        self.assertNotIn('secret-account-id', path.read_text())
+        bad = OperationalSnapshot({'private/order_intents.jsonl': [{'client_order_id': 123}]},
+                                  frozenset(), NOW.isoformat(), True, [])
+        with patch('watchdog.runtime.read_operational', return_value=bad), \
+             patch('watchdog.runtime._run_worker') as worker:
+            with self.assertRaises(ValueError) as failure:
+                configured_broker(self.root, NOW)
+            self.assertEqual(failure.exception.details['reason'], 'broker_references_invalid')
+            self.assertEqual(failure.exception.details['stage'], 'references')
+            worker.assert_not_called()
+
+    def test_real_contention_path_still_requires_authoritative_out_of_slot_calendar(self):
+        from watchdog.cli import run_watchdog
+        from watchdog.runtime import configured_broker
+        from unittest.mock import patch
+        from dataclasses import asdict
+        import subprocess
+        outside = NOW.replace(hour=17, minute=15)
+        for case in ('temporary', 'persistent', 'missing_calendar', 'digest', 'projection'):
+            ticks = [0.0]
+            snapshot = broker_snapshot()
+            if case == 'missing_calendar':
+                snapshot.sessions = []
+            with self.subTest(case=case), (self.root / 'private/trading_journal.sqlite3.lock').open('rb') as lock:
+                original_db = (self.root / 'private/trading_journal.sqlite3').read_bytes()
+                projection = self.root / 'order_ledger.jsonl'
+                original_projection = projection.read_bytes()
+                if case in ('temporary', 'persistent'):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif case == 'digest':
+                    with sqlite3.connect(self.root / 'private/trading_journal.sqlite3') as connection:
+                        connection.execute("UPDATE ledger_entries SET record_sha256='bad'")
+                    connection.close()
+                elif case == 'projection':
+                    projection.write_text('{"corrupt":')
+                before = self.input_digest()
+                def sleep(seconds):
+                    ticks[0] += seconds
+                    if case == 'temporary':
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+                def broker():
+                    return configured_broker(self.root, outside, deadline=120, clock=lambda: ticks[0], sleep=sleep)
+                with patch('watchdog.runtime._run_worker', return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(asdict(snapshot), default=str), '')) as worker:
+                    result = run_watchdog('daily', self.root, self.output_root, self.adapters(broker=broker), outside,
+                                          fixture=True)
+                self.assertFalse(result['committed'])
+                self.assertFalse(self.db.exists())
+                self.assertEqual(self.input_digest(), before)
+                if case in ('temporary', 'missing_calendar'):
+                    self.assertEqual(result['status'], 'no_op')
+                    self.assertIn('schedule_calendar_missing' if case == 'missing_calendar' else 'not_scheduled_slot', result['reasons'])
+                    worker.assert_called_once()
+                else:
+                    self.assertEqual(result['status'], 'failed')
+                    worker.assert_not_called()
+                    record = json.loads((self.output_root / 'private/watchdog/failure.json').read_text())
+                    self.assertEqual(record['stage'], 'operational')
+                    self.assertEqual(record['reasons'], ['operational_lock_busy'] if case == 'persistent' else ['operational_history_incomplete'])
+                    self.assertLessEqual(record['wait_seconds'], 5)
+                    if case != 'persistent':
+                        self.assertEqual(record['attempts'], 1)
+                (self.root / 'private/trading_journal.sqlite3').write_bytes(original_db)
+                projection.write_bytes(original_projection)
+
+    def test_retry_oversleep_stops_before_another_read_and_records_measured_wait(self):
+        from watchdog.runtime import configured_broker
+        from watchdog.operational import read_operational
+        from unittest.mock import patch
+        ticks = [0.0]
+        def sleep(seconds):
+            self.assertLessEqual(seconds, 0.1)
+            ticks[0] += 6
+        with (self.root / 'private/trading_journal.sqlite3.lock').open('rb') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch('watchdog.runtime.read_operational', wraps=read_operational) as read, \
+                 patch('watchdog.runtime._run_worker') as worker:
+                with self.assertRaises(ValueError) as failure:
+                    configured_broker(self.root, NOW, deadline=120, clock=lambda: ticks[0], sleep=sleep)
+                self.assertEqual(failure.exception.details['wait_seconds'], 6)
+                self.assertEqual(failure.exception.details['elapsed_seconds'], 6)
+                self.assertEqual(read.call_count, 1)
+                worker.assert_not_called()
+
     def test_runtime_worker_failure_is_typed_and_has_no_fake_snapshot(self):
         from watchdog.runtime import configured_broker
         from unittest.mock import patch

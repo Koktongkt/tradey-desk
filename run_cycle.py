@@ -29,6 +29,10 @@ DECISION_EVENT_RE=re.compile(
     r"already_reviewed|no_fresh_setup|no_valid_discovery_candidate))"
 )
 ALLOWED_FAILURE_TOKENS=frozenset({
+    "dashboard_build_failed","dashboard_deploy_failed","dashboard_timeout",
+    "dashboard_build_timeout","dashboard_deploy_timeout","dashboard_deploy_auth",
+    "dashboard_deploy_config","dashboard_deploy_build","dashboard_deploy_network",
+    "dashboard_deploy_rate_limit","dashboard_deploy_service","dashboard_cli_missing",
     "account_cap_exceeded","active_broker_order","alpha_radar","asset_name_unknown",
     "asset_not_fractionable","audit_persistence_failure","autonomy_disabled",
     "broker_baseline_invalid","broker_baseline_missing","broker_mcp_failure",
@@ -114,6 +118,7 @@ def parse_failure_event(text:str)->str|None:
     line=exact_line(text)
     if line is None or not FAILURE_EVENT_RE.fullmatch(line):return None
     tokens=re.split(r"[:,]",line.split(maxsplit=1)[1])
+    if any(token.startswith("dashboard_") for token in tokens) and len(tokens)!=1:return None
     return line if tokens and all(token in ALLOWED_FAILURE_TOKENS for token in tokens) else None
 
 def audit_result(mode:str,stage:str,returncode:int,stdout:str,path:Path=AUDIT_PATH)->None:
@@ -159,12 +164,21 @@ def in_window(mode:str,now:dt.datetime|None=None)->bool:
     lo,hi=windows[mode];return lo<=t<=hi
 
 def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|None=None,audit_stage:str="cycle",audit_path:Path=AUDIT_PATH)->int:
+    # The dashboard helper owns classified retries within one shared budget.
+    dashboard_deployment=audit_mode=="dashboard" and audit_stage=="deployment"
+    if dashboard_deployment:attempts=1
     result=None
     for _ in range(attempts):
         try:
-            result=subprocess.run(cmd,cwd=ROOT,text=True,capture_output=True,timeout=timeout_seconds)
+            if dashboard_deployment:
+                from dashboard_process import run_owned
+                result=run_owned(cmd,ROOT,timeout_seconds,outer=True)
+                if result.returncode==124:
+                    result.stdout="SYSTEM_FAILURE dashboard_timeout\n"
+            else:
+                result=subprocess.run(cmd,cwd=ROOT,text=True,capture_output=True,timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            result=subprocess.CompletedProcess(cmd,124,"","timeout")
+            result=subprocess.CompletedProcess(cmd,124,"SYSTEM_FAILURE dashboard_timeout\n" if dashboard_deployment else "","timeout")
         if result.returncode==0:
             if audit_mode:audit_result(audit_mode,audit_stage,0,result.stdout,audit_path)
             if audit_mode in {"premarket","radar"} and audit_stage=="research":
@@ -230,7 +244,7 @@ def main()->int:
         if not rc:
             execute([sys.executable,str(ROOT/"shadow_calibration.py")],timeout_seconds=300,attempts=1)
             rc=execute([sys.executable,str(ROOT/"public_dashboard.py")],timeout_seconds=120,attempts=2,audit_mode=a.mode,audit_stage="dashboard_build")
-    else:rc=execute(["bash",str(ROOT/"deploy_dashboard.sh")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="deployment")
+    else:rc=execute(["bash",str(ROOT/"deploy_dashboard.sh")],timeout_seconds=300,attempts=1,audit_mode=a.mode,audit_stage="deployment")
     if daily and rc==0:mark_completed(a.mode)
     return rc
 def cli()->int:

@@ -231,6 +231,31 @@ class CycleTests(unittest.TestCase):
         self.assertTrue(any(command[-1].endswith("shadow_calibration.py") for command in commands))
         self.assertTrue(any(command[-1].endswith("public_dashboard.py") for command in commands))
 
+    def test_dashboard_failure_contract_and_single_retry_owner(self):
+        cases = ["dashboard_build_failed", "dashboard_deploy_failed", "dashboard_timeout",
+                 "dashboard_build_timeout", "dashboard_deploy_timeout", "dashboard_deploy_auth",
+                 "dashboard_deploy_config", "dashboard_deploy_build", "dashboard_deploy_network",
+                 "dashboard_deploy_rate_limit", "dashboard_deploy_service", "dashboard_cli_missing"]
+        for token in cases:
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as td:
+                audit=Path(td)/"audit.jsonl"
+                output=__import__("io").StringIO()
+                failure=subprocess.CompletedProcess([],1,f"SYSTEM_FAILURE {token}\n","private token URL /path")
+                with patch("dashboard_process.run_owned",return_value=failure) as call, patch("sys.stdout",output):
+                    rc=run_cycle.execute(["fixture"],attempts=2,audit_mode="dashboard",audit_stage="deployment",audit_path=audit)
+                self.assertEqual(rc,1)
+                self.assertEqual(output.getvalue(),f"SYSTEM_FAILURE {token}\n")
+                self.assertEqual(call.call_count,1)
+                self.assertEqual(json.loads(audit.read_text())["reason"],token)
+                for unsafe in (f"SYSTEM_FAILURE {token} private",f"SYSTEM_FAILURE {token}\nprivate", "SYSTEM_FAILURE dashboard_unknown", f"SYSTEM_FAILURE {token}:scheduled_task"):
+                    self.assertIsNone(run_cycle.parse_failure_event(unsafe))
+        with tempfile.TemporaryDirectory() as td:
+            output=__import__("io").StringIO()
+            with patch("dashboard_process.run_owned",side_effect=subprocess.TimeoutExpired("fixture",300)) as call, patch("sys.stdout",output):
+                self.assertEqual(run_cycle.execute(["fixture"],attempts=2,audit_mode="dashboard",audit_stage="deployment",audit_path=Path(td)/"audit"),124)
+            self.assertEqual(output.getvalue(),"SYSTEM_FAILURE dashboard_timeout\n")
+            self.assertEqual(call.call_count,1)
+
     def test_dashboard_refresh_is_not_suppressed_after_first_daily_deploy(self):
         with patch.object(sys,"argv",["run_cycle.py","dashboard"]), \
              patch("run_cycle.in_window",return_value=True), \
@@ -241,6 +266,8 @@ class CycleTests(unittest.TestCase):
         completed.assert_not_called()
         mark.assert_not_called()
         self.assertTrue(execute.call_args.args[0][-1].endswith("deploy_dashboard.sh"))
+        self.assertEqual(execute.call_args.kwargs["attempts"],1)
+        self.assertEqual(execute.call_args.kwargs["timeout_seconds"],300)
 
     def test_daily_completion_is_written_only_after_success(self):
         with tempfile.TemporaryDirectory() as td:
