@@ -1341,9 +1341,12 @@ class SynthesisWindowExhausted(ResearchFailure):
     """No model launched: preserve a prior candidate rejection when available."""
 
 
-def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:bool=True)->dict[str,Any]:
+def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:bool=True,*,ledger_path:Path|None=None)->dict[str,Any]:
     """Shared one-attempt intake predicates; persistence belongs to the caller."""
     c=ensure_researched_at(normalize_candidate(candidate))
+    if ledger_path is not None:
+        from earnings_spending import is_spent
+        if is_spent(c,ledger_path):raise CandidateRejection("near_term_earnings")
     preflight=candidate_preflight(c,cfg)
     if preflight:raise CandidateRejection(",".join(preflight))
     if not qualified(c,cfg):raise CandidateRejection("candidate_failed_qualification")
@@ -1371,7 +1374,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
 
     The CLI injects the same intake to track completion without validating twice.
     """
-    if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg)
+    if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
     overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     try:
         with timed_research_stage("discovery"):
@@ -1621,6 +1624,9 @@ def reusable_fresh_candidate(
         rows = read_jsonl(candidates_path, strict=True)
     except Exception:
         return None
+    from earnings_spending import is_spent, spending_rows
+    spent = spending_rows(candidates_path.parent/"order_ledger.jsonl")
+    rows = [row for row in rows if not is_spent(row,candidates_path.parent/"order_ledger.jsonl",rows=spent)]
     review_marks: list[str] = []
     review_rows: list[dict[str,Any]] = []
     try:
@@ -1677,10 +1683,13 @@ def ensure_researched_at(candidate:dict[str,Any],now:str|None=None)->dict[str,An
 
 
 def main_with_args(a:argparse.Namespace)->int:
+    from earnings_spending import SpendingStateError
     cfg=json.loads((ROOT/"autonomy_config.json").read_text())
     if not a.dry_run_fixture:
         try:
             reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
+        except SpendingStateError:
+            print("SYSTEM_FAILURE earnings_spending_state"); return 3
         except Exception:
             reused=None
         if reused is not None:
@@ -1688,7 +1697,7 @@ def main_with_args(a:argparse.Namespace)->int:
     intake_complete=False
     def intake(candidate:dict[str,Any])->dict[str,Any]:
         nonlocal intake_complete
-        prepared=prepare_candidate(candidate,cfg)
+        prepared=prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
         intake_complete=True
         return prepared
     try:
@@ -1699,7 +1708,7 @@ def main_with_args(a:argparse.Namespace)->int:
             if none_reason=="no_fresh_setup":
                 print("DECISION skipped no_fresh_setup"); return 0
             print("BLOCKER research_"+none_reason); return 2
-        if not intake_complete:c=prepare_candidate(c,cfg,verify_sources=not a.dry_run_fixture)
+        if not intake_complete:c=prepare_candidate(c,cfg,verify_sources=not a.dry_run_fixture,ledger_path=ROOT/("test_artifacts/dry_run_order_ledger.jsonl" if a.dry_run_fixture else "order_ledger.jsonl"))
         c.pop("_source_receipts",None)
         c["sources_verified_at"]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
         c["candidate_id"]=hashlib.sha256(f"{c['symbol']}|{c['researched_at']}".encode()).hexdigest()[:20]
@@ -1708,13 +1717,18 @@ def main_with_args(a:argparse.Namespace)->int:
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         print(decision_line(c)); return 0
     except Exception as e:
+        if isinstance(e,SpendingStateError):
+            print("SYSTEM_FAILURE earnings_spending_state"); return 3
         if isinstance(e,CandidateRejection) and not e.code.startswith("research_"):
             print("BLOCKER "+e.code);return 2
         if isinstance(e,DurableAppendError) or (isinstance(e,ResearchFailure) and e.code=="research_persistence_failure"):
             print("SYSTEM_FAILURE research_persistence_failure"); return 3
         if a.dry_run_fixture:
             print("SYSTEM_FAILURE alpha_radar"); return 3
-        reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
+        try:
+            reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
+        except SpendingStateError:
+            print("SYSTEM_FAILURE earnings_spending_state"); return 3
         if reused is not None:
             print("DECISION reused_fresh_candidate "+str(reused.get("symbol","")).upper()); return 0
         if isinstance(e,ResearchFailure):

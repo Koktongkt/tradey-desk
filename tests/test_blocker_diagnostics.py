@@ -133,8 +133,8 @@ def _candidate(root):
 
 def _setup_root(root, snapshot, quote=None):
     (root / "autonomy_config.json").write_text(json.dumps(_cfg()))
-    (root / "candidates.jsonl").write_text(json.dumps(_candidate(root)) + "\n")
     (root / "private").mkdir(exist_ok=True)
+    autotrader.append_jsonl(root / "candidates.jsonl", _candidate(root))
 
 
 def _run_in_root(root, snapshot, live_dry_run=False, review_snapshot=None):
@@ -156,6 +156,401 @@ def _run_in_root(root, snapshot, live_dry_run=False, review_snapshot=None):
             code = autotrader.run(autotrader.argparse.Namespace(
                 dry_run_fixture=False, live_dry_run=live_dry_run))
     return code, out.getvalue(), calls
+
+
+class EarningsSpendingTests(unittest.TestCase):
+    def test_legacy_unlinked_rejections_preserved_without_invented_spending(self):
+        import earnings_spending
+        legacy = {'status': 'rejected', 'reason': ['near_term_earnings'],
+                  'symbol': 'DELL', 'action': 'BUY', 'order_type': 'limit',
+                  'client_order_id': 'tradey-legacy-ref', 'evidence_id': 'legacy-evidence',
+                  'timestamp': '2026-09-02T14:45:55.539119Z'}
+        with tempfile.TemporaryDirectory() as td:
+            ledger = Path(td) / 'order_ledger.jsonl'
+            ledger.write_text(json.dumps(legacy) + '\n')
+            before = ledger.read_bytes()
+            rows = earnings_spending.spending_rows(ledger)
+            self.assertEqual(rows, [legacy])
+            self.assertFalse(earnings_spending.is_spent(
+                {'symbol': 'DELL', 'dossier_hash': 'new-dossier',
+                 'earnings_event_at': '2026-11-01',
+                 'planned_exit_at': '2026-10-23T20:00:00Z'}, ledger, rows=rows))
+            self.assertEqual(ledger.read_bytes(), before)
+            for modern in ({**legacy, 'stage': 'precheck'},
+                           {**legacy, 'earnings_setup_key': None},
+                           {**legacy, 'dossier_hash': None},
+                           {'status': 'rejected', 'reason': 'near_term_earnings'}):
+                ledger.write_text(json.dumps(modern) + '\n')
+                with self.assertRaises(earnings_spending.SpendingStateError):
+                    earnings_spending.spending_rows(ledger)
+
+    def test_same_exchange_session_time_changes_cannot_revive_spent_setup(self):
+        import earnings_spending
+        candidate = {'symbol': 'DELL', 'dossier_hash': 'original',
+                     'earnings_event_at': '2026-10-28',
+                     'planned_exit_at': '2026-10-23T19:45:00Z'}
+        with tempfile.TemporaryDirectory() as td:
+            ledger = Path(td) / 'order_ledger.jsonl'
+            autotrader.append_jsonl(ledger, earnings_spending.rejection(
+                candidate, 'precheck', '2026-10-12T16:10:00Z'))
+            for changes in ({'planned_exit_at': '2026-10-23T19:44:59Z'},
+                            {'earnings_event_at': '2026-10-28T20:05:00Z'},
+                            {'planned_exit_at': '2026-10-24T00:30:00Z'},
+                            {'symbol': 'dell'}):
+                with self.subTest(changes=changes):
+                    self.assertTrue(earnings_spending.is_spent(
+                        {**candidate, **changes, 'dossier_hash': 'refreshed'}, ledger))
+            self.assertFalse(earnings_spending.is_spent(
+                {**candidate, 'planned_exit_at': '2026-10-22T19:45:00Z',
+                 'dossier_hash': 'genuinely-different-horizon'}, ledger))
+
+    def test_timestamp_refresh_cannot_publish_same_earnings_exit_setup(self):
+        import alpha_radar
+        import earnings_spending
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            snap['earnings_sessions_away'] = 1
+            _setup_root(root, snap)
+            original = json.loads((root / 'candidates.jsonl').read_text())
+            _run_in_root(root, snap)
+            refreshed = {**original, 'candidate_id': 'new-id', 'dossier_hash': 'new-hash',
+                         'researched_at': autotrader.utcnow(), 'sources_verified_at': autotrader.utcnow(),
+                         'price': 102, 'thesis': 'rewritten marketing', 'catalyst': 'rewritten news'}
+            for name in ('earnings_event_at', 'planned_exit_at'):
+                refreshed[name] = dt.datetime.fromisoformat(original[name].replace('Z', '+00:00')).astimezone(dt.timezone(dt.timedelta(hours=-4))).isoformat()
+            refreshed['dossier_hash'] = hashlib.sha256(json.dumps({k: v for k, v in refreshed.items() if k != 'dossier_hash'}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            self.assertTrue(earnings_spending.is_spent(refreshed, root / 'order_ledger.jsonl'))
+            with patch.object(alpha_radar, 'ROOT', root), patch.object(alpha_radar, 'candidate_preflight', return_value=[]), patch.object(alpha_radar, 'qualified', return_value=True), patch.object(alpha_radar, 'source_verification_result') as sources:
+                with self.assertRaisesRegex(alpha_radar.CandidateRejection, 'near_term_earnings'):
+                    alpha_radar.prepare_candidate(refreshed, _cfg(), ledger_path=root / 'order_ledger.jsonl')
+                sources.assert_not_called()
+            autotrader.append_jsonl(root / 'candidates.jsonl', refreshed)
+            code, out, calls = _run_in_root(root, snap)
+            self.assertEqual((code, calls), (0, []))
+            self.assertIn('skipped near_term_earnings', out)
+            for field, value in [('symbol', 'IBM'), ('earnings_event_at', '2027-05-01T20:00:00Z'), ('planned_exit_at', '2027-04-01T20:00:00Z')]:
+                changed = {**refreshed, field: value}
+                self.assertFalse(earnings_spending.is_spent(changed, root / 'order_ledger.jsonl'))
+                self.assertTrue(earnings_spending.is_spent({**changed, 'dossier_hash': original['dossier_hash']}, root / 'order_ledger.jsonl'))
+
+    def test_final_and_fresh_broker_rejections_spend_refreshed_setup(self):
+        import earnings_spending
+        for stage in ('final_validation', 'broker_review'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                good = _snapshot()
+                _setup_root(root, good)
+                candidate = json.loads((root / 'candidates.jsonl').read_text())
+                def approve(bundle, cfg):
+                    return [{'proposal_hash': bundle['proposal']['proposal_hash'], 'decision': 'APPROVE', 'fatal_flags': [],
+                             'reason_codes': [], 'component_scores': {k: 5 for k in autotrader.RUBRIC_WEIGHTS['short_1_5']}}] * 2
+                fresh = _snapshot()
+                fresh['earnings_sessions_away'] = 1
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(patch('autotrader.independent_reviews', side_effect=approve))
+                    stack.enter_context(patch('autotrader.record_shadow_decision'))
+                    if stage == 'final_validation':
+                        stack.enter_context(patch('autotrader.post_review_validation', return_value=(['near_term_earnings'], {})))
+                    code, out, calls = _run_in_root(root, good, review_snapshot=fresh)
+                self.assertEqual(code, 2, out)
+                self.assertIn('near_term_earnings', out)
+                self.assertEqual(calls, ['snapshot'] if stage == 'final_validation' else ['snapshot', 'review'])
+                self.assertTrue(earnings_spending.is_spent({**candidate, 'dossier_hash': 'refreshed'}, root / 'order_ledger.jsonl'))
+                rows = autotrader.read_jsonl(root / 'order_ledger.jsonl', strict=True)
+                self.assertEqual(rows[-1]['stage'], stage)
+                self.assertEqual(autotrader._daily_order_count(root / 'order_ledger.jsonl'), 0)
+                self.assertFalse((root / 'trade_journal.jsonl').exists())
+
+    def test_bad_spending_state_fails_closed_without_candidate_snapshot(self):
+        import alpha_radar
+        import earnings_spending
+        for content in ('not-json\n', json.dumps({'status': 'rejected', 'reason': 'near_term_earnings', 'dossier_hash': []}) + '\n'):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                snap = _snapshot()
+                # Legacy fresh-install projections have no SQLite store yet.
+                (root / 'autonomy_config.json').write_text(json.dumps(_cfg()))
+                (root / 'candidates.jsonl').write_text(json.dumps(_candidate(root)) + '\n')
+                (root / 'private').mkdir()
+                (root / 'order_ledger.jsonl').write_text(content)
+                with patch('autotrader.independent_reviews', side_effect=AssertionError('review forbidden')):
+                    code, out, calls = _run_in_root(root, snap)
+                self.assertEqual((code, calls), (4, []), out)
+                self.assertIn('SYSTEM_FAILURE earnings_spending_state', out)
+                with patch.object(alpha_radar, 'ROOT', root), patch.object(alpha_radar, 'live_research') as research, contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    result = alpha_radar.main_with_args(autotrader.argparse.Namespace(dry_run_fixture=False))
+                self.assertEqual(result, 3)
+                self.assertIn('SYSTEM_FAILURE earnings_spending_state', stdout.getvalue())
+                research.assert_not_called()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            _setup_root(root, snap)
+            with patch.object(earnings_spending, 'read_jsonl', side_effect=PermissionError('unreadable')):
+                code, out, calls = _run_in_root(root, snap)
+            self.assertEqual((code, calls), (4, []), out)
+
+    def test_spending_write_failure_is_not_reported_as_rejection_success(self):
+        for stage in ('precheck', 'final_validation', 'broker_review'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                good = _snapshot()
+                _setup_root(root, good)
+                if stage == 'precheck':good['earnings_sessions_away'] = 1
+                fresh = _snapshot()
+                fresh['earnings_sessions_away'] = 1
+                real_append = autotrader.append_jsonl
+                def broken_append(path, row):
+                    reason = row.get('reason')
+                    if Path(path) == root / 'order_ledger.jsonl' and (reason == 'near_term_earnings' or isinstance(reason, list) and 'near_term_earnings' in reason):
+                        raise OSError('durability failure')
+                    return real_append(path, row)
+                def approve(bundle, cfg):
+                    return [{'proposal_hash': bundle['proposal']['proposal_hash'], 'decision': 'APPROVE', 'fatal_flags': [],
+                             'reason_codes': [], 'component_scores': {k: 5 for k in autotrader.RUBRIC_WEIGHTS['short_1_5']}}] * 2
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(patch('autotrader.append_jsonl', side_effect=broken_append))
+                    stack.enter_context(patch('autotrader.independent_reviews', side_effect=approve))
+                    stack.enter_context(patch('autotrader.record_shadow_decision'))
+                    if stage == 'final_validation':stack.enter_context(patch('autotrader.post_review_validation', return_value=(['near_term_earnings'], {})))
+                    code, out, calls = _run_in_root(root, good, review_snapshot=fresh)
+                self.assertEqual(code, 4, out)
+                self.assertIn('SYSTEM_FAILURE earnings_spending_persistence', out)
+                self.assertNotIn('place', calls)
+                self.assertFalse((root / 'trade_journal.jsonl').exists())
+
+    def test_spending_read_never_imports_unsynchronized_projection(self):
+        import earnings_spending
+        import alpha_radar
+        from sqlite_ledger import database_path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _setup_root(root, _snapshot())
+            ledger = root / 'order_ledger.jsonl'
+            autotrader.append_jsonl(ledger, {'status': 'rejected', 'reason': 'spread_too_wide'})
+            db = database_path(ledger)
+            before = (db.read_bytes(), db.stat().st_mtime_ns)
+            with ledger.open('a') as stream:stream.write(json.dumps({'status': 'rejected', 'reason': 'stale_quote'}) + '\n')
+            candidate = json.loads((root / 'candidates.jsonl').read_text())
+            with self.assertRaises(earnings_spending.SpendingStateError):
+                earnings_spending.is_spent(candidate, ledger)
+            self.assertEqual((db.read_bytes(), db.stat().st_mtime_ns), before)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'autonomy_config.json').write_text(json.dumps(_cfg()))
+            (root / 'candidates.jsonl').write_text('')
+            (root / 'order_ledger.jsonl').write_text('invalid\n')
+            with self.assertRaises(earnings_spending.SpendingStateError):
+                alpha_radar.reusable_fresh_candidate(root / 'candidates.jsonl', root / 'private/reviews.jsonl')
+
+    def test_retry_marker_cannot_revive_earnings_spent_dossier(self):
+        import alpha_radar
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            snap['earnings_sessions_away'] = 1
+            _setup_root(root, snap)
+            candidate = autotrader.read_jsonl(root / 'candidates.jsonl')[-1]
+            _run_in_root(root, snap)
+            autotrader.append_jsonl(root / 'private/reviews.jsonl', {'timestamp': autotrader.utcnow(), 'dossier_hash': candidate['dossier_hash'], 'evidence_id': 'approved', 'reviews': [{'decision': 'APPROVE'}] * 2})
+            autotrader.note_pre_submission_retryable(root / 'private/reviews.jsonl', candidate, 'approved')
+            autotrader.append_jsonl(root / 'order_ledger.jsonl', {'status': 'rejected', 'evidence_id': 'approved', 'reason': ['stale_quote']})
+            with patch('autotrader.independent_reviews', side_effect=AssertionError('no reviews')):
+                code, out, calls = _run_in_root(root, snap)
+            self.assertEqual((code, calls), (0, []), out)
+            with patch.object(alpha_radar, 'candidate_preflight', return_value=[]), patch.object(alpha_radar, 'qualified', return_value=True), patch.object(alpha_radar, 'pre_submission_retryable', return_value=True):
+                self.assertIsNone(alpha_radar.reusable_fresh_candidate(root / 'candidates.jsonl', root / 'private/reviews.jsonl'))
+
+    def test_unknown_earnings_and_transient_quote_alone_do_not_spend(self):
+        import earnings_spending
+        for earnings, quote in [('unknown', _quote()), ('upcoming', _quote(98, 105))]:
+            with self.subTest(earnings=earnings), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                snap = _snapshot(quote=quote)
+                snap['earnings_status'] = earnings
+                if earnings == 'unknown':snap['earnings_sessions_away'] = None
+                _setup_root(root, snap)
+                candidate = autotrader.read_jsonl(root / 'candidates.jsonl')[-1]
+                with patch('autotrader.independent_reviews', side_effect=AssertionError('no review')):
+                    code, out, calls = _run_in_root(root, snap)
+                self.assertEqual(code, 2, out)
+                self.assertNotIn('near_term_earnings', out)
+                self.assertEqual(calls, ['snapshot'])
+                self.assertFalse(earnings_spending.is_spent(candidate, root / 'order_ledger.jsonl'))
+                self.assertFalse((root / 'order_ledger.jsonl').exists())
+
+    def test_missing_setup_identity_uses_exact_hash_only(self):
+        import earnings_spending
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            candidate = {'symbol': 'DELL', 'dossier_hash': 'exact'}
+            row = earnings_spending.rejection(candidate, 'precheck', autotrader.utcnow())
+            autotrader.append_jsonl(root / 'order_ledger.jsonl', row)
+            self.assertIsNone(row['earnings_setup_key'])
+            self.assertTrue(earnings_spending.is_spent(candidate, root / 'order_ledger.jsonl'))
+            self.assertFalse(earnings_spending.is_spent({**candidate, 'dossier_hash': 'different'}, root / 'order_ledger.jsonl'))
+            for event in (None, 'not-a-date'):
+                self.assertIsNone(earnings_spending.setup_key({**candidate, 'earnings_event_at': event, 'planned_exit_at': '2027-01-01'}))
+            aware = {**candidate, 'earnings_event_at': '2027-01-01T00:00:00Z', 'planned_exit_at': '2027-02-01T00:00:00Z'}
+            self.assertNotEqual(earnings_spending.setup_key(aware), earnings_spending.setup_key({**aware, 'earnings_event_at': '2027-01-01'}))
+            self.assertNotEqual(earnings_spending.setup_key(aware), earnings_spending.setup_key({**aware, 'earnings_event_at': '2027-01-01T00:00:00'}))
+
+    def test_pending_reconciliation_still_precedes_spent_skip(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            snap['earnings_sessions_away'] = 1
+            _setup_root(root, snap)
+            _run_in_root(root, snap)
+            with patch('autotrader.reconcile_pending_orders', side_effect=RuntimeError('pending obligation')) as pending, patch('autotrader.independent_reviews', side_effect=AssertionError('no review')):
+                code, out, calls = _run_in_root(root, snap)
+            pending.assert_called_once()
+            self.assertEqual((code, calls), (4, []))
+            self.assertIn('SYSTEM_FAILURE pending_order_reconciliation', out)
+
+    def test_fixture_and_live_dry_run_spending_is_isolated(self):
+        import earnings_spending
+        for fixture in (False, True):
+            with self.subTest(fixture=fixture), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                snap = _snapshot()
+                snap['earnings_sessions_away'] = 1
+                _setup_root(root, snap)
+                candidate = autotrader.read_jsonl(root / 'candidates.jsonl')[-1]
+                if fixture:
+                    (root / 'fixtures').mkdir()
+                    (root / 'fixtures/dry_run_bundle.json').write_text(json.dumps({'snapshot': snap, 'candidate': candidate, 'review_a': {}, 'review_b': {}}))
+                    with patch.object(autotrader, 'ROOT', root), patch('autotrader._broker_bridge', side_effect=AssertionError('fixture no broker')), contextlib.redirect_stdout(io.StringIO()):
+                        code = autotrader.run(autotrader.argparse.Namespace(dry_run_fixture=True, live_dry_run=False))
+                else:
+                    with patch('autotrader.independent_reviews', side_effect=AssertionError('precheck no reviewer')):
+                        code, out, calls = _run_in_root(root, snap, live_dry_run=True)
+                    self.assertEqual(calls, ['snapshot'])
+                self.assertEqual(code, 2)
+                artifact = root / 'test_artifacts/dry_run_order_ledger.jsonl'
+                self.assertTrue(earnings_spending.is_spent(candidate, artifact))
+                self.assertFalse(earnings_spending.is_spent(candidate, root / 'order_ledger.jsonl'))
+                self.assertFalse((root / 'order_ledger.jsonl').exists())
+                with patch('autotrader.independent_reviews', side_effect=AssertionError('precheck no reviewer')):
+                    code, out, calls = _run_in_root(root, snap)
+                self.assertEqual((code, calls), (2, ['snapshot']))
+                self.assertIn('BLOCKER near_term_earnings', out)
+
+    def test_cycle_records_earnings_spent_as_skip_not_completion(self):
+        import run_cycle
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'decision_audit.jsonl'
+            run_cycle.audit_result('autotrader', 'execution', 0,
+                                   'DECISION skipped near_term_earnings', path)
+            rows = autotrader.read_jsonl(path, strict=True)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['decision'], 'skipped')
+            self.assertEqual(rows[0]['reason'], 'near_term_earnings')
+            self.assertEqual(rows[0]['mode'], 'autotrader')
+            self.assertEqual(rows[0]['stage'], 'execution')
+
+    def test_cycle_recognizes_spending_failure_classifications(self):
+        import run_cycle
+        for reason in ('earnings_spending_state', 'earnings_spending_persistence'):
+            line = 'SYSTEM_FAILURE ' + reason
+            self.assertEqual(run_cycle.parse_failure_event(line), line)
+
+    def test_radar_fallback_reports_spending_state_failure(self):
+        import alpha_radar
+        import earnings_spending
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'autonomy_config.json').write_text(json.dumps(_cfg()))
+            with patch.object(alpha_radar, 'ROOT', root), patch.object(alpha_radar, 'reusable_fresh_candidate', side_effect=[None, earnings_spending.SpendingStateError('bad state')]), patch.object(alpha_radar, 'live_research', side_effect=alpha_radar.ResearchFailure('research_scout_timeout')), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = alpha_radar.main_with_args(autotrader.argparse.Namespace(dry_run_fixture=False))
+            self.assertEqual(code, 3)
+            self.assertIn('SYSTEM_FAILURE earnings_spending_state', stdout.getvalue())
+
+    def test_changed_earnings_or_exit_setup_faces_authoritative_checks_again(self):
+        for field in ('earnings_event_at', 'planned_exit_at'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                snap = _snapshot()
+                snap['earnings_sessions_away'] = 1
+                _setup_root(root, snap)
+                original = autotrader.read_jsonl(root / 'candidates.jsonl')[-1]
+                _run_in_root(root, snap)
+                changed = dict(original)
+                changed[field] = (dt.datetime.fromisoformat(changed[field].replace('Z', '+00:00')) + dt.timedelta(days=1)).isoformat()
+                changed['dossier_hash'] = hashlib.sha256(json.dumps({k: v for k, v in changed.items() if k != 'dossier_hash'}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                autotrader.append_jsonl(root / 'candidates.jsonl', changed)
+                with patch('autotrader.independent_reviews', side_effect=AssertionError('precheck must block')):
+                    code, out, calls = _run_in_root(root, snap)
+                self.assertEqual((code, calls), (2, ['snapshot']), out)
+                self.assertIn('BLOCKER near_term_earnings', out)
+                self.assertEqual(len(autotrader.read_jsonl(root / 'order_ledger.jsonl')), 2)
+
+    def test_unrelated_older_dossier_remains_reusable(self):
+        import alpha_radar
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            snap['earnings_sessions_away'] = 1
+            _setup_root(root, snap)
+            blocked = autotrader.read_jsonl(root / 'candidates.jsonl')[-1]
+            unrelated = {**blocked, 'symbol': 'IBM', 'dossier_hash': 'unrelated'}
+            autotrader.append_jsonl(root / 'candidates.jsonl', unrelated)
+            autotrader.append_jsonl(root / 'candidates.jsonl', blocked)
+            _run_in_root(root, snap)
+            with patch.object(alpha_radar, 'candidate_preflight', return_value=[]), patch.object(alpha_radar, 'qualified', return_value=True):
+                self.assertEqual(alpha_radar.reusable_fresh_candidate(root / 'candidates.jsonl', root / 'private/reviews.jsonl'), unrelated)
+
+    def test_malformed_spending_marker_cannot_disappear_into_other_order_states(self):
+        import earnings_spending
+        base = earnings_spending.rejection({'symbol': 'DELL', 'dossier_hash': 'exact'}, 'precheck', autotrader.utcnow())
+        for changes in ({'status': 'proposed'}, {'reason': 'stale_quote'}, {'stage': 'invented'}, {'earnings_setup_key': 'broken'}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                ledger = root / 'order_ledger.jsonl'
+                ledger.write_text(json.dumps({**base, **changes}) + '\n')
+                with self.assertRaises(earnings_spending.SpendingStateError):
+                    earnings_spending.is_spent({'dossier_hash': 'exact'}, ledger)
+
+    def test_precheck_spends_before_review_and_both_selectors_skip(self):
+        import alpha_radar
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snap = _snapshot()
+            snap['earnings_sessions_away'] = 1
+            _setup_root(root, snap)
+            candidate = json.loads((root / 'candidates.jsonl').read_text())
+            with patch('autotrader.independent_reviews') as reviews:
+                code, out, calls = _run_in_root(root, snap)
+                self.assertEqual(code, 2)
+                self.assertIn('near_term_earnings', out)
+                self.assertEqual(calls, ['snapshot'])
+                reviews.assert_not_called()
+            ledger = root / 'order_ledger.jsonl'
+            self.assertTrue(ledger.exists(), 'precheck must durably spend the dossier')
+            rows = autotrader.read_jsonl(ledger, strict=True)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['status'], 'rejected')
+            self.assertEqual(rows[0]['reason'], 'near_term_earnings')
+            self.assertEqual(rows[0]['stage'], 'precheck')
+            self.assertEqual(rows[0]['dossier_hash'], candidate['dossier_hash'])
+            from public_dashboard import sanitize_ledger_row
+            public = sanitize_ledger_row(rows[0])
+            for field in ('earnings_setup_key', 'dossier_hash', 'candidate_id'):
+                self.assertNotIn(field, public)
+            for field in ('client_order_id', 'parent_client_order_id', 'quantity', 'reviews'):
+                self.assertNotIn(field, rows[0])
+            self.assertEqual(autotrader._daily_order_count(ledger), 0)
+            self.assertFalse((root / 'trade_journal.jsonl').exists())
+            self.assertFalse((root / 'private/reviews.jsonl').exists())
+            with patch('autotrader.independent_reviews') as reviews:
+                code, out, calls = _run_in_root(root, snap)
+                self.assertEqual(code, 0)
+                self.assertIn('skipped near_term_earnings', out)
+                self.assertEqual(calls, [])
+                reviews.assert_not_called()
+            with patch.object(alpha_radar, 'candidate_preflight', return_value=[]), patch.object(alpha_radar, 'qualified', return_value=True):
+                self.assertIsNone(alpha_radar.reusable_fresh_candidate(root / 'candidates.jsonl', root / 'private/reviews.jsonl'))
 
 
 class RunPrecheckDiagnosticsTests(unittest.TestCase):

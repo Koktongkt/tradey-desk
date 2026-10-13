@@ -75,6 +75,14 @@ def _persistable_candidate(*, researched_at="2026-09-09T14:00:00Z", receipt_coun
     }
 
 
+def _isolate_main_root(self):
+    """Main-path tests never consult the live spending ledger."""
+    root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+    source = Path(__file__).resolve().parents[1] / 'autonomy_config.json'
+    (root / 'autonomy_config.json').write_text(source.read_text())
+    self.enterContext(patch.object(alpha_radar, 'ROOT', root))
+
+
 def _isolate_model_config(self):
     alpha_radar.configured_default_model.cache_clear()
     self.addCleanup(alpha_radar.configured_default_model.cache_clear)
@@ -655,6 +663,7 @@ class AlphaRadarTests(unittest.TestCase):
         gather.assert_not_called()
 
     def test_main_reports_typed_research_failures(self):
+        _isolate_main_root(self)
         persistable=_persistable_candidate(researched_at='2026-09-05T14:00:00Z')
         cases = (
             ('research_failure_scout_timeout',
@@ -978,6 +987,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code,"research_market_data_unavailable")
 
     def test_main_strips_private_source_receipts_before_persisting(self):
+        _isolate_main_root(self)
         candidate=_persistable_candidate()
         with patch.object(alpha_radar,"reusable_fresh_candidate",return_value=None), patch.object(
             alpha_radar,"fresh_verified_candidate",return_value=None
@@ -994,6 +1004,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("sources_verified_at",persisted)
 
     def test_main_preserves_verification_failure_across_diagnostic_write_outcomes(self):
+        _isolate_main_root(self)
         for write_fails in (False, True):
             with self.subTest(diagnostic_write_fails=write_fails):
                 candidate=_persistable_candidate(receipt_count=1)

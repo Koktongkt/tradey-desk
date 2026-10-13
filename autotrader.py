@@ -1377,11 +1377,16 @@ def broker_review_validation(plan, fresh, cfg, daily, fresh_exposure, preexistin
     )
 
 def run(args: argparse.Namespace) -> int:
-    if args.dry_run_fixture or args.live_dry_run:
-        return _run_locked(args)
+    from earnings_spending import SpendingStateError, SpendingPersistenceError
     try:
+        if args.dry_run_fixture or args.live_dry_run:
+            return _run_locked(args)
         with entry_state.lock(ROOT):
             return _run_locked(args)
+    except SpendingStateError:
+        print("SYSTEM_FAILURE earnings_spending_state"); return 4
+    except SpendingPersistenceError:
+        print("SYSTEM_FAILURE earnings_spending_persistence"); return 4
     except RuntimeError as error:
         if str(error) in {"entry_state_busy", "entry_state_invalid"}:
             print("BLOCKER " + str(error)); return 2
@@ -1389,6 +1394,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _run_locked(args: argparse.Namespace) -> int:
+    from earnings_spending import rejection, persist_rejection, SpendingPersistenceError
     cfg=load_json(ROOT/"autonomy_config.json")
     proof = None
     ledger,reviews_path,disagreements_path=output_paths(ROOT,args.dry_run_fixture or args.live_dry_run)
@@ -1444,6 +1450,9 @@ def _run_locked(args: argparse.Namespace) -> int:
         age=research_age_minutes(candidate)
         if age is None or not research_acceptable(candidate,cfg,age,allow_stale=args.live_dry_run):
             print("BLOCKER stale_or_unverified_research"); return 2
+        from earnings_spending import is_spent
+        if is_spent(candidate,ledger):
+            print("DECISION skipped near_term_earnings"); return 0
         if not args.live_dry_run and dossier_already_reviewed(candidate,reviews_path):
             print("DECISION skipped already_reviewed"); return 0
         try:
@@ -1471,6 +1480,8 @@ def _run_locked(args: argparse.Namespace) -> int:
     precheck,precheck_details=pre_review_validation(proposal,snapshot,cfg,daily,exposure,preexisting_symbols,**proof_args)
     if precheck:
         precheck=sorted(set(precheck))
+        if "near_term_earnings" in precheck:
+            persist_rejection(ledger,rejection(candidate,"precheck",utcnow()),append_jsonl)
         record_blocker_diagnostics("precheck",proposal.get("symbol"),proposal.get("action"),precheck,precheck_details,dry_run=args.dry_run_fixture or args.live_dry_run)
         print("BLOCKER " + ",".join(precheck)); return 2
     if not args.dry_run_fixture:
@@ -1500,7 +1511,10 @@ def _run_locked(args: argparse.Namespace) -> int:
         reason=errors + blockers + (["dry_run_no_execution"] if args.dry_run_fixture else []) + (["live_dry_run_no_execution"] if args.live_dry_run else [])
         if errors:
             record_blocker_diagnostics("final_validation",plan.get("symbol"),plan.get("action"),sorted(set(errors)),final_details,dry_run=args.dry_run_fixture or args.live_dry_run)
-        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":reason})
+        spending = rejection(candidate,"final_validation",utcnow()) if "near_term_earnings" in errors else {}
+        rejected={**proposed,**spending,"timestamp":utcnow(),"status":"rejected","reason":reason}
+        if spending:persist_rejection(ledger,rejected,append_jsonl)
+        else:append_jsonl(ledger,rejected)
         from candidate_retry import RETRYABLE_EXECUTION_REASONS
         if (errors and set(errors) <= RETRYABLE_EXECUTION_REASONS and not blockers
                 and not args.dry_run_fixture and not args.live_dry_run):
@@ -1519,7 +1533,10 @@ def _run_locked(args: argparse.Namespace) -> int:
         if fresh_errors:
             fresh_errors=sorted(set(fresh_errors))
             record_blocker_diagnostics("broker_review",plan.get("symbol"),plan.get("action"),fresh_errors,fresh_details)
-            append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":"rejected","reason":fresh_errors})
+            spending = rejection(candidate,"broker_review",utcnow()) if "near_term_earnings" in fresh_errors else {}
+            rejected={**proposed,**spending,"timestamp":utcnow(),"status":"rejected","reason":fresh_errors}
+            if spending:persist_rejection(ledger,rejected,append_jsonl)
+            else:append_jsonl(ledger,rejected)
             from candidate_retry import RETRYABLE_EXECUTION_REASONS
             if set(fresh_errors) <= RETRYABLE_EXECUTION_REASONS:
                 note_pre_submission_retryable(reviews_path,candidate,private_id)
@@ -1546,6 +1563,8 @@ def _run_locked(args: argparse.Namespace) -> int:
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":reconciled["status"]})
         journal_confirmed_fill(ROOT/"trade_journal.jsonl",plan,reconciled,lineage)
         return 0
+    except SpendingPersistenceError:
+        raise  # Never relabel a lost spending write as a broker failure.
     except Exception:
         failure_status="submission_unknown" if submission_started else "rejected"
         append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":failure_status,"reason":"broker_mcp_failure"})

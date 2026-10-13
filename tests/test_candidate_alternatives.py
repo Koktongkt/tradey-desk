@@ -67,6 +67,20 @@ class CandidateAlternativesTests(unittest.TestCase):
                      'earnings_event_at':(now-dt.timedelta(days=2)).date().isoformat(),
                      'horizon_rationale':'Post event follow-through','sources':[{'url':f'https://{d}.example/{symbol}'} for d in ('one','two')]},**changes)
 
+    def test_earnings_spent_intake_moves_to_source_first_alternative(self):
+        from durable_jsonl import append_jsonl
+        from earnings_spending import rejection
+        first, second = self.candidate('AAA'), self.candidate('BBB')
+        with self.research_fixture([first, second], symbols=('AAA', 'BBB')) as (cfg, root, calls, fetch, market):
+            append_jsonl(root / 'order_ledger.jsonl', rejection({**first, 'dossier_hash': 'previous'}, 'precheck', dt.datetime.now(dt.timezone.utc).isoformat()))
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+            self.assertEqual(code, 0, stdout.getvalue())
+            published = [json.loads(line) for line in (root / 'candidates.jsonl').read_text().splitlines()]
+            self.assertEqual([row['symbol'] for row in published], ['BBB'])
+            self.assertEqual(calls.call_count, 3)
+            fetch.assert_called_once()
+
     def test_oct2_replay_borrows_for_second_synthesis_without_burning_enrichment(self):
         for upstream,expected_timeouts in ((0,[60,52]),(400,[60,35])):
             clock=[0.0]
@@ -87,9 +101,9 @@ class CandidateAlternativesTests(unittest.TestCase):
                     return {'price':100,'spy_price':500}
                 market.side_effect=prices
                 prepare=radar.prepare_candidate
-                def intake(candidate,cfg):
+                def intake(candidate,cfg,**kwargs):
                     if candidate['symbol']=='AAA':raise radar.CandidateRejection('candidate_failed_qualification')
-                    return prepare(candidate,cfg)
+                    return prepare(candidate,cfg,**kwargs)
                 with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=intake):
                     result=radar.live_research(cfg)
                 self.assertEqual(result['symbol'],'BBB')
@@ -108,7 +122,7 @@ class CandidateAlternativesTests(unittest.TestCase):
                     if kwargs.get('candidate_hint',{}).get('symbol')=='BBB' and prompt_exhausts:
                         clock[0]+=0.01
                     return prompt(*args,**kwargs)
-                def reject_first(candidate,cfg):
+                def reject_first(candidate,cfg,**kwargs):
                     clock[0]=60.0
                     raise radar.CandidateRejection('candidate_failed_qualification')
                 with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesis_prompt',side_effect=prepare_prompt), patch.object(radar,'prepare_candidate',side_effect=reject_first):

@@ -26,7 +26,7 @@ TRADE_EVENT_RE=re.compile(
 DECISION_EVENT_RE=re.compile(
     r"DECISION (?:(?P<event>candidate_qualified|reused_fresh_candidate) "
     r"(?P<symbol>[A-Z]{1,6})|skipped (?P<reason>outside_window|already_completed|"
-    r"already_reviewed|no_fresh_setup|no_valid_discovery_candidate))"
+    r"already_reviewed|near_term_earnings|no_fresh_setup|no_valid_discovery_candidate))"
 )
 ALLOWED_FAILURE_TOKENS=frozenset({
     "dashboard_build_failed","dashboard_deploy_failed","dashboard_timeout",
@@ -59,7 +59,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "managed_position_untracked","managed_positions_unverified","managed_protection_inconsistent",
     "managed_protection_missing","managed_protection_missing_or_oversized",
     "managed_protection_not_persistent","managed_reconciliation","managed_state_invalid",
-    "model_disagreement","near_term_earnings","no_candidate","non_paper_mode_forbidden",
+    "model_disagreement","near_term_earnings","earnings_spending_state","earnings_spending_persistence","no_candidate","non_paper_mode_forbidden",
     "otc_forbidden","pending_order_reconciliation","planned_risk_exceeded",
     "planned_risk_policy_missing","policy_constraints_unmet","position_size_exceeded",
     "positions_unknown","preexisting_position_conflict","price_below_minimum",
