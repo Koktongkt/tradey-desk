@@ -480,6 +480,67 @@ class TradeySafetyTests(unittest.TestCase):
                     self.assertIn(error, errors)
 
 
+    def test_earnings_buffer_excludes_entry_session_from_distance(self):
+        import alpha_radar
+        import broker_mcp_bridge
+
+        now = dt.datetime(2026, 10, 12, 16, 10, tzinfo=dt.timezone.utc)
+        calendar = [{"date": f"2026-10-{day:02d}"} for day in
+                    (12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 26, 27, 28)]
+        candidate = {"planned_exit_at": "2026-10-23T20:00:00Z",
+                     "earnings_event_at": "2026-10-28"}
+        status, away = broker_mcp_bridge.earnings_state(candidate["earnings_event_at"], calendar, now)
+        snap = dict(self.snapshot, earnings_status=status, earnings_sessions_away=away,
+                    trading_sessions=[row["date"] for row in calendar])
+        horizon, errors = autotrader.classify_horizon(candidate, snap)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(horizon)
+        assert horizon is not None
+        self.assertEqual(horizon["holding_sessions"], 10)
+        self.assertEqual(away, 12)
+        self.assertIsNone(alpha_radar.earnings_intake_blocker(candidate, self.cfg, now))
+        order = dict(self.decision, **horizon, planned_exit_at=candidate["planned_exit_at"])
+        gates = (
+            autotrader.pre_review_validation(order, snap, self.cfg, 0, 0, set()),
+            autotrader.post_review_validation(order, snap, self.cfg, 0, 0, set(), []),
+            autotrader.broker_review_validation(order, snap, self.cfg, 0, 0, set(), []),
+        )
+        for gate_errors, _ in gates:
+            self.assertNotIn("near_term_earnings", gate_errors)
+
+    def test_earnings_buffer_boundary_uses_broker_sessions(self):
+        import broker_mcp_bridge
+
+        cases = (
+            # Two sessions after exit are blocked; the third is outside buffer.
+            ("multi_day", "2026-10-12", "2026-10-23",
+             [f"2026-10-{day:02d}" for day in
+              (12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 26, 27, 28)], 10),
+            ("same_day_weekend", "2026-10-23", "2026-10-23",
+             ["2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28"], 1),
+            # Labor Day is absent from the authoritative-calendar fixture.
+            ("same_day_holiday", "2026-09-04", "2026-09-04",
+             ["2026-09-04", "2026-09-08", "2026-09-09", "2026-09-10"], 1),
+        )
+        for label, entry, exit_date, sessions, expected_holding in cases:
+            now = dt.datetime.fromisoformat(entry + "T15:00:00+00:00")
+            calendar = [{"date": day} for day in sessions]
+            horizon, errors = autotrader.classify_horizon(
+                {"planned_exit_at": exit_date + "T19:45:00Z"},
+                {"trading_sessions": sessions})
+            self.assertEqual(errors, [])
+            assert horizon is not None
+            self.assertEqual(horizon["holding_sessions"], expected_holding)
+            for event_date in sessions:
+                with self.subTest(case=label, event=event_date):
+                    status, away = broker_mcp_bridge.earnings_state(event_date, calendar, now)
+                    assert away is not None
+                    snap = dict(self.snapshot, earnings_status=status, earnings_sessions_away=away)
+                    order = dict(self.decision, **horizon)
+                    gate_errors = autotrader.validate_order(order, snap, self.cfg, daily_orders=0)
+                    should_block = sessions.index(event_date) <= sessions.index(exit_date) + 2
+                    self.assertEqual("near_term_earnings" in gate_errors, should_block)
+
     def test_broker_nulls_replace_model_values(self):
         model_claim = {"buying_power":999999,"positions":[{"symbol":"FAKE"}],"asset":{"tradable":True}}
         snap = {"buying_power":None,"positions":[],"asset":None}

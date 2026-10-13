@@ -579,7 +579,10 @@ def validate_order_with_details(
         pass
     elif earnings_status=="upcoming" and isinstance(earnings,int) and not isinstance(earnings,bool) and earnings>=0:
         holding=order.get("holding_sessions")
-        holding_sessions=holding if isinstance(holding,int) and not isinstance(holding,bool) and holding>=0 else 0
+        # Holding sessions include the entry session; the broker's earnings
+        # distance counts only sessions strictly after today. Compare like bases
+        # without changing horizon/rubric classification or the blackout buffer.
+        holding_sessions=max(holding-1,0) if isinstance(holding,int) and not isinstance(holding,bool) and holding>=0 else 0
         if earnings <= holding_sessions + cfg["earnings_blackout_sessions"]:
             e.append("near_term_earnings")
             d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
