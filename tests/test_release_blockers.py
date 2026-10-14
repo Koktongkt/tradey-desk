@@ -384,9 +384,14 @@ with tempfile.TemporaryDirectory() as directory:
             child = f"import os,time,pathlib; pathlib.Path({str(record)!r}).write_text(str(os.getpid())+' '+pathlib.Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]); time.sleep(30)"
             wrapper = f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True); time.sleep(30)"
             # Isolated supervisor process, fault at its selector initialization.
-            probe = "import broker_supervisor as s,sys,time,json; from unittest.mock import patch; " + \
-                "bad=lambda: (time.sleep(.2), (_ for _ in ()).throw(RuntimeError('fault')))[1]; " + \
+            probe = (
+                "import broker_supervisor as s,sys,time,json; from pathlib import Path; from unittest.mock import patch\n"
+                "def bad():\n"
+                "    deadline=time.monotonic()+.8\n"
+                f"    while not Path({str(record)!r}).exists() and time.monotonic()<deadline: time.sleep(.005)\n"
+                "    raise RuntimeError('fault')\n"
                 "patcher=patch.object(s.selectors,'DefaultSelector',side_effect=bad); patcher.start(); s.main()"
+            )
             request = dict(command=[sys.executable, '-c', wrapper], input='', timeout=1, options={})
             result = subprocess.run([sys.executable, '-c', probe], input=__import__('json').dumps(request), text=True, capture_output=True, timeout=2)
             self.assertEqual(__import__('json').loads(result.stdout), {'error': 'RuntimeError'})

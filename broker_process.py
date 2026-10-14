@@ -75,6 +75,13 @@ def _group_run(command, *, input, timeout, **kwargs):
                 stream.close()
 
 
+def broker_executable() -> str:
+    """Use persistent user storage unless UV_BIN explicitly selects another path."""
+    if "UV_BIN" in os.environ:
+        return os.environ["UV_BIN"]
+    return str(Path.home() / ".local/bin/uv")
+
+
 def bridge_command(root, operation: str, *, executable: str) -> list[str]:
     return [executable, "run", "--with", "fastmcp<4", "python",
             str(root / "broker_mcp_bridge.py"), operation]

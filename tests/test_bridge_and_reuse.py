@@ -45,6 +45,73 @@ def _reusable_candidate(now):
 
 
 class BridgeCommandTests(unittest.TestCase):
+    def test_all_callers_default_to_persistent_home_executable(self):
+        import os
+        import managed_reconciliation
+        import public_dashboard
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            with patch.dict(os.environ, {"HOME": str(home), "PATH": "/untrusted"}, clear=True), patch.object(
+                autotrader, "ROOT", root
+            ), patch("subprocess.run", return_value=_ok_process()) as run:
+                self.assertEqual(autotrader._broker_bridge("snapshot"), {})
+                self.assertEqual(public_dashboard.fetch_live_portfolio(root), {})
+                self.assertEqual(managed_reconciliation.default_bridge("reconciliation_snapshot"), {})
+            self.assertEqual(run.call_count, 3)
+            for call, operation in zip(run.call_args_list, ("snapshot", "portfolio", "reconciliation_snapshot")):
+                command = call.args[0]
+                self.assertEqual(command[:5], [str(home / ".local/bin/uv"), "run", "--with", "fastmcp<4", "python"])
+                self.assertEqual(command[-1], operation)
+                self.assertEqual(Path(command[-2]).name, "broker_mcp_bridge.py")
+
+    def test_all_callers_preserve_explicit_executable_verbatim(self):
+        import os
+        import managed_reconciliation
+        import public_dashboard
+
+        for executable in ("/chosen/uv", "", "/missing/uv", "/malformed/uv --flag"):
+            with self.subTest(executable=executable), patch.dict(os.environ, {"UV_BIN": executable}), patch(
+                "subprocess.run", return_value=_ok_process()
+            ) as run:
+                autotrader._broker_bridge("snapshot")
+                public_dashboard.fetch_live_portfolio(Path("/offline-desk"))
+                managed_reconciliation.default_bridge("reconciliation_snapshot")
+                self.assertEqual([call.args[0][0] for call in run.call_args_list], [executable] * 3)
+
+    def test_explicit_executable_does_not_require_home_resolution(self):
+        import broker_process
+        with patch.dict("os.environ", {"UV_BIN": "/chosen/uv"}), patch.object(
+            broker_process.Path, "home", side_effect=RuntimeError("home unavailable")
+        ):
+            self.assertEqual(broker_process.broker_executable(), "/chosen/uv")
+
+    def test_unlaunchable_selection_fails_closed_without_fallback(self):
+        import os
+        import managed_reconciliation
+        import public_dashboard
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for override in (None, "", str(root / "missing-uv"), str(root / "uv --flag")):
+                expected = str(root / ".local/bin/uv") if override is None else override
+                environment = {"HOME": str(root), "PATH": "/untrusted"}
+                if override is not None:
+                    environment["UV_BIN"] = override
+                with self.subTest(override=override), patch.dict(os.environ, environment, clear=True), patch.object(
+                    autotrader, "PRIVATE_DIR", root / "private"
+                ), patch("subprocess.run", side_effect=FileNotFoundError("offline launch failure")) as run:
+                    with self.assertRaisesRegex(RuntimeError, "broker_mcp_failure"):
+                        autotrader._broker_bridge("snapshot")
+                    with self.assertRaises(FileNotFoundError):
+                        public_dashboard.fetch_live_portfolio(root)
+                    with self.assertRaisesRegex(RuntimeError, "broker_mcp_failure"):
+                        managed_reconciliation.default_bridge("reconciliation_snapshot")
+                    self.assertEqual([call.args[0][0] for call in run.call_args_list], [expected] * 5)
+                    self.assertEqual([call.args[0][-1] for call in run.call_args_list],
+                                     ["snapshot", "snapshot", "portfolio", "reconciliation_snapshot", "reconciliation_snapshot"])
+
     def test_bridge_command_pins_runtime_and_targets_canonical_script(self):
         cmd = autotrader.bridge_command("snapshot")
         index = cmd.index("--with")

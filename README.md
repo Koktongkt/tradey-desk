@@ -149,6 +149,17 @@ The watchdog is a read-only monitoring lane with no trading authority. The CLI n
 
 Only reviewed source/configuration/documentation should be staged by explicit path (avoid `git add .`). `.gitignore` excludes the private SQLite database and research/review files, root operational JSONL ledgers, state, generated dashboard output, and test artifacts. Existing tracked fixture and test-helper files under `test_artifacts/` are source-controlled exceptions; never put live operational records there. Review `git diff --cached --name-only` and `git diff --cached` for sensitive data before committing; verify `git ls-remote origin refs/heads/main` matches the pushed `HEAD` afterward. A Git push publishes code, whereas `deploy_dashboard.sh` separately builds and deploys sanitized dashboard output to Vercel.
 
+## Broker launcher executable
+
+Autotrader, dashboard portfolio reads, and managed reconciliation share the
+broker launcher resolver. It defaults to `$HOME/.local/bin/uv` (persistent
+`/opt/data/.local/bin/uv` on the hosted desk), independent of `PATH` and the
+repository location. `UV_BIN`, when explicitly set, is passed through unchanged,
+including an empty or invalid value; launch failures remain fail-closed without
+falling back to another executable. The bridge arguments remain
+`run --with 'fastmcp<4' python broker_mcp_bridge.py <operation>`; paper mode,
+safety gates, retry policy, and process containment are unchanged.
+
 ## Local verification
 
 Tests are explicitly classified in `tests/test_manifest.json`; the runner fails when a test module is unclassified, duplicated across tiers, or missing. It also snapshots operational ledgers and every file under `private/`, failing if a test changes their content or metadata.

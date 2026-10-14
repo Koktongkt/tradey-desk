@@ -301,10 +301,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_dashboard_live_portfolio_uses_pinned_bridge_runtime(self):
         completed=subprocess.CompletedProcess([],0,json.dumps({"summary":{},"holdings":[]}),"")
-        with patch("public_dashboard.subprocess.run",return_value=completed) as run:
+        with patch.dict("os.environ", {"HOME": "/offline-home"}, clear=True), patch("public_dashboard.subprocess.run",return_value=completed) as run:
             public_dashboard.fetch_live_portfolio(Path("/desk"))
         command=run.call_args.args[0]
-        self.assertEqual(command[:5],["/usr/local/bin/uv","run","--with","fastmcp<4","python"])
+        self.assertEqual(command[:5],["/offline-home/.local/bin/uv","run","--with","fastmcp<4","python"])
         self.assertEqual(command[-2:], ["/desk/broker_mcp_bridge.py","portfolio"])
 
     def test_dashboard_explains_simplified_workflow_blockers(self):
@@ -680,7 +680,10 @@ class DashboardContainmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             with patch.object(run_cycle,'ROOT',root),patch.object(run_cycle,'audit_result'),patch('sys.stdout',io.StringIO()) as output:
-                rc=run_cycle.execute(self._helper(root),timeout_seconds=.3,attempts=3,audit_mode='dashboard',audit_stage='deployment')
+                # Nested helper startup is about 0.4s on hosted workers. Allow
+                # it to reach the child, while expiring before the child's 1s
+                # delayed side effect; readiness and reap checks remain mandatory.
+                rc=run_cycle.execute(self._helper(root),timeout_seconds=.8,attempts=3,audit_mode='dashboard',audit_stage='deployment')
             self.assertEqual(rc,124)
             self.assertEqual(output.getvalue(),'SYSTEM_FAILURE dashboard_timeout\n')
             self._wait_ready(root)

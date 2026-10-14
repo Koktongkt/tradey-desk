@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
-from broker_process import bridge_command, run_bridge
+from broker_process import bridge_command, broker_executable, run_bridge
 import sys
 import entry_state
 from pathlib import Path
@@ -533,7 +533,7 @@ def register_protection(registry_path: Path, row: dict, broker) -> None:
 def default_bridge(operation: str, payload: dict | None = None) -> dict:
     """Read-only subprocess bridge to broker_mcp_bridge.py; retries reads only."""
     cmd = bridge_command(Path(__file__).resolve().parent, operation,
-                         executable=os.environ.get('UV_BIN', '/usr/local/bin/uv'))
+                         executable=broker_executable())
     attempts = 2 if operation == 'reconciliation_snapshot' else 1
     result = None
     for attempt in range(1, attempts + 1):

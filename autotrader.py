@@ -18,7 +18,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
-from broker_process import bridge_command as broker_command, run_bridge
+from broker_process import bridge_command as broker_command, broker_executable, run_bridge
 from typing import Any
 from zoneinfo import ZoneInfo
 from shadow_calibration import record_decision as record_shadow_decision
@@ -951,7 +951,7 @@ def independent_reviews(bundle: dict[str, Any], cfg: dict[str, Any]) -> list[dic
 
 def bridge_command(operation: str) -> list[str]:
     """Pin the client runtime and use an absolute uv path for cron contexts."""
-    return broker_command(ROOT, operation, executable="/usr/local/bin/uv")
+    return broker_command(ROOT, operation, executable=broker_executable())
 
 
 def _record_bridge_diagnostics(operation: str, attempts_made: int, duration_ms: int, result: subprocess.CompletedProcess | None, failure_class: str) -> None:

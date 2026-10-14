@@ -5,7 +5,7 @@ import json
 import math
 import statistics
 import subprocess
-from broker_process import bridge_command, run_bridge
+from broker_process import bridge_command, broker_executable, run_bridge
 from pathlib import Path
 from typing import Any
 from durable_jsonl import read_jsonl
@@ -136,7 +136,7 @@ def sanitize_portfolio_snapshot(snapshot:dict[str,Any]|None)->dict[str,Any]:
     }
 
 def fetch_live_portfolio(root:Path=ROOT)->dict[str,Any]:
-    completed=run_bridge(bridge_command(root,"portfolio",executable="/usr/local/bin/uv"),
+    completed=run_bridge(bridge_command(root,"portfolio",executable=broker_executable()),
                          input="{}",timeout=90,cwd=root,run=subprocess.run)
     if completed.returncode!=0:raise RuntimeError("broker_portfolio_unavailable")
     payload=json.loads(completed.stdout)
