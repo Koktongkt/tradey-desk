@@ -43,8 +43,16 @@ CREATE TABLE alert_outbox(key TEXT NOT NULL PRIMARY KEY, run_id TEXT NOT NULL RE
  state TEXT NOT NULL CHECK(state IN ('pending','acknowledged')), receipt TEXT);
 '''
 
+NOTIFICATION_SCHEMA = '''
+CREATE TABLE notification_policy(id INTEGER PRIMARY KEY CHECK(id=1), policy TEXT NOT NULL);
+CREATE TABLE notification_emissions(key TEXT PRIMARY KEY, run_id TEXT REFERENCES runs(run_id),
+ condition_key TEXT NOT NULL, signature TEXT NOT NULL, state TEXT NOT NULL
+ CHECK(state IN ('suppressed','prepared','emitted','failed')), at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE notification_receipts(key TEXT PRIMARY KEY REFERENCES notification_emissions(key), receipt TEXT NOT NULL);
+'''
+
 # Compact, explicit private contract fields, never raw payloads/transcripts.
-FIELDS = frozenset('''run_id session_date mode captured_at positions portfolio attribution thesis coverage reasons
+FIELDS = frozenset('''run_id session_date mode captured_at positions portfolio attribution thesis coverage reasons sources
 position_id candidate_id symbol entry_quantity remaining_quantity ownership_status quantity_status protection_status
 protection_coverage_quantity horizon_status entry_notional exit_notional status scope strategy account benchmark exposure
 initial_capital capital_label costs distributions baseline_mode baseline_version baseline_at at cash marked_equity
@@ -78,7 +86,16 @@ def compact(value: Any) -> Any:
         for k, v in value.items():
             if k not in FIELDS:
                 continue
-            if k == 'mark_provenance' and isinstance(v, dict):
+            if k == 'sources':
+                # Persist only typed broker protection coverage, never raw adapter
+                # payloads. Without this projection notification decisions lose
+                # the evidence needed to corroborate an otherwise nominal row.
+                source_rows = v if isinstance(v, dict) else {}
+                result[k] = {source: source_rows.get(source) if isinstance(source_rows.get(source), str)
+                             and source_rows[source] in ('complete', 'unknown', 'incomplete') else 'unknown'
+                             for source in ('orders', 'references', 'positions')
+                             if source in source_rows or source in ('orders', 'references')}
+            elif k == 'mark_provenance' and isinstance(v, dict):
                 result[k] = {identity: ref for identity, ref in v.items()
                              if isinstance(identity, str) and isinstance(ref, str)}
             elif k == 'average_price_precision' and isinstance(v, dict):
@@ -141,11 +158,11 @@ def _connection(db, write=False):
                 if statement.strip():
                     conn.execute(statement)
             conn.execute('PRAGMA user_version=1')
-        elif version != 1:
+        elif version not in (1, 2):
             raise ValueError('unsupported_monitoring_schema')
         elif {name: ' '.join(sql.split()) for name, sql in tables} != {
                 statement.strip().split()[2].split('(')[0]: ' '.join(statement.split())
-                for statement in SCHEMA.split(';') if statement.strip()}:
+                for statement in (SCHEMA + (NOTIFICATION_SCHEMA if version == 2 else '')).split(';') if statement.strip()}:
             raise ValueError('unsupported_monitoring_schema')
         yield conn
         conn.commit()
@@ -158,6 +175,64 @@ def _connection(db, write=False):
 
 def _pending(conn):
     return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM alert_outbox WHERE state='pending' ORDER BY rowid")]
+
+
+def notification_policy_enabled(db):
+    if not _path(db).exists():
+        return False
+    with _connection(db) as conn:
+        if conn.execute('PRAGMA user_version').fetchone()[0] != 2:
+            return False
+        row = conn.execute('SELECT policy FROM notification_policy WHERE id=1').fetchone()
+        if row != ('concise-v1',):
+            raise ValueError('unsupported_notification_policy')
+        return True
+
+
+def apply_notification_policy(db):
+    """Explicit monitoring-only migration under the runtime's nonblocking lock.
+
+    Preserve every alert and receipt; historical pending rows get a suppression
+    audit, NOT an acknowledgment. Reapplication does not reset notification state.
+    No observation, source cutoff, authority or trading-ledger changes.
+    """
+    import fcntl
+    import stat
+    path = _path(db)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = path.parent / 'monitor.lock'
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        opened, named = os.fstat(fd), lock.lstat()
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            raise ValueError('monitoring_lock_invalid')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError('monitoring_lock_busy') from error
+        os.fchmod(fd, 0o600)
+        with _connection(path, True) as conn:
+            if conn.execute('PRAGMA user_version').fetchone()[0] == 2:
+                if conn.execute('SELECT policy FROM notification_policy WHERE id=1').fetchone() != ('concise-v1',):
+                    raise ValueError('unsupported_notification_policy')
+                return {'policy': 'concise-v1', 'changed': False}
+            for statement in NOTIFICATION_SCHEMA.split(';'):
+                if statement.strip():
+                    conn.execute(statement)
+            conn.execute("INSERT INTO notification_policy VALUES (1,'concise-v1')")
+            for key, run, payload, at in conn.execute(
+                    "SELECT a.key,a.run_id,a.payload,r.captured_at FROM alert_outbox a JOIN runs r USING(run_id) WHERE a.state='pending'").fetchall():
+                conn.execute('INSERT INTO notification_emissions VALUES (?,?,?,?,?,?,?)',
+                    ('legacy:' + key, run, 'legacy', 'backlog', 'suppressed', at, payload))
+            # A prior daily report is historical, not today's newly committed summary.
+            for run, session, at in conn.execute("SELECT run_id,session_date,captured_at FROM runs WHERE mode='daily'").fetchall():
+                conn.execute('INSERT OR IGNORE INTO notification_emissions VALUES (?,?,?,?,?,?,?)',
+                    ('daily:' + session, run, 'daily', 'backlog', 'suppressed', at, '{}'))
+            conn.execute('PRAGMA user_version=2')
+        return {'policy': 'concise-v1', 'changed': True}
+    finally:
+        os.close(fd)
 
 
 def pending_alerts(db: Path) -> list[dict]:
@@ -302,7 +377,7 @@ def _conditions(report):
                     for r in p.get('reasons', []) if isinstance(r, str)):
                 status = 'discrepancy'
             # Invalid/missing state is a gap, never an implicit recovery.
-            status = status if status in states else 'unknown'
+            status = status if isinstance(status, str) and status in states else 'unknown'
             yield p['position_id'] + ':' + kind, kind, status, states.get(status, 1), p.get('symbol')
     for t in report['thesis']:
         if not t.get('position_id'):
@@ -310,11 +385,11 @@ def _conditions(report):
         status = t.get('status')
         states = {'no_material_change_observed': 0, 'baseline_incomplete': 1,
                   'coverage_incomplete': 1, 'review_required': 2, 'potential_thesis_break': 3}
-        status = status if status in states else 'coverage_incomplete'
+        status = status if isinstance(status, str) and status in states else 'coverage_incomplete'
         yield t['position_id'] + ':thesis', 'thesis', status, states[status], t.get('symbol')
         if 'coverage_status' in t:
             coverage = t.get('coverage_status')
-            coverage = coverage if coverage in {'complete', 'coverage_incomplete'} else 'coverage_incomplete'
+            coverage = coverage if isinstance(coverage, str) and coverage in {'complete', 'coverage_incomplete'} else 'coverage_incomplete'
             yield t['position_id'] + ':sources', 'coverage', coverage, 0 if coverage == 'complete' else 1, t.get('symbol')
         for event in t.get('events', []):
             if event.get('effect') not in {'weakens', 'unclear', 'potential-break'}:
@@ -323,7 +398,7 @@ def _conditions(report):
             identity = dumps([t['position_id'], t.get('baseline_version'), event['fingerprint'], event.get('criterion_id')])
             yield identity + ':evidence', 'evidence', event['effect'], severity, t.get('symbol')
     status = report['coverage'].get('status')
-    status = status if status in {'complete', 'unknown', 'incomplete', 'error'} else 'unknown'
+    status = status if isinstance(status, str) and status in {'complete', 'unknown', 'incomplete', 'error'} else 'unknown'
     yield 'run:coverage', 'coverage', status, 0 if status == 'complete' else 1, None
 
 
@@ -348,20 +423,25 @@ def _transition(conn, run, at, identity, kind, status, severity, symbol):
     conn.execute('INSERT OR REPLACE INTO condition_state VALUES (?,?,?,?,?,?)', (identity, status, severity, generation, last, run))
 
 
+def validated_receipt(receipt):
+    """Retain only genuine provider evidence, never local emission success."""
+    if (not isinstance(receipt, dict) or receipt.get('status') != 'delivered'
+            or receipt.get('verification') not in {'provider_readback', 'idempotent_receipt'}
+            or not all(isinstance(receipt.get(k), str) and receipt[k] for k in ('provider', 'message_id', 'verified_at'))):
+        raise ValueError('verifiable_delivery_receipt_required')
+    aware_timestamp(receipt['verified_at'])
+    return {k: receipt[k] for k in ('provider', 'message_id', 'verified_at', 'status', 'verification')}
+
+
 def ack_alert(db: Path, key: str, receipt: dict) -> None:
     """Caller must obtain real transport evidence; this validates, never invents it.
 
     No-ack transports MUST leave rows pending after ambiguous delivery and disclose
     possible duplicates. A local send-success boolean is not provider readback.
     """
-    if (not isinstance(receipt, dict) or receipt.get('status') != 'delivered'
-            or receipt.get('verification') not in {'provider_readback', 'idempotent_receipt'}
-            or not all(isinstance(receipt.get(k), str) and receipt[k] for k in ('provider', 'message_id', 'verified_at'))):
-        raise ValueError('verifiable_delivery_receipt_required')
-    aware_timestamp(receipt['verified_at'])
+    safe = validated_receipt(receipt)
     if not _path(db).exists():
         raise ValueError('unknown_alert_key')
-    safe = {k: receipt[k] for k in ('provider', 'message_id', 'verified_at', 'status', 'verification')}
     with _connection(db, True) as conn:
         row = conn.execute('SELECT state,receipt FROM alert_outbox WHERE key=?', (key,)).fetchone()
         if not row:

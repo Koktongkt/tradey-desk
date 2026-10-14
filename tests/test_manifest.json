@@ -46,7 +46,8 @@
       "test_w2_w4",
       "test_watchdog_forward_lineage",
       "test_watchdog_reports",
-      "test_watchdog_workflow"
+      "test_watchdog_workflow",
+      "test_watchdog_notifications"
     ],
     "full_only": [
       "test_alpha_radar",

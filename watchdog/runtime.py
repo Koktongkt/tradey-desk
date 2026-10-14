@@ -252,8 +252,9 @@ def live_adapters(mode, root, now, transport):
 class RelayOutput:
     """Collect sanitized rendered alerts; cron delivers stdout after process exit.
 
-    No provider receipt is available here. Returning None intentionally keeps
-    the outbox pending; subsequent eligible runs may repeat these notifications.
+    No provider receipt is available here. Returning None leaves evidence outbox
+    rows pending. Under the explicitly activated concise policy, independent
+    emission bookkeeping prevents historical receiptless outbox replay.
     """
     def __init__(self):
         self.messages = []
@@ -265,7 +266,7 @@ class RelayOutput:
     def text(self):
         if not self.messages:
             return ''
-        return '\n\n'.join(self.messages) + '\n\nDelivery unverified; pending alerts may repeat.'
+        return '\n\n'.join(self.messages) + '\n\nDelivery unverified.'
 
 
 if __name__ == '__main__':

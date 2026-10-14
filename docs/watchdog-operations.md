@@ -25,9 +25,16 @@ The benchmark adapter runs the existing Massive loader in a separate 30-second
 worker and never manufactures missing strategy marks or total-return capability.
 
 `--cron` emits sanitized alert text for supported Hermes script-only cron delivery.
-It returns no receipt: the outbox stays pending and notifications may repeat.
-Mechanical successful no-exception runs and out-of-slot runs are silent; daily
-successful runs emit an installed-report/coverage summary. No job registration
+It returns no receipt. Schema 1 retains the legacy pending-outbox replay described
+below; after explicit `apply-notification-policy`, schema 2 uses independent
+emission/suppression bookkeeping and does **not** replay historical pending alerts.
+The concise policy is documented in [watchdog-notifications.md](watchdog-notifications.md):
+current urgent conditions remain immediate, closed verified positions are omitted,
+and one plain-English daily summary replaces individual setup/coverage warnings
+and routine report-installed lines. No acknowledgment is fabricated; pending
+outbox rows remain audit evidence. The schema-1 delivery notes below are retained
+for rollback/legacy context, not the activated policy.
+Mechanical successful no-exception runs and out-of-slot runs are silent. No job registration
 is performed by the CLI. Concrete workers are now configured; reviewed source
 profiles, provider isolation, and known earnings/financial-content limitations
 are documented in `watchdog-runtime-readiness.md`. Gaps remain visible and never

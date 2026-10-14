@@ -48,16 +48,17 @@ Fail-closed rules:
   the operational root: test_artifacts is a documented non-operational
   exception to the overlap rule. This exception is smoke-only; real runs may
   never nest output inside the operational root.
-- Delivery: every pending alert (including older runs) is rendered with
-  reports.render_alert and handed to adapters['transport'](alert, rendered).
-  Only a genuine provider receipt (validated by store.ack_alert) acknowledges.
-  Ambiguous or absent receipts stay pending; where the transport cannot prove
-  delivery (e.g. Hermes cron relay with no readback), duplicate-on-retry
-  semantics are disclosed rather than claimed exactly-once. A transport that
-  RAISES is reported as its own typed bucket
-  (`transport_exception_delivery_pending`), distinct from an ambiguous
-  no-readback receipt (`ambiguous_delivery_possible_duplicates`); both keep
-  alerts pending.
+- Delivery: schema v1 keeps the legacy receipt-driven outbox transport. Explicit
+  `apply-notification-policy` migrates only monitoring bookkeeping to v2:
+  full evidence/outbox rows remain intact, historical pending rows are audited
+  as suppressed (never acknowledged), and current actionable conditions plus
+  one per-session daily summary are reserved/emitted independently of receipts.
+  A durable `prepared` reservation is ambiguous after a crash and is not replayed;
+  `emitted` means local transport handoff, NOT Telegram delivery. Raised transport
+  calls are recorded failed and retryable. Genuine receipts are retained in a
+  separate notification receipt table. Unchanged current conditions remind at
+  most once per 24h of new observations; changed/reopened conditions are prompt.
+  Minor coverage/setup gaps and recoveries do not produce independent messages.
 
 Adapter keys (run_watchdog requires explicit callbacks; CLI supplies live reads):
   broker:     () -> BrokerSnapshot                       (Task 2 collector)
@@ -221,13 +222,20 @@ def _mark_complete(output_root: Path, session_date: str, run_id: str, now: datet
     return marker
 
 
-def _deliver(db: Path, transport) -> dict:
-    """Drain ALL pending alerts (prior runs included) through the transport.
+def _deliver(db: Path, transport, daily_run_id=None, reports_installed=True) -> dict:
+    """Select concise notifications after explicit activation; otherwise v1 legacy.
 
-    Receipts are validated by ack_alert; anything ambiguous stays pending and
-    is reported as such. Outbox retries therefore remain until genuine
-    provider acknowledgment exists.
+    Historical pending rows remain queryable evidence but are not v2 messages.
+    Emission decisions and receipts are independent; v1 acknowledgments still
+    require genuine provider evidence.
     """
+    from .store import notification_policy_enabled
+    if notification_policy_enabled(db):
+        from .notifications import emit_notifications
+        return emit_notifications(db, transport, daily_run_id=daily_run_id, reports_installed=reports_installed)
+    if not reports_installed:
+        # Preserve v1's report-install prerequisite; never replay its backlog here.
+        return dict(delivered=0, emitted=0, pending=len(pending_alerts(db)), keys=[])
     delivered, ambiguous, transport_failed = [], [], 0
     for alert in pending_alerts(db):
         key = alert.get('key')
@@ -298,11 +306,10 @@ def run_watchdog(mode: str, root, output_root, adapters: dict, now: datetime,
             return _run_locked(mode, root, output_root, adapters, now, budget,
                                before, smoke, clock)
         except TimeoutError as deadline:
-            return {'status': 'budget_exceeded', 'mode': mode, 'run_id': None,
-                    'reasons': [str(deadline)], 'all_clear': False,
-                    'input_unchanged': _input_unchanged(before, root),
-                    'committed': False, 'delivered': 0, 'pending': 0,
-                    'coverage_status': 'unknown'}
+            failure = _failed(mode, before, root, [str(deadline)],
+                              output_root / 'private/watchdog/monitoring.sqlite3', adapters, now, smoke)
+            failure['status'] = 'budget_exceeded'
+            return failure
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
     finally:
@@ -327,7 +334,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
             write_failure(output_root, mode, now, started_at, details)
         except Exception:
             pass
-        return _failed(mode, before, root, ['broker_adapter_failed'], db)
+        return _failed(mode, before, root, ['broker_adapter_failed'], db, adapters, now, smoke)
     budget.check('outer')
     # Session/cron gate: silent no-op outside eligibility; a missing or
     # invalid calendar is a typed coverage gap, never a guessed session.
@@ -352,7 +359,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
     try:
         snapshot = operational.read_operational(root)
     except Exception:
-        return _failed(mode, before, root, ['operational_read_failed'], db)
+        return _failed(mode, before, root, ['operational_read_failed'], db, adapters, now, smoke)
     reasons.extend(snapshot.reasons)
     budget.check('outer')
     lineage = build_lineage(snapshot, broker)
@@ -417,7 +424,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
     try:
         budget.check('outer')
     except TimeoutError:
-        return _failed(mode, before, root, ['outer_deadline_exceeded'], db)
+        return _failed(mode, before, root, ['outer_deadline_exceeded'], db, adapters, now, smoke)
 
     # Coverage and absence of exceptions are distinct assertions. A known
     # cancelled stop can be fully observed but can never be an all-clear.
@@ -465,6 +472,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
         alerts = commit_observation(db, observation, smoke=smoke)
     except ValueError as error:
         code = (str(error) or 'observation_commit_failed').replace(' ', '_')
+        delivery = _failed(mode, before, root, ['observation_commit_failed'], db, adapters, now, smoke)['delivery']
         return {'status': 'failed', 'mode': mode, 'run_id': run_id,
                 'session_date': session_date,
                 'reasons': ['observation_commit_failed', code], 'all_clear': False,
@@ -472,7 +480,7 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
                 'committed': False, 'committed_now': False, 'delivered': 0,
                 'pending': len(pending_alerts(db)) if db.exists() else 0,
                 'coverage_status': coverage['status'], 'completion_marker': False,
-                'delivery': {}}
+                'delivery': delivery}
     committed_now = not already_committed
 
     if smoke:
@@ -485,14 +493,16 @@ def _run_locked(mode, root, output_root, adapters, now, budget, before, smoke, c
             budget.check('outer')
             (adapters.get('install_reports') or _default_install)(db)
         except Exception:
-            # Report/persistence failure must not acknowledge alerts; the next
-            # eligible daily slot retries reporting only, never execution.
+            # Publication cannot hide a committed urgent condition. Daily
+            # summaries still require installation; v1 retains its old policy.
+            delivery = _deliver(db, adapters.get('transport'), reports_installed=False)
             return {'status': 'failed', 'mode': mode, 'run_id': run_id,
                     'reasons': ['report_install_failed'], 'all_clear': False,
                     'input_unchanged': _input_unchanged(before, root),
-                    'committed': True, 'delivered': 0,
-                    'pending': len(pending_alerts(db)), 'coverage_status': coverage['status']}
-        delivery = _deliver(db, adapters.get('transport'))
+                    'committed': True, 'delivered': delivery['delivered'],
+                    'pending': delivery['pending'], 'coverage_status': coverage['status'],
+                    'delivery': {k: v for k, v in delivery.items() if k != 'keys'}}
+        delivery = _deliver(db, adapters.get('transport'), daily_run_id=run_id if mode == 'daily' else None)
         marker = False
         if mode == 'daily':
             # Trusted stamp is the caller-supplied `now`, not broker time.
@@ -530,14 +540,17 @@ def _reporting_retry(mode, run_id, session_date, root, output_root, db,
         budget.check('outer')
         (adapters.get('install_reports') or _default_install)(db)
     except Exception:
-        # Reporting failure keeps alerts pending for the following slot.
+        # Evaluate only current urgent conditions; do not reserve a daily
+        # summary until installation succeeds, even on inter-mode retries.
+        delivery = _deliver(db, adapters.get('transport'), reports_installed=False)
         return {'status': 'failed', 'mode': mode, 'run_id': run_id,
                 'reasons': ['report_install_failed'], 'all_clear': False,
                 'input_unchanged': _input_unchanged(before, root),
                 'committed': True, 'committed_now': False,
-                'reporting_retry': True, 'delivered': 0,
-                'pending': len(pending_alerts(db)), 'coverage_status': 'unknown'}
-    delivery = _deliver(db, adapters.get('transport'))
+                'reporting_retry': True, 'delivered': delivery['delivered'],
+                'pending': delivery['pending'], 'coverage_status': 'unknown',
+                'delivery': {k: v for k, v in delivery.items() if k != 'keys'}}
+    delivery = _deliver(db, adapters.get('transport'), daily_run_id=run_id if mode == 'daily' else None)
     # Trusted stamp is the caller-supplied `now` of the retrying slot.
     _mark_complete(output_root, session_date, run_id, now)
     unchanged = _input_unchanged(before, root)
@@ -550,12 +563,16 @@ def _reporting_retry(mode, run_id, session_date, root, output_root, db,
             'delivery': {k: v for k, v in delivery.items() if k != 'keys'}}
 
 
-def _failed(mode, before, root, extra, db):
+def _failed(mode, before, root, extra, db, adapters=None, now=None, smoke=False):
     reasons = list(extra)
+    delivery = {}
+    if adapters is not None and now is not None and not smoke:
+        from .notifications import emit_check_failure
+        delivery = emit_check_failure(db, adapters.get('transport'), now.isoformat(), reasons[0])
     return {'status': 'failed', 'mode': mode, 'run_id': None, 'reasons': reasons,
             'all_clear': False, 'input_unchanged': _input_unchanged(before, root),
-            'committed': False, 'delivered': 0, 'pending': 0,
-            'coverage_status': 'unknown'}
+            'committed': False, 'delivered': 0, 'pending': delivery.get('pending', 0),
+            'delivery': delivery, 'coverage_status': 'unknown'}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -563,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog='watchdog_cli.py', add_help=True,
                                      description='Monitoring-only position/portfolio watchdog CLI')
-    parser.add_argument('action', choices=['mechanical', 'daily', 'eligibility'],
+    parser.add_argument('action', choices=['mechanical', 'daily', 'eligibility', 'apply-notification-policy'],
                         help='monitoring action (anything else fails closed)')
     parser.add_argument('--root', default=str(CHECKOUT), help='operational storage root')
     parser.add_argument('--output-root', default=None, help='output root (default: --root)')
@@ -582,6 +599,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == 'eligibility':
         print(json.dumps({'mechanical_cron': schedule.MECHANICAL_CRON,
                           'daily_cron': schedule.DAILY_CRON}))
+        return 0
+    if args.action == 'apply-notification-policy':
+        try:
+            if args.smoke or args.cron:
+                raise ValueError('policy_apply_requires_explicit_non_smoke_action')
+            root, output = resolve_paths(args.root, args.output_root or args.root, fixture=args.fixture)
+            from .store import apply_notification_policy
+            result = apply_notification_policy(output / 'private/watchdog/monitoring.sqlite3')
+        except (ValueError, OSError):
+            print('Notification policy activation rejected; no policy change committed.')
+            return 2
+        print(json.dumps(result, sort_keys=True))
         return 0
     from .runtime import RelayOutput, configured_broker, configured_benchmark
     transport = RelayOutput()
@@ -605,10 +634,9 @@ def main(argv: list[str] | None = None) -> int:
             if text:
                 print(text)
             elif result.get('status') != 'ok':
-                print('Watchdog observation unavailable; coverage not verified.')
-            if args.action == 'daily' and result.get('status') == 'ok':
-                print('Watchdog daily report installed. Coverage: ' + result.get('coverage_status', 'unknown')
-                      + '. All-clear: ' + str(result.get('all_clear') is True) + '.')
+                from .store import notification_policy_enabled
+                if not notification_policy_enabled(output / 'private/watchdog/monitoring.sqlite3'):
+                    print('Current position protection could not be checked; human review is needed.')
     else:
         print(json.dumps(result, sort_keys=True))
     return 0 if result.get('status') in {'ok', 'no_op', 'skipped'} else 1

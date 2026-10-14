@@ -175,6 +175,73 @@ def render_alert(alert: dict) -> str:
     return f"Watchdog {kind}: {symbol + ' ' if symbol else ''}{status} ({severity}). Human review only; no trading action taken."
 
 
+def daily_notification(report: dict) -> str:
+    """One concise, value-sanitized daily message; no source/model prose."""
+    from decimal import Decimal
+    safe = public_summary(report)
+    lines = ['Watchdog daily summary — ' + (safe['session_date'] or 'session date unavailable')]
+    positions = []
+    gaps = set()
+    open_ids = set()
+    report_coverage = _dict(report.get('coverage'))
+    sources = report_coverage.get('sources')
+    # Match immediate-alert corroboration: accounting/thesis gaps do not make
+    # protection unknown, but missing broker orders/references evidence does.
+    sources_verified = 'sources' not in report_coverage or (isinstance(sources, dict) and all(
+        sources.get(key) == 'complete' for key in ('orders', 'references')) and
+        ('positions' not in sources or sources.get('positions') == 'complete'))
+    for position in _rows(report.get('positions')):
+        quantity = _amount(position.get('remaining_quantity'))
+        ownership_verified = position.get('ownership_status') == 'verified'
+        corroborated = sources_verified and ownership_verified
+        if corroborated and quantity is not None and Decimal(quantity) == 0:
+            continue
+        identity = position.get('position_id')
+        if isinstance(identity, str):
+            open_ids.add(identity)
+        symbol = _symbol(position.get('symbol')) or 'Unidentified position'
+        coverage = _amount(position.get('protection_coverage_quantity'))
+        status = _enum(position.get('protection_status'), {'covered', 'partial', 'unprotected'})
+        covered = (corroborated and quantity is not None and Decimal(quantity) > 0 and coverage is not None
+                   and Decimal(coverage) >= Decimal(quantity) and status == 'covered')
+        label = 'covered' if covered else {'partial': 'partially protected', 'unprotected': 'unprotected'}.get(status, 'protection unverified')
+        if not corroborated or quantity is None or Decimal(quantity) <= 0 or (not covered and status == 'covered'):
+            label = 'protection unverified'
+        positions.append(symbol + ': ' + label)
+        if not corroborated or quantity is None or Decimal(quantity) < 0 or position.get('horizon_status') not in ('active', 'horizon_expired'):
+            gaps.add('position ownership, quantity or horizon records')
+    lines.append('Open positions: ' + ('; '.join(positions) if positions else 'none observed') + '.')
+    developments = []
+    thesis = _rows(report.get('thesis'))
+    for row in thesis:
+        if row.get('position_id') not in open_ids:
+            continue
+        status = _enum(row.get('status'), {'no_material_change_observed', 'review_required', 'potential_thesis_break'})
+        if status in ('review_required', 'potential_thesis_break'):
+            developments.append((_symbol(row.get('symbol')) or 'Position') + ': ' +
+                                ('potential thesis break' if status == 'potential_thesis_break' else 'thesis needs review'))
+        if status == 'unknown' or row.get('coverage_status') != 'complete':
+            gaps.add('thesis baselines or source coverage')
+    if open_ids and not thesis:
+        gaps.add('thesis baselines or source coverage')
+    lines.append('Developments: ' + ('; '.join(developments) if developments else
+                 'no substantive change verified in the available evidence') + '.')
+    if safe['strategy']['coverage']['status'] != 'complete' or safe['account']['coverage']['status'] != 'complete':
+        gaps.add('accounting and performance verification')
+    if safe['benchmark']['coverage']['status'] != 'complete':
+        gaps.add('benchmark comparison')
+    if safe['coverage']['status'] != 'complete':
+        gaps.add('overall monitoring coverage')
+    if gaps:
+        lines.append('Limitations: ' + '; '.join(sorted(gaps)) + '. Unknowns are not an all-clear.')
+    if safe['strategy']['marked_equity'] is not None:
+        lines.append('Verified $10,000 strategy marked equity: $' + safe['strategy']['marked_equity'] + '.')
+    if safe['strategy']['inception_return'] is not None:
+        lines.append('Verified strategy inception return (fraction): ' + safe['strategy']['inception_return'] + '.')
+    lines.append('Monitoring only; no trading action taken.')
+    return '\n'.join(lines)
+
+
 def dashboard_summary(db) -> dict:
     """Private DB input only, no sync/repair/mkdir; sanitize on EVERY read."""
     import sqlite3
