@@ -19,7 +19,7 @@ class ForwardLineageTests(unittest.TestCase):
         plan = copy.deepcopy(fixture.plan)
         order = dict(fixture.accepted, id='broker-id', status='filled', filled_qty='3', filled_avg_price='162.80')
         metadata = dict(candidate_id='cid', dossier_hash='dh', proposal_hash='ph', parent_client_order_id=fixture.ref)
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             path = Path(td) / 'trade_journal.jsonl'
             a.journal_confirmed_fill(path, plan, order, metadata)
             row = a.read_jsonl(path)[0]
@@ -84,7 +84,7 @@ class ForwardLineageTests(unittest.TestCase):
         return status, fixture, proposal, expected_plan, expected_bundle, calls, bundles
 
     def test_submission_metadata_leaves_payload_hash_and_reviewer_bundle_unchanged(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             status, fixture, proposal, plan, bundle, calls, bundles = self.run_isolated(root)
             self.assertEqual(status, 0)
@@ -104,7 +104,7 @@ class ForwardLineageTests(unittest.TestCase):
         from decimal import Decimal
         from watchdog.lineage import build_lineage
         from watchdog.types import OperationalSnapshot, BrokerSnapshot
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             status, fixture, proposal, plan, *rest = self.run_isolated(root)
             self.assertEqual(status, 0)
@@ -134,7 +134,7 @@ class ForwardLineageTests(unittest.TestCase):
             self.assertIn('intent_lineage_unknown', rejected.reasons)
 
     def test_dry_run_linkage_stays_in_test_artifacts(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             status, fixture, proposal, *rest = self.run_isolated(root, dry=True)
             self.assertEqual(status, 2)
@@ -147,7 +147,7 @@ class ForwardLineageTests(unittest.TestCase):
             self.assertFalse((root / 'trade_journal.jsonl').exists())
 
     def test_reviewer_rejection_private_metadata_not_public_disagreement(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             status, fixture, proposal, *rest = self.run_isolated(root, reject=True)
             self.assertEqual(status, 2)
@@ -186,13 +186,13 @@ class ForwardLineageTests(unittest.TestCase):
             self.assertEqual(a.read_jsonl(fixture.root / 'order_ledger.jsonl')[-1]['proposal_hash'], 'ph')
 
     def test_retry_review_metadata_has_candidate_identity(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             path = Path(td) / 'reviews.jsonl'
             a.note_pre_submission_retryable(path, dict(candidate_id='cid', dossier_hash='dh'), 'evidence')
             self.assertEqual(a.read_jsonl(path)[0]['candidate_id'], 'cid')
 
     def test_candidate_retry_cannot_supply_an_order_parent_or_proposal_hash(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             path = Path(td) / 'reviews.jsonl'
             a.note_pre_submission_retryable(path, dict(candidate_id='cid', dossier_hash='dh',
                                             proposal_hash='untrusted', parent_client_order_id='untrusted'), 'evidence')
@@ -201,7 +201,7 @@ class ForwardLineageTests(unittest.TestCase):
             self.assertNotIn('parent_client_order_id', row)
 
     def test_reconciliation_block_review_has_candidate_id(self):
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             root.joinpath('candidates.jsonl').write_text(json.dumps(dict(candidate_id='cid', dossier_hash='dh')) + '\n')
             path = root / 'private/reviews.jsonl'
@@ -214,7 +214,7 @@ class ForwardLineageTests(unittest.TestCase):
         fixture.setUp()
         meta = dict(candidate_id='cid', dossier_hash='dh', proposal_hash='ph', parent_client_order_id=fixture.ref)
         order = dict(fixture.accepted, id='broker-id', status='filled', filled_qty='3', filled_avg_price='162.80')
-        with tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch') as td:
+        with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as td:
             root = Path(td)
             ledger, intents, journal = [root / x for x in ('ledger.jsonl', 'intents.jsonl', 'journal.jsonl')]
             ledger.write_text(json.dumps(dict(client_order_id=fixture.ref, status='placed')) + '\n')

@@ -95,7 +95,7 @@ class JSONCommand:
                     raise AdapterFailure('adapter_timeout')
                 if process.wait(timeout=remaining) != 0:
                     raise AdapterFailure('adapter_failed')
-                return _strict_json(output)
+                return _transport_json(output)
             except subprocess.TimeoutExpired:
                 raise AdapterFailure('adapter_timeout') from None
             except (OSError, ValueError) as error:
@@ -316,6 +316,33 @@ def monitor_theses(positions: list[dict], baselines: dict, source_state: dict,
                 reasons=list(dict.fromkeys(reasons + classified['reasons'] +
                     ([] if complete else ['source_coverage_incomplete'])))))
     return results
+
+
+def _transport_json(payload):
+    # Response schemas are shallow; 64 containers leave ample headroom without
+    # relying on interpreter recursion (the Python 3.14 decoder is iterative).
+    # Scan before allocating a decoded tree. The transport already caps bytes.
+    text = payload.decode(json.detect_encoding(payload), 'surrogatepass')
+    depth, quoted, escaped = 0, False, False
+    for char in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in '[{':
+            depth += 1
+            if depth > 64:
+                raise ValueError('json_nesting_invalid')
+        elif char in ']}':
+            depth -= 1
+    # The scanner enforces only depth; strict parsing still owns syntax,
+    # duplicate keys and nonfinite numbers, including malformed delimiters.
+    return _strict_json(text)
 
 
 def _strict_json(payload):

@@ -1,6 +1,7 @@
 import json
 import subprocess
 import unittest
+from runtime_paths import hermes_cli
 from unittest.mock import patch
 
 import market_data
@@ -81,7 +82,7 @@ class MarketDataTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.args[0],
             [
-                "/opt/hermes/bin/hermes",
+                hermes_cli(),
                 "config",
                 "get",
                 "--raw",

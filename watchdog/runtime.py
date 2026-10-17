@@ -192,7 +192,10 @@ class ProviderSession:
         home.chmod(0o700)
         self.socket = home / 'gateway.sock'
         env = {key: os.environ[key] for key in ('HOME', 'HERMES_HOME', 'PATH', 'LANG') if key in os.environ}
-        self.process = subprocess.Popen(['/opt/hermes/.venv/bin/python', str(CHECKOUT / 'watchdog/provider_gateway.py'), str(self.socket)],
+        from runtime_paths import hermes_runtime
+        python, source = hermes_runtime()
+        env.update(HERMES_PYTHON=python, HERMES_SOURCE_ROOT=str(source))
+        self.process = subprocess.Popen([python, str(CHECKOUT / 'watchdog/provider_gateway.py'), str(self.socket)],
             env=env, cwd=str(home), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
         deadline = time.monotonic() + 12

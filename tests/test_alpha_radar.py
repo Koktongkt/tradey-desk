@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from runtime_paths import hermes_runtime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -112,11 +113,12 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_hermes_bot_room_posture_resolves_to_zero_effective_tools(self):
         probe=(
-            "import json; from model_tools import _select_tool_names; "
+            "import json; import hermes_bootstrap; from model_tools import _select_tool_names; "
             "print('EFFECTIVE_TOOLS='+json.dumps(sorted(_select_tool_names(['bot_room'],None,True))))"
         )
         result=subprocess.run(
-            ["/opt/hermes/.venv/bin/python","-c",probe],cwd="/opt/hermes",
+            [hermes_runtime()[0],"-c",probe],
+            cwd=hermes_runtime()[1],
             capture_output=True,text=True,timeout=20,
         )
         self.assertEqual(result.returncode,0,result.stderr)

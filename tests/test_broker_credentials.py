@@ -1,6 +1,7 @@
 import json
 import subprocess
 import unittest
+from runtime_paths import hermes_cli
 from unittest.mock import patch
 
 import broker_credentials
@@ -17,7 +18,7 @@ class BrokerCredentialTests(unittest.TestCase):
         with patch("subprocess.run", return_value=completed) as run:
             self.assertIs(helper("massive", timeout=17, run=run), completed)
         run.assert_called_once_with(
-            ["/opt/hermes/bin/hermes", "config", "get", "--raw", "--json", "mcp_servers.massive.env"],
+            [hermes_cli(), "config", "get", "--raw", "--json", "mcp_servers.massive.env"],
             capture_output=True, text=True, timeout=17,
         )
 
@@ -35,7 +36,7 @@ class BrokerCredentialTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.args[0],
             [
-                "/opt/hermes/bin/hermes",
+                hermes_cli(),
                 "config",
                 "get",
                 "--raw",

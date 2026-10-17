@@ -54,7 +54,12 @@ def provider_payload(request, model):
 
 def provider_client():
     # Installed Hermes runtime is managed by the platform; no settings changed.
-    sys.path.insert(0, '/opt/hermes')
+    from runtime_paths import hermes_runtime
+    source = hermes_runtime()[1]
+    sys.path.insert(0, str(source))
+    # Managed Hermes installs lease/select their dependency closure at startup.
+    if (source / 'hermes_bootstrap.py').is_file():
+        import hermes_bootstrap
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from openai import OpenAI
     runtime = resolve_runtime_provider(requested='openai-codex', target_model='gpt-6.1-sol')

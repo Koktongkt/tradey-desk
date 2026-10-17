@@ -10,7 +10,7 @@ from sqlite_ledger import DEFAULT_STREAMS
 
 class OperationalTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir='/opt/data/cache/scratch')
+        self.tmp = tempfile.TemporaryDirectory(dir=tempfile.gettempdir())
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / 'private').mkdir()
@@ -103,7 +103,7 @@ class OperationalTests(unittest.TestCase):
         for suffix, raw in sidecars.items():
             Path(str(self.db) + suffix).write_bytes(raw)
         before = self.state()
-        scratch = Path('/opt/data/cache/scratch')
+        scratch = Path(tempfile.gettempdir())
         prior = set(scratch.glob('watchdog-*'))
         connect = sqlite3.connect
         targets = []
@@ -219,7 +219,7 @@ class OperationalTests(unittest.TestCase):
         from unittest.mock import patch
         from watchdog.operational import read_operational
         before = self.state()
-        scratch = Path('/opt/data/cache/scratch')
+        scratch = Path(tempfile.gettempdir())
         prior = set(scratch.glob('watchdog-*'))
         with patch('watchdog.operational.sqlite3.connect', side_effect=sqlite3.OperationalError('secret path')):
             snapshot = read_operational(self.root)

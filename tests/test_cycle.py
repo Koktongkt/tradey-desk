@@ -344,4 +344,48 @@ class CycleTests(unittest.TestCase):
              patch.object(run_cycle,"execute",return_value=0) as call:
             run_cycle.main()
         self.assertEqual(call.call_args.kwargs["timeout_seconds"],540)
+class PortableCronEntrypointTests(unittest.TestCase):
+    def test_wrappers_resolve_their_project_and_preserve_arguments(self):
+        import os
+        import shutil
+        root = Path(__file__).resolve().parents[1]
+        entries = [(f"cron/{mode}.sh", "run_cycle.py", mode)
+                   for mode in ("premarket", "radar", "autotrader", "postclose", "dashboard")]
+        entries += [("cron/reconcile.sh", "managed_reconciliation.py", "--scheduled"),
+                    ("scripts/tradey_watchdog_mechanical.sh", "watchdog_cron.py", "mechanical"),
+                    ("scripts/tradey_watchdog_daily.sh", "watchdog_cron.py", "daily")]
+        with tempfile.TemporaryDirectory() as td:
+            relocated = Path(td) / "project with spaces"
+            fakebin = Path(td) / "bin"
+            fakebin.mkdir()
+            fake = fakebin / "python3"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+            fake.chmod(0o755)
+            env = {**os.environ, "PATH": str(fakebin) + os.pathsep + os.environ.get("PATH", ""),
+                   "TRADEY_PYTHON": str(fake)}
+            for relative, target, mode in entries:
+                with self.subTest(wrapper=relative):
+                    self.assertTrue((root / relative).is_file(), relative)
+                    copied = relocated / relative
+                    copied.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(root / relative, copied)
+                    result = subprocess.run(["/bin/bash", str(copied), "--probe"], env=env,
+                                            cwd=td, text=True, capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(),
+                                     [str(relocated / target), mode, "--probe"])
+
+    def test_explicit_bad_python_override_fails_without_fallback(self):
+        import os
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as td:
+            wrapper = Path(td) / "project/cron/radar.sh"
+            wrapper.parent.mkdir(parents=True)
+            wrapper.write_bytes((root / "cron/radar.sh").read_bytes())
+            env = {**os.environ, "TRADEY_PYTHON": str(Path(td) / "missing-python")}
+            result = subprocess.run(["/bin/bash", str(wrapper)], env=env, cwd=td,
+                                    text=True, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing-python", result.stderr)
+
 if __name__=="__main__":unittest.main()

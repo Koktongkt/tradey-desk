@@ -679,15 +679,23 @@ class DashboardContainmentTests(unittest.TestCase):
         import io
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
+            # Arm the delayed side effect only after execute returns. A fixed
+            # one-second timer from child startup races the execution budget and
+            # bounded cleanup on busy workers; pre-return work is not an escape.
+            child="import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path('ready').write_text(str(os.getpid()))\nwhile not Path('release').exists(): time.sleep(.005)\ntime.sleep(1);Path('escaped').write_text('side effect')"
+            with patch.object(self,'_child',return_value=child):
+                command=self._helper(root)
             with patch.object(run_cycle,'ROOT',root),patch.object(run_cycle,'audit_result'),patch('sys.stdout',io.StringIO()) as output:
-                # Nested helper startup is about 0.4s on hosted workers. Allow
-                # it to reach the child, while expiring before the child's 1s
-                # delayed side effect; readiness and reap checks remain mandatory.
-                rc=run_cycle.execute(self._helper(root),timeout_seconds=.8,attempts=3,audit_mode='dashboard',audit_stage='deployment')
+                rc=run_cycle.execute(command,timeout_seconds=.8,attempts=3,audit_mode='dashboard',audit_stage='deployment')
             self.assertEqual(rc,124)
             self.assertEqual(output.getvalue(),'SYSTEM_FAILURE dashboard_timeout\n')
             self._wait_ready(root)
-            self._assert_reaped(root)
+            try:
+                self.assertFalse(Path('/proc/'+(root/'ready').read_text()).exists(),'return preceded reap acknowledgement')
+                self.assertFalse((root/'escaped').exists())
+            finally:
+                (root/'release').touch()
+                self._assert_reaped(root)
 
     def test_helper_term_kill_and_caller_death_stop_detached_children(self):
         import signal

@@ -17,7 +17,8 @@ from json_parsing import first_object
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
 
 ROOT=Path(__file__).resolve().parent
-HERMES_BIN="/opt/hermes/bin/hermes"
+from runtime_paths import hermes_cli
+HERMES_BIN=hermes_cli()
 _run_config_command=subprocess.run
 EXECUTION_FRESHNESS_RESERVE_MINUTES = 10
 SYNTHESIS_NONE_REASONS={"earnings_timestamp_unverified","earnings_blackout","evidence_insufficient","catalyst_stale","policy_constraints_unmet","no_fresh_setup"}

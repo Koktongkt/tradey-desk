@@ -1,2 +1,6 @@
 #!/usr/bin/env bash
-exec python3 /opt/data/projects/tradey-desk/run_cycle.py premarket
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${TRADEY_PYTHON-$HOME/.local/share/tradey/venv-linux/bin/python}"
+cd "$ROOT"
+exec "$PYTHON" "$ROOT/run_cycle.py" premarket "$@"

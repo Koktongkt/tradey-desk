@@ -52,7 +52,7 @@ def _copied_database(db):
     closed/checkpointed WAL database needs no source sidecars. Journal recovery,
     if required, fails closed with the readonly local connection.
     """
-    with tempfile.TemporaryDirectory(prefix='watchdog-', dir='/opt/data/cache/scratch') as scratch:
+    with tempfile.TemporaryDirectory(prefix='watchdog-') as scratch:
         local = Path(scratch) / db.name
         shutil.copyfile(db, local)
         for suffix in ('-wal', '-journal'):

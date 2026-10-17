@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from runtime_paths import hermes_cli
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -236,9 +237,15 @@ class TradeySafetyTests(unittest.TestCase):
             self.assertTrue(autotrader.research_acceptable(candidate, self.cfg, age_minutes=90, allow_stale=True))
 
     def test_live_dry_run_can_reach_reviews_but_never_enables_execution(self):
-        cfg = dict(self.cfg, enabled=False)
-        self.assertEqual(autotrader.runtime_blockers(cfg, ignore_disabled=True), [])
-        self.assertIn("autonomy_disabled", autotrader.runtime_blockers(cfg))
+        # Isolate the fixture from an operator's real production kill switch.
+        with tempfile.TemporaryDirectory() as td:
+            kill = Path(td) / "KILL_SWITCH"
+            cfg = dict(self.cfg, enabled=False, kill_switch_path=str(kill))
+            self.assertEqual(autotrader.runtime_blockers(cfg, ignore_disabled=True), [])
+            self.assertIn("autonomy_disabled", autotrader.runtime_blockers(cfg))
+            kill.write_text("fixture hold")
+            self.assertIn("kill_switch_active",
+                          autotrader.runtime_blockers(cfg, ignore_disabled=True))
 
     def test_fixture_dry_run_writes_only_test_artifacts(self):
         source_root = autotrader.ROOT
@@ -872,7 +879,7 @@ class TradeySafetyTests(unittest.TestCase):
         bundle = {"proposal": {"proposal_hash": "abc"}, "evidence": {"z": 1, "a": 2}}
         cmd, prompt = autotrader._review_request(bundle, "nous", "model-pin")
         self.assertEqual(cmd, [
-            "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
+            hermes_cli(), "chat", "-Q", "--source", "tool",
             "--provider", "nous", "-m", "model-pin", "-t", "", "--safe-mode",
             "--max-turns", "1", "--run-budget", "120", "--query-file", "-",
         ])

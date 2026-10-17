@@ -199,6 +199,47 @@ class MonitorTests(unittest.TestCase):
                 self.assertEqual(str(error.exception), 'adapter_invalid')
                 self.assertIsNone(error.exception.__cause__)
 
+    def test_transport_json_depth_boundary(self):
+        import sys
+        import time
+        # Removing the explicit guard must fail the 65-container cases, even
+        # on an interpreter whose JSON decoder no longer uses recursion.
+        for opening, closing in (('[', ']'), ('{"child":', '}'), ('[{"child":', '}]')):
+            for depth in (64, 65):
+                with self.subTest(opening=opening, depth=depth):
+                    count = depth // len(closing)
+                    payload = opening * count + '0' + closing * count
+                    if depth % len(closing):
+                        payload = '[' + payload + ']'
+                    worker = self.thesis.JSONCommand([sys.executable, '-I', '-c',
+                        'import sys; sys.stdin.read(); sys.stdout.write(' + repr(payload) + ')'])
+                    if depth == 64:
+                        result = worker.run({}, time.monotonic() + 2)
+                        for _ in range(count):
+                            if opening.startswith('['):
+                                result = result[0]
+                            if 'child' in opening:
+                                result = result['child']
+                        self.assertEqual(result, 0)
+                    else:
+                        with self.assertRaises(self.thesis.AdapterFailure) as error:
+                            worker.run({}, time.monotonic() + 2)
+                        self.assertEqual(str(error.exception), 'adapter_invalid')
+                        self.assertIsNone(error.exception.__cause__)
+
+    def test_transport_json_strings_do_not_count_as_containers(self):
+        import json
+        import sys
+        import time
+        # Quotes, odd/even backslash runs and Unicode escapes must not confuse
+        # the guard or make bracket characters inside strings consume depth.
+        text = '[{' * 1000 + '"' + '\\' + '"' + '\\\\' + '雪' + '}]' * 1000
+        value = {'text': text, 'after': [{'ok': True}]}
+        payload = json.dumps(value)
+        worker = self.thesis.JSONCommand([sys.executable, '-I', '-c',
+            'import sys; sys.stdin.read(); sys.stdout.write(' + repr(payload) + ')'])
+        self.assertEqual(worker.run({}, time.monotonic() + 2), value)
+
     def test_deep_json_all_transport_stages_preserve_affected_cutoffs(self):
         for stage in ('discover', 'retrieve', 'classify'):
             with self.subTest(stage=stage):

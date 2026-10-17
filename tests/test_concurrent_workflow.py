@@ -11,8 +11,23 @@ import autotrader as a
 import test_pending_capacity as helpers
 
 
+class Clock(dt.datetime):
+    # UTC has rolled over, New York has not. Keep the synthetic session away
+    # from local midnight so both calendar bounds belong to its declared date.
+    instant=dt.datetime(2026,10,16,0,30,tzinfo=dt.timezone.utc)
+
+    @classmethod
+    def now(cls,tz=None):
+        return cls.instant.astimezone(tz) if tz else cls.instant.replace(tzinfo=None)
+
+
 class ConcurrentWorkflowTests(unittest.TestCase):
     def setUp(self):
+        # Start before the nested fixture captures quote/snapshot timestamps,
+        # and retain through orchestration, submission-date generation/assertions.
+        clock=patch.object(dt,'datetime',Clock)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.f=helpers.PendingCapacityTests()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
@@ -21,6 +36,7 @@ class ConcurrentWorkflowTests(unittest.TestCase):
         now=dt.datetime.now(dt.timezone.utc)
         self.snapshot=self.f.snapshot
         day=now.astimezone(a.ZoneInfo('America/New_York')).date()
+        self.snapshot['trading_sessions']=[(day+dt.timedelta(days=i)).isoformat() for i in range(31)]
         # Authoritative synthetic calendar; no fixed market-hour inference in production.
         start=now-dt.timedelta(hours=1); end=now+dt.timedelta(hours=1)
         self.snapshot.update(trading_calendar=[{'date':day.isoformat(),'open':start.isoformat(),'close':end.isoformat()},
@@ -85,12 +101,40 @@ class ConcurrentWorkflowTests(unittest.TestCase):
             release.set();process.join(5)
         self.assertEqual(process.exitcode,0)
 
+    def test_fixture_clock_is_aware_and_coherent_across_utc_exchange_rollover(self):
+        now=dt.datetime.now(dt.timezone.utc)
+        local_day=now.astimezone(a.ZoneInfo('America/New_York')).date()
+        self.assertEqual(now,dt.datetime(2026,10,16,0,30,tzinfo=dt.timezone.utc))
+        self.assertNotEqual(now.date(),local_day)
+        self.assertEqual(self.snapshot['captured_at'],now.isoformat())
+        self.assertEqual(self.snapshot['quote']['timestamp'],now.isoformat())
+        self.assertEqual(self.candidate['sources_verified_at'],now.isoformat())
+        self.assertEqual(self.candidate['researched_at'],now.isoformat())
+        self.assertEqual(self.snapshot['trading_sessions'][0],local_day.isoformat())
+        import entry_expiry
+        calendar=entry_expiry.sessions(self.snapshot['trading_calendar'])
+        self.assertEqual(calendar[0][0],local_day.isoformat())
+        self.assertLessEqual(calendar[0][1],now)
+        self.assertLess(now,calendar[0][2])
+
     def test_unknown_submission_consumes_daily_quota_on_original_session(self):
         today=dt.datetime.now(a.ZoneInfo('America/New_York')).date().isoformat()
         for ref in ('unknown-a','unknown-b'):
             a.append_jsonl(self.root/'private/order_intents.jsonl',{'client_order_id':ref,'submission_date':today,'plan':{}})
             a.append_jsonl(self.root/'order_ledger.jsonl',{'timestamp':a.utcnow(),'client_order_id':ref,'status':'submission_unknown'})
         self.assertEqual(a._daily_order_count(self.root/'order_ledger.jsonl'),2)
+        # Neither a prior-session intent nor an intent for the UTC (next local)
+        # date consumes today's exchange-session quota, even with a fresh row.
+        for ref,day in (('prior-session','2026-10-14'),('utc-date','2026-10-16')):
+            a.append_jsonl(self.root/'private/order_intents.jsonl',{'client_order_id':ref,'submission_date':day,'plan':{}})
+            a.append_jsonl(self.root/'order_ledger.jsonl',{'timestamp':a.utcnow(),'client_order_id':ref,'status':'submission_unknown'})
+        self.assertEqual(a._daily_order_count(self.root/'order_ledger.jsonl'),2)
+        with patch.object(Clock,'instant',Clock.instant+dt.timedelta(days=1)):
+            # Recovery today cannot move yesterday's unknown submissions into
+            # today's quota; use the real durable original-session counter.
+            for ref in ('unknown-a','unknown-b'):
+                a.append_jsonl(self.root/'order_ledger.jsonl',{'timestamp':a.utcnow(),'client_order_id':ref,'status':'submission_unknown'})
+            self.assertEqual(a._daily_order_count(self.root/'order_ledger.jsonl'),1)
 
     def test_confirmed_fill_is_journaled_once_across_recovery(self):
         intent,order=helpers.pending()
@@ -105,6 +149,9 @@ class ConcurrentWorkflowTests(unittest.TestCase):
         self.assertEqual((code,[op for op,_ in self.calls].count('place')),(0,1),out)
         intent=a.read_jsonl(self.root/'private/order_intents.jsonl')[-1]
         self.assertIn('entry_expiry',intent['plan'])
+        self.assertEqual(intent['submission_date'],'2026-10-15')
+        self.assertEqual(intent['plan']['entry_expiry']['placement_session'],intent['submission_date'])
+        self.assertEqual(a._daily_order_count(self.root/'order_ledger.jsonl'),1)
         self.assertEqual(self.review_bundle['qualification']['pending_entry_parents'],1)
         self.assertNotIn('one',json.dumps(self.review_bundle))
         self.execute()

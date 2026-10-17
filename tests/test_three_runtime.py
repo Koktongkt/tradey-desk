@@ -264,19 +264,20 @@ class ThreeRuntimeTests(unittest.TestCase):
                 except ProcessLookupError:pass
 
     def test_runtime_rejects_truthy_enable_and_invalid_explicit_policy_domains(self):
+        cfg = dict(self.cfg, kill_switch_path=str(self.root / 'KILL_SWITCH'))
         for enabled in (1,'true',[True],{'enabled':True}):
             with self.subTest(enabled=enabled):
-                self.assertIn('autonomy_disabled',a.runtime_blockers(dict(self.cfg,enabled=enabled)))
+                self.assertIn('autonomy_disabled',a.runtime_blockers(dict(cfg,enabled=enabled)))
         for cap in (True,False,'3',0,-1,4,None,3.0):
             with self.subTest(cap=cap):
-                self.assertIn('pending_entry_policy_invalid',a.runtime_blockers(dict(self.cfg,max_pending_entry_parents=cap)))
+                self.assertIn('pending_entry_policy_invalid',a.runtime_blockers(dict(cfg,max_pending_entry_parents=cap)))
         for policy in ('unapproved',None,True):
-            self.assertIn('pending_entry_policy_invalid',a.runtime_blockers(dict(self.cfg,pending_entry_policy=policy)))
-        legacy=dict(self.cfg)
+            self.assertIn('pending_entry_policy_invalid',a.runtime_blockers(dict(cfg,pending_entry_policy=policy)))
+        legacy=dict(cfg)
         legacy.pop('pending_entry_policy');legacy.pop('max_pending_entry_parents');legacy.pop('entry_expiry_policy')
         self.assertEqual(a.runtime_blockers(legacy),[])
-        self.assertEqual(a.runtime_blockers(dict(self.cfg,max_pending_entry_parents=2)),[])
-        self.assertEqual(a.runtime_blockers(self.cfg),[])
+        self.assertEqual(a.runtime_blockers(dict(cfg,max_pending_entry_parents=2)),[])
+        self.assertEqual(a.runtime_blockers(cfg),[])
 
     def test_native_bridge_success_returns_real_stdout_and_nonzero_status(self):
         import broker_process

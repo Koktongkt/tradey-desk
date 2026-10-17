@@ -893,8 +893,9 @@ def _review_request(bundle: dict[str, Any], provider: str, model: str) -> tuple[
         "Use HOLD for any needed price, quantity, stop, target, horizon, or thesis change; never suggest an executable replacement. "
         "Evidence:\n" + json.dumps(bundle, sort_keys=True, separators=(",", ":"))
     )
+    from runtime_paths import hermes_cli
     cmd = [
-        "/opt/hermes/bin/hermes", "chat", "-Q", "--source", "tool",
+        hermes_cli(), "chat", "-Q", "--source", "tool",
         "--provider", provider, "-m", model, "-t", "", "--safe-mode",
         "--max-turns", "1", "--run-budget", "120", "--query-file", "-",
     ]
