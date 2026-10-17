@@ -52,5 +52,6 @@
   },
   "level_tolerance_pct": 1.0,
   "dashboard_dir": "public",
+  "public_history_overlay": true,
   "timezone": "America/New_York"
 }

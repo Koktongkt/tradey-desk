@@ -68,6 +68,36 @@ ACTIVITY_SUMMARIES={
 def rows(path:Path)->list[dict[str,Any]]:
     return read_jsonl(path)
 
+OVERLAY_DIRNAMES={"audit":"decision_audit.jsonl","ledger":"order_ledger.jsonl","candidates":"candidates.jsonl"}
+
+def _overlay_identity(row:dict[str,Any],kind:str)->tuple[str,...]|None:
+    timestamp=row.get("timestamp") if kind!="candidates" else row.get("researched_at")
+    if not isinstance(timestamp,str): return None
+    if kind=="audit": return (timestamp,str(row.get("mode") or ""),str(row.get("decision") or ""))
+    if kind=="ledger": return (timestamp,str(row.get("status") or ""),str(row.get("action") or ""),str(row.get("symbol") or ""))
+    return (timestamp,str(row.get("symbol") or ""))
+
+def load_overlay_rows(root:Path,config:dict[str,Any],kind:str)->list[dict[str,Any]]:
+    """Load optional public-history continuity overlay rows for one stream.
+
+    Overlay files live under public/overlay/ and are derived only from
+    sanitized public production artifacts; they are consumed only when the
+    explicit public_history_overlay config flag is enabled.
+    """
+    if not isinstance(config.get("public_history_overlay"),bool) or not config["public_history_overlay"]:
+        return []
+    return rows(root/"public"/"overlay"/OVERLAY_DIRNAMES[kind])
+
+def merge_overlay(canonical:list[dict[str,Any]],overlay:list[dict[str,Any]],kind:str)->list[dict[str,Any]]:
+    """Append overlay rows that are not already present in the canonical stream."""
+    seen={_overlay_identity(r,kind) for r in canonical}
+    merged=list(canonical)
+    for row in overlay:
+        identity=_overlay_identity(row,kind)
+        if identity is None or identity in seen: continue
+        seen.add(identity); merged.append(row)
+    return merged
+
 def sanitize_ledger_row(row:dict[str,Any])->dict[str,Any]:
     out={k:row[k] for k in SAFE_LEDGER if k in row}
     if "symbol" not in out:
@@ -144,7 +174,15 @@ def fetch_live_portfolio(root:Path=ROOT)->dict[str,Any]:
     return payload
 
 def build_data(root:Path=ROOT,portfolio_snapshot:dict[str,Any]|None=None)->dict[str,Any]:
+    config={}
+    config_path=root/"autonomy_config.json"
+    if config_path.exists():
+        try: config=json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError,OSError): pass
     ledger=rows(root/"order_ledger.jsonl"); raw_outcomes=rows(root/"candidate_outcomes.jsonl"); trades=rows(root/"trade_journal.jsonl"); candidates=rows(root/"candidates.jsonl"); audit=rows(root/"decision_audit.jsonl"); diagnostics=rows(root/"private"/"blocker_diagnostics.jsonl")
+    ledger=merge_overlay(ledger,load_overlay_rows(root,config,"ledger"),"ledger")
+    candidates=merge_overlay(candidates,load_overlay_rows(root,config,"candidates"),"candidates")
+    audit=merge_overlay(audit,load_overlay_rows(root,config,"audit"),"audit")
     latest={str(r.get("candidate_id") or i):r for i,r in enumerate(raw_outcomes)}; outcomes=list(latest.values())
     rejected=[r for r in ledger if r.get("status")=="rejected"]
     disagreements=[r for r in rejected if r.get("reason")=="model_disagreement" or "model_disagreement" in (r.get("reason") or [])]
@@ -153,16 +191,11 @@ def build_data(root:Path=ROOT,portfolio_snapshot:dict[str,Any]|None=None)->dict[
     review_rows=[r for r in rejected if (r.get("reason") in review_block_reasons if isinstance(r.get("reason"),str) else any(x in review_block_reasons for x in (r.get("reason") or [])))]
     agreements=sum(1 for r in ledger if r.get("status")=="proposed")
     vals=[float(r["excess_5s_pct"]) for r in outcomes if isinstance(r.get("excess_5s_pct"),(int,float))]
-    traded=[r for r in outcomes if r.get("traded")]; skipped=[r for r in outcomes if not r.get("traded")]
+    traded=[r for r in outcomes if r.get("traded")];    skipped=[r for r in outcomes if not r.get("traded")]
     def summary(group:list[dict[str,Any]],horizon:int)->dict[str,Any]:
         key=f"excess_{horizon}s_pct"
         numbers=[float(r[key]) for r in group if isinstance(r.get(key),(int,float))]
         return {"count":len(numbers),"avg_excess_pct":round(statistics.mean(numbers),4) if numbers else None}
-    config={}
-    config_path=root/"autonomy_config.json"
-    if config_path.exists():
-        try: config=json.loads(config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError,OSError): pass
     timestamps=[str(r["timestamp"]) for r in ledger+audit if r.get("timestamp")]
     return {
         "desk_status":{k:config[k] for k in SAFE_STATUS if k in config},
