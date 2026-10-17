@@ -2,7 +2,7 @@
 """Live research radar. Writes qualified candidate dossiers; never orders."""
 from __future__ import annotations
 import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.error, urllib.parse, urllib.request
-from functools import lru_cache
+from functools import lru_cache, wraps
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -362,7 +362,7 @@ def record_source_verification_diagnostic(
         "independent_domains":bounded_count("independent_domains"),
         "required_independent_domains":bounded_count("required_independent_domains"),
     }
-    append_jsonl(target,row)
+    append_jsonl(target,{**row,**research_correlation()})
 
 def extract_json(text:str)->dict[str,Any]:
     return first_object(text, missing="no json")
@@ -677,10 +677,29 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
 
 
 GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
-GATEWAY_FALLBACK_PROMPT=(
-    "Call web_extract exactly once on the URL below. Reply with only the extracted "
-    "page text starting with its publication date if present; no commentary.\nURL: {url}"
-)
+# Per-thread detail channel preserves the legacy injected fetcher signature.
+_extraction_attempt:ContextVar[dict|None]=ContextVar("extraction_attempt",default=None)
+_research_run_id:ContextVar[str|None]=ContextVar("research_run_id",default=None)
+
+
+def correlated_research_run(function):
+    """One opaque execution ID, reset even on failure; ContextVars isolate threads."""
+    @wraps(function)
+    def wrapped(*args,**kwargs):
+        import uuid
+        token=_research_run_id.set(uuid.uuid4().hex)
+        try:return function(*args,**kwargs)
+        finally:_research_run_id.reset(token)
+    return wrapped
+
+
+def research_correlation(url=None):
+    run_id=_research_run_id.get()
+    if run_id is None:return {}
+    fields={"run_id":run_id}
+    if isinstance(url,str) and url:
+        fields["url_id"]=hashlib.sha256((run_id+url).encode()).hexdigest()
+    return fields
 
 def _gateway_provider_failure(strict_provider:bool,error:Exception|None=None)->None:
     if strict_provider:
@@ -690,36 +709,93 @@ def _gateway_provider_failure(strict_provider:bool,error:Exception|None=None)->N
 
 
 def fetch_source_via_gateway(
-    url:str,timeout_seconds:int=GATEWAY_FALLBACK_TIMEOUT_SECONDS,strict_provider:bool=False,
+    url:str,timeout_seconds:float=GATEWAY_FALLBACK_TIMEOUT_SECONDS,strict_provider:bool=False,
 )->dict[str,Any]|None:
-    """Bounded gateway-backed extraction fallback for bot-walled or timing-out pages.
+    """Exact-URL, no-model extraction via the installed configured tool dispatcher."""
+    import structured_extraction
+    detail=_extraction_attempt.get()
+    def failed(reason:str):
+        if detail is not None:detail["fallback_result"]=reason
+        return _gateway_provider_failure(strict_provider)
+    deadline=monotonic()+min(GATEWAY_FALLBACK_TIMEOUT_SECONDS,max(0,timeout_seconds))
+    if not isinstance(url,str) or len(url)>4096 or not is_safe_public_url(url):
+        return failed("unsafe_url")
+    remaining=deadline-monotonic()
+    if remaining<=0:return failed("timeout")
+    result=structured_extraction.run_worker(url,remaining)
+    if not isinstance(result,dict) or type(result.get("version")) is not int or result["version"]!=1:
+        return failed("malformed_response")
+    if result.get("status")=="error":
+        if set(result)!={"version","status","reason"}:return failed("malformed_response")
+        reason=result.get("reason")
+        return failed(reason if isinstance(reason,str) and reason in structured_extraction.ERROR_REASONS else "malformed_response")
+    page=result.get("page")
+    if (result.get("status")!="ok" or set(result)!={"version","status","page"}
+        or not isinstance(page,dict) or not {"url","title","text"} <= set(page)
+        or set(page)-{"url","title","text","location_provenance"}
+        or ("location_provenance" in page and page["location_provenance"]!="uncached_dispatch")):
+        return failed("malformed_response")
+    returned=page.get("url")
+    if not isinstance(returned,str) or len(returned)>4096:return failed("url_mismatch")
+    # Preserve safe same-publisher final locations, including query redirects,
+    # while keeping the page/cache key bound to the exact original request.
+    if returned!=url:
+        try:
+            if publisher_domain(returned)!=publisher_domain(url) or not is_safe_public_url(returned):
+                return failed("url_mismatch")
+        except ValueError:
+            return failed("url_mismatch")
+    if monotonic()>=deadline:return failed("timeout")
+    text=page.get("text");title=page.get("title")
+    if not isinstance(text,str) or not isinstance(title,str) or len(text)>6000 or len(title)>200:
+        return failed("malformed_response")
+    from extraction_contract import is_error_document, strip_tool_footer
+    text=strip_tool_footer(text)
+    if not text.strip() or is_error_document(text, title):
+        return failed("empty_content")
+    # A same-publisher location is not proof of article identity. In particular,
+    # contradictory Reuters URL dates cannot be rebound to the requested year.
+    if publisher_domain(returned)=="reuters.com" and returned!=url:
+        dates=[re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)",urllib.parse.urlparse(u).path) for u in (url,returned)]
+        if all(dates) and dates[0].group(1)!=dates[1].group(1):
+            return failed("url_mismatch")
+    published=extract_published_at(text) or extract_gateway_publication_date(
+        returned,text,allow_url_year=page.get("location_provenance")=="uncached_dispatch")
+    text=extract_page_text(text) if re.search(r"</?(?:html|article|main|p|div|time|meta)\b",text,re.I) else re.sub(r"\s+"," ",text).strip()
+    if detail is not None:detail["fallback_result"]="success"
+    result_page={"url":url,"title":title,"text":text[:6000],"published_at":published}
+    if returned!=url:result_page["returned_url"]=returned
+    return result_page
 
-    Routes through the hermes web toolset (gateway-fronted extraction), which
-    reaches pages direct fetching cannot. Returns None on any failure.
-    """
-    cmd=research_subprocess_command("web",max_turns=2,run_budget=45)
-    try:
-        result=subprocess.run(
-            cmd,input=GATEWAY_FALLBACK_PROMPT.format(url=url),
-            capture_output=True,text=True,timeout=timeout_seconds,cwd=ROOT,
-        )
-    except (subprocess.TimeoutExpired,OSError) as error:
-        return _gateway_provider_failure(strict_provider,error)
-    if result.returncode or not result.stdout.strip():
-        return _gateway_provider_failure(strict_provider)
-    lines=[line for line in result.stdout.strip().splitlines() if not line.startswith("session_id:")]
-    text=extract_page_text(html.escape("\n".join(lines),quote=False)) if "<" in "\n".join(lines) else " ".join(lines)
-    text=re.sub(r"\s+"," ",text).strip()[:6000]
-    if not text:
-        return _gateway_provider_failure(strict_provider)
+
+def extract_gateway_publication_date(url:str,text:str,*,allow_url_year:bool=True)->str|None:
+    """Visible publication provenance only; never use crawl/cache or event dates."""
+    from extraction_contract import strip_tool_footer
+    text=strip_tool_footer(text)
     published=None
     host=(urllib.parse.urlparse(url).hostname or "").lower()
     match=None
     formats=("%Y-%m-%d","%B %d, %Y","%b %d, %Y")
+    # Wire publication datelines require both the source domain and an anchored
+    # location/date/wire marker. An event/copyright date elsewhere is not enough.
+    wire_marker=None
+    if host=="globenewswire.com" or host.endswith(".globenewswire.com"):
+        wire_marker=r"\(GLOBE NEWSWIRE\)"
+    elif host=="prnewswire.com" or host.endswith(".prnewswire.com"):
+        wire_marker=r"/PRNewswire/"
+    if wire_marker:
+        dateline=re.search(
+            r"(?m)^\s*(?:\*\*)?[A-Z][A-Z .’'−-]+,\s*(?:[A-Za-z. ]+,\s*)?"
+            r"([A-Za-z]{3,9}\.? \d{1,2}, \d{4})\s*"+wire_marker+r"\s*(?:\*\*)?\s*(?:--|—)",text)
+        if dateline:
+            raw=dateline.group(1).replace(".","")
+            for fmt in ("%b %d, %Y","%B %d, %Y"):
+                try:return dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
+                except ValueError:pass
     if host=="marketscreener.com" or host.endswith(".marketscreener.com"):
         match=re.search(r"(?i)\bPublished on (\d{1,2}/\d{1,2}/\d{4})\b",text)
         if match:formats=("%m/%d/%Y",)
-    if match is None and (host=="reuters.com" or host.endswith(".reuters.com")):
+    if allow_url_year and match is None and (host=="reuters.com" or host.endswith(".reuters.com")):
         url_date=re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)",urllib.parse.urlparse(url).path)
         dateline=re.search(r"(?i)\b([A-Z][a-z]{2,8}) (\d{1,2}) \(Reuters\)",text)
         if url_date and dateline:
@@ -732,7 +808,7 @@ def fetch_source_via_gateway(
                     published=dated.isoformat().replace("+00:00","Z")
             except ValueError:pass
     if match is None and published is None:
-        match=re.search(r"(\d{4}-\d{2}-\d{2})",text) or re.search(r"(?i)\b([A-Z][a-z]{2,8} \d{1,2}, \d{4})",text)
+        match=re.search(r"(?im)^\s*(?:Published(?:\s+(?:on|at))?|Publication date|Date)\s*[:|—-]?\s*(\d{4}-\d{2}-\d{2}|[A-Z][a-z]{2,8} \d{1,2}, \d{4})\b",text)
     if match:
         raw=match.group(1)
         for fmt in formats:
@@ -740,10 +816,20 @@ def fetch_source_via_gateway(
                 published=dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
                 break
             except ValueError:continue
-    title=""
-    m=re.search(r"#\s+(.+)",result.stdout)
-    if m:title=m.group(1).strip().strip("*#")[:200]
-    return {"url":url,"title":title,"text":text,"published_at":published}
+    return published
+
+
+def source_transport_reason(error:Exception)->tuple[str,int|None]:
+    """Private direct-transport classification, separate from legacy final reason."""
+    status=error.code if isinstance(error,urllib.error.HTTPError) else None
+    inner=getattr(error,"reason",None)
+    if status in {401,403}:reason="source_http_forbidden"
+    elif status==429:reason="source_rate_limited"
+    elif isinstance(status,int) and 500<=status<=599:reason="source_upstream_error"
+    elif isinstance(error,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError)) or isinstance(inner,(ConnectionResetError,ConnectionAbortedError,ConnectionRefusedError)):reason="source_connection_failed"
+    elif isinstance(error,TimeoutError) or isinstance(inner,TimeoutError):reason="source_fetch_timeout"
+    else:reason="source_fetch_failed"
+    return reason,status
 
 
 def gather_evidence(
@@ -754,6 +840,7 @@ def gather_evidence(
     cache_path:Path|None=None,
     collection_deadline:float|None=None,
     strict_gateway_provider:bool=False,
+    attempt_path:Path|None=None,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     urls=list(dict.fromkeys(urls))  # one in-flight fetch and one result per exact URL
@@ -763,6 +850,16 @@ def gather_evidence(
     failures:list[dict[str,str]|None]=[None for _ in urls]
     fatal_failures:list[ResearchFailure|None]=[None for _ in urls]
     gateway_active=[False for _ in urls]
+    import uuid
+    run_id=_research_run_id.get() or uuid.uuid4().hex
+    collection_id=uuid.uuid4().hex
+    attempts=[{
+        "run_id":run_id,"collection_id":collection_id,"url_id":hashlib.sha256((run_id+u).encode()).hexdigest(),
+        "network_attempted":False,
+        "direct_reason":"source_deadline_exhausted","direct_status":None,
+        "direct_elapsed_ms":0,"fallback_result":"not_attempted",
+        "fallback_elapsed_ms":0,"remaining_ms":0,
+    } for u in urls]
     lock=threading.Lock()
     collected=[False]
     cache:dict[str,Any]={}
@@ -781,6 +878,7 @@ def gather_evidence(
             except (KeyError,ValueError):continue
             if checked.tzinfo is not None and checked<=current and current-checked<=dt.timedelta(hours=24):
                 results[i]=entry["page"];cached_urls.add(url)
+                attempts[i].update(direct_reason="cache_hit",remaining_ms=max(0,round((deadline-monotonic())*1000)))
     def publish_page(i:int,u:str,page:Any)->None:
         if not isinstance(page,dict) or page.get("url")!=u:
             with lock:
@@ -795,14 +893,20 @@ def gather_evidence(
         if monotonic()>=deadline:
             with lock:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_deadline_exhausted"}
             return
+        direct_started=monotonic()
+        attempts[i]["_direct_started"]=direct_started
         for attempt in range(2):
             try:
                 remaining=deadline-monotonic()
                 if remaining<=0:raise TimeoutError("collection deadline exhausted")
+                attempts[i]["network_attempted"]=True
                 page=fetch_source(u,min(per_source_timeout,remaining))
+                attempts[i].update(direct_reason="success",direct_status=None,direct_elapsed_ms=round((monotonic()-direct_started)*1000),remaining_ms=max(0,round((deadline-monotonic())*1000)))
                 publish_page(i,u,page)
                 return
             except Exception as error:
+                direct_reason,direct_status=source_transport_reason(error)
+                attempts[i].update(direct_reason=direct_reason,direct_status=direct_status,direct_elapsed_ms=round((monotonic()-direct_started)*1000),remaining_ms=max(0,round((deadline-monotonic())*1000)))
                 if isinstance(error,UnsafeURLTarget):
                     failure={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_fetch_failed"}
                     with lock:
@@ -821,13 +925,21 @@ def gather_evidence(
                     gateway_timeout=min(GATEWAY_FALLBACK_TIMEOUT_SECONDS,max(0.001,remaining))
                     if not collected[0] and remaining>0:
                         with lock:gateway_active[i]=True
+                        fallback_started=monotonic()
+                        attempts[i]["_fallback_started"]=fallback_started
+                        attempts[i]["fallback_result"]="unavailable"
+                        token=_extraction_attempt.set(attempts[i])
                         try:
                             page=(
                                 fetch_source_via_gateway(u,timeout_seconds=gateway_timeout,strict_provider=True)
                                 if strict_gateway_provider else
                                 fetch_source_via_gateway(u,timeout_seconds=gateway_timeout)
                             )
+                            if page is not None:attempts[i]["fallback_result"]="success"
                         finally:
+                            _extraction_attempt.reset(token)
+                            attempts[i]["fallback_elapsed_ms"]=round((monotonic()-fallback_started)*1000)
+                            attempts[i]["remaining_ms"]=max(0,round((deadline-monotonic())*1000))
                             with lock:gateway_active[i]=False
                     else:page=None
                 except ResearchFailure as fatal:
@@ -868,6 +980,22 @@ def gather_evidence(
                 "domain":urllib.parse.urlparse(urls[i]).netloc.lower(),
                 "reason":"source_deadline_exhausted",
             }
+    if attempt_path is not None:
+        from structured_extraction import record_attempts
+        snapshot=[]
+        for i,t in enumerate(threads):
+            row=dict(attempts[i])
+            if t.is_alive():
+                row["remaining_ms"]=0
+                if gateway_active[i]:
+                    row["fallback_result"]="timeout"
+                    row["fallback_elapsed_ms"]=round((monotonic()-row.get("_fallback_started",monotonic()))*1000)
+                elif row["fallback_result"]=="not_attempted":
+                    row["direct_reason"]="source_deadline_exhausted"
+                    row["direct_elapsed_ms"]=round((monotonic()-row.get("_direct_started",monotonic()))*1000)
+            snapshot.append(row)
+        try:record_attempts(snapshot,attempt_path)
+        except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     for fatal in fatal_failures:
         if fatal is not None:raise fatal
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
@@ -897,8 +1025,9 @@ def filter_evidence(
     diagnostics:list[dict[str,str]]=[]
     for page in pages:
         domain=urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower()
-        body=str(page.get("text") or "")
-        if len(body.strip())<MIN_EVIDENCE_BODY_CHARS:
+        from extraction_contract import is_error_document, strip_tool_footer
+        body=strip_tool_footer(str(page.get("text") or ""))
+        if len(body.strip())<MIN_EVIDENCE_BODY_CHARS or is_error_document(body, page.get("title", "")):
             diagnostics.append({"url":str(page.get("url") or ""),"domain":domain,"reason":"article_body_missing"})
             continue
         nav_markers=("investor menu","site search","investor email alerts","privacy notice","subscribe","unsubscribe")
@@ -923,7 +1052,7 @@ def filter_evidence(
         if current-parsed>dt.timedelta(days=max_age_days):
             diagnostics.append({"url":str(page.get("url") or ""),"domain":domain,"reason":"stale_source"})
             continue
-        accepted.append(page)
+        accepted.append({**page,"text":body} if body!=page.get("text") else page)
     return accepted,diagnostics
 
 
@@ -1044,7 +1173,7 @@ def record_research_diagnostics(
         domain=str(item.get("domain") or "unknown").lower()
         if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
         stage="source_fetch" if reason=="fetched" or reason in RETRIEVAL_DIAGNOSTIC_REASONS else "source_quality"
-        append_jsonl(target,{"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain})
+        append_jsonl(target,{"timestamp":timestamp,"stage":stage,"reason":reason,"domain":domain,**research_correlation(item.get("url"))})
 
 
 def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str|None=None)->None:
@@ -1057,7 +1186,7 @@ def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str
         return min(100,max(0,value if isinstance(value,int) and not isinstance(value,bool) else 0))
     row={"timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),"stage":"discovery","reason":reason,"raw_candidate_count":count("raw_candidate_count"),"parsed_candidate_count":count("parsed_candidate_count"),"valid_url_count":count("valid_url_count")}
     target=path or ROOT/"private"/"research_diagnostics.jsonl"
-    append_jsonl(target,row)
+    append_jsonl(target,{**row,**research_correlation()})
 
 
 def record_synthesis_none(
@@ -1074,7 +1203,7 @@ def record_synthesis_none(
         "reason":synthesis_none_reason(candidate),
         "evidence_sha256":hashlib.sha256(evidence_prompt.encode("utf-8")).hexdigest(),
     }
-    append_jsonl(target,row)
+    append_jsonl(target,{**row,**research_correlation()})
 
 
 def synthesis_prompt(
@@ -1289,6 +1418,7 @@ def post_fetch_rescue_candidate(
             fetched=gather_evidence(
                 [url],diagnostics=diagnostics,cache_path=ROOT/"private"/"source_cache.json",
                 collection_deadline=deadline,strict_gateway_provider=True,
+                attempt_path=ROOT/"private"/"source_attempts.jsonl",
             )
         except ResearchFailure as error:
             if error.code!="research_rescue_unavailable":raise
@@ -1370,6 +1500,7 @@ def prioritize_thin_candidates(candidates:list[dict[str,Any]],pages:list[dict[st
     return sorted(candidates,key=priority)
 
 
+@correlated_research_run
 def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any]]|None=None)->dict[str,Any]:
     """One discovery run; stop at the first candidate passing shared intake.
 
@@ -1416,6 +1547,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         fetched_evidence=gather_evidence(
             urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
             collection_deadline=evidence_deadline,
+            attempt_path=ROOT/"private"/"source_attempts.jsonl",
         )
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
     sec_dates={}
@@ -1451,6 +1583,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
     source_diagnostics.extend({
+        "url":str(page.get("url") or ""),
         "domain":urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower(),
         "reason":"fetched",
     } for page in filtered_evidence)
@@ -1500,6 +1633,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         urls_before=set(accepted_urls)
         rescue_thin_candidates(deferred_rescue_deadline)
         newly_fetched=[{
+            "url":str(page.get("url") or ""),
             "domain":urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower(),"reason":"fetched",
         } for page in filtered_evidence if page.get("url") not in urls_before]
         try:record_research_diagnostics(source_diagnostics[diagnostics_before:]+newly_fetched)

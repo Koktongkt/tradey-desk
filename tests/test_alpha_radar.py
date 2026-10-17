@@ -463,8 +463,10 @@ class AlphaRadarTests(unittest.TestCase):
         )
         for label, url, body, expected in cases:
             with self.subTest(case=label):
-                result = subprocess.CompletedProcess([], 0, body, '')
-                with patch.object(alpha_radar.subprocess, 'run', return_value=result):
+                worker_page = {'url':url,'title':'','text':body}
+                if alpha_radar.publisher_domain(url) == 'reuters.com':
+                    worker_page['location_provenance'] = 'uncached_dispatch'
+                with patch('structured_extraction.run_worker', return_value={'version':1,'status':'ok','page':worker_page}), patch.object(alpha_radar, 'is_safe_public_url', return_value=True):
                     page = alpha_radar.fetch_source_via_gateway(url)
                 if expected is None:
                     self.assertIsNone(page['published_at'])
@@ -767,7 +769,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://old-c.example/3","title":"C","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
             {"url":"https://old-d.example/4","title":"D","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
         ]
-        def gather(_urls,diagnostics,cache_path=None,collection_deadline=None):
+        def gather(_urls,diagnostics,cache_path=None,collection_deadline=None,attempt_path=None):
             diagnostics.append({"url":"https://missing.example/2","domain":"missing.example","reason":"source_fetch_timeout"})
             return pages
         with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(

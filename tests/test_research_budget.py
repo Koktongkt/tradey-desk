@@ -299,11 +299,9 @@ class ScoutReliabilityGuardTests(unittest.TestCase):
 
 
 class GatewayFallbackGuardTests(unittest.TestCase):
-    """Bot-walled and timing-out primary sources (businesswire.com timeouts,
-    investors.* 403s) get one bounded gateway-backed extraction fallback per
-    URL. The fallback shells out to the hermes web toolset, which routes
-    through the provider gateway and extracted pages direct fetching could
-    not (verified 2026-09-09: businesswire.com article recovered)."""
+    """Failed exact URLs get one bounded no-model configured-tool worker.
+    Tests intercept the project supervisor; model search/rescue remains separate.
+    """
 
     def setUp(self):
         alpha_radar.configured_default_model.cache_clear()
@@ -319,15 +317,13 @@ class GatewayFallbackGuardTests(unittest.TestCase):
             calls.append("direct")
             raise TimeoutError("read timed out")
 
-        def fallback(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        def fallback(url, timeout_seconds=30):
             calls.append("fallback")
-            self.assertIn("web", cmd)
-            return subprocess.CompletedProcess(
-                cmd, 0, "Published 2026-09-08. Revenue rose 37 percent year over year.", ""
-            )
+            self.assertEqual(url,"https://walled.example/a")
+            return {"version":1,"status":"ok","page":{"url":url,"title":"","text":"Published 2026-09-08. Revenue rose 37 percent year over year."}}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess, "run", side_effect=fallback
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(alpha_radar, 'is_safe_public_url', return_value=True), patch(
+            'structured_extraction.run_worker', side_effect=fallback
         ):
             pages = alpha_radar.gather_evidence(["https://walled.example/a"])
 
@@ -364,11 +360,9 @@ class GatewayFallbackGuardTests(unittest.TestCase):
     def test_unusable_gateway_fallback_yields_no_evidence_and_keeps_typed_timeout(self):
         cases = (
             ("gateway_fallback_timeout_keeps_typed_timeout",
-             subprocess.TimeoutExpired(cmd="x", timeout=30),
+             {"version":1,"status":"error","reason":"timeout"},
              [{"url":"https://walled.example/a","domain": "walled.example", "reason": "source_fetch_timeout"}]),
-            ("whitespace_gateway_output_is_not_evidence",
-             subprocess.CompletedProcess([], 0, "   ", ""),
-             None),
+            ("whitespace_gateway_output_is_not_evidence", {}, None),
         )
         for label, gateway_result, expected_diagnostics in cases:
             with self.subTest(case=label):
@@ -377,11 +371,8 @@ class GatewayFallbackGuardTests(unittest.TestCase):
                 def direct(url, _timeout):
                     raise TimeoutError("read timed out")
 
-                gateway_options = ({"side_effect": gateway_result}
-                                   if isinstance(gateway_result, BaseException)
-                                   else {"return_value": gateway_result})
-                with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-                    alpha_radar.subprocess, "run", **gateway_options
+                with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(alpha_radar, 'is_safe_public_url', return_value=True), patch(
+                    'structured_extraction.run_worker', return_value=gateway_result
                 ):
                     pages = alpha_radar.gather_evidence(
                         ["https://walled.example/a"], **({"diagnostics":diagnostics} if expected_diagnostics is not None else {})
@@ -395,9 +386,9 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         def direct(url, _timeout):
             raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
 
-        failed = subprocess.CompletedProcess([], 1, "", "provider unavailable")
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess, "run", return_value=failed
+        failed = {"version":1,"status":"error","reason":"worker_exit"}
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(alpha_radar, 'is_safe_public_url', return_value=True), patch(
+            'structured_extraction.run_worker', return_value=failed
         ):
             with self.assertRaises(alpha_radar.ResearchFailure) as ctx:
                 alpha_radar.gather_evidence(
@@ -432,8 +423,8 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         def direct(url, _timeout):
             return {"url": url, "title": "Direct", "text": "fine", "published_at": "2026-09-08T15:00:00Z"}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess, "run"
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch(
+            'structured_extraction.run_worker'
         ) as boot:
             pages = alpha_radar.gather_evidence(["https://ok.example/a"])
 
@@ -446,12 +437,12 @@ class GatewayFallbackGuardTests(unittest.TestCase):
         def direct(url, _timeout):
             raise TimeoutError("read timed out")
 
-        def fallback(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
-            captured["timeout"] = timeout
-            return subprocess.CompletedProcess(cmd, 0, "body", "")
+        def fallback(url, timeout_seconds=30):
+            captured["timeout"] = timeout_seconds
+            return {"version":1,"status":"error","reason":"provider_error"}
 
-        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(
-            alpha_radar.subprocess, "run", side_effect=fallback
+        with patch.object(alpha_radar, "fetch_source", side_effect=direct), patch.object(alpha_radar, 'is_safe_public_url', return_value=True), patch(
+            'structured_extraction.run_worker', side_effect=fallback
         ):
             alpha_radar.gather_evidence(["https://walled.example/a"])
 

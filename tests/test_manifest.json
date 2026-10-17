@@ -19,6 +19,7 @@
    "test_research_budget",
    "test_research_timestamp",
    "test_runtime_paths",
+   "test_structured_extraction",
    "test_safety",
    "test_shadow",
    "test_sqlite_ledger",
