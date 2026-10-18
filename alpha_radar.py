@@ -1243,6 +1243,15 @@ def record_research_diagnostics(
     timestamp=now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
     for item in diagnostics:
         reason=item.get("reason")
+        if reason=="bundle_rescue_progress":
+            token=str(item.get("candidate_token") or "")
+            outcome=item.get("outcome")
+            turns=str(item.get("turns") or "")
+            if re.fullmatch(r"[0-9a-f]{16}",token) and outcome in {"completed","deadline"} and re.fullmatch(r"[0-9]{1,3}",turns):
+                append_jsonl(target,{"timestamp":timestamp,"stage":"evidence_rescue","reason":reason,
+                                    "candidate_token":token,"turns":min(16,int(turns)),"outcome":outcome,
+                                    **research_correlation()})
+            continue
         if reason not in SOURCE_DIAGNOSTIC_REASONS:continue
         domain=str(item.get("domain") or "unknown").lower()
         if not re.fullmatch(r"[a-z0-9.-]{1,253}",domain):domain="unknown"
@@ -1458,9 +1467,25 @@ def gateway_rescue_url(
 
 def post_fetch_rescue_candidate(
     candidate:dict[str,Any],accepted_pages:list[dict[str,Any]],*,
+    diagnostics:list[dict[str,str]],deadline:float,resumable:bool=False,
+):
+    """Drain one rescue for direct callers, or expose bounded operation turns.
+
+    The iterator is run-local state, never a field on a public candidate. A turn
+    completes one lookup, search or fetch; it never slices/cancels an operation.
+    """
+    steps=_post_fetch_rescue_steps(candidate,accepted_pages,diagnostics=diagnostics,deadline=deadline)
+    if resumable:return steps
+    accepted=list(accepted_pages)
+    for accepted in steps:pass
+    return accepted
+
+
+def _post_fetch_rescue_steps(
+    candidate:dict[str,Any],accepted_pages:list[dict[str,Any]],*,
     diagnostics:list[dict[str,str]],deadline:float,
-)->list[dict[str,Any]]:
-    """Try primary, independent, then wire evidence after filtering leaves <2 domains."""
+):
+    """Retain accepted evidence, pending URLs and completed lanes across turns."""
     accepted=list(accepted_pages)
     attempted=set(str(url) for url in candidate.get("urls",[]) if isinstance(url,str))
     def domains()->set[str]:return {publisher_domain(str(page.get("url") or "")) for page in accepted}
@@ -1482,7 +1507,7 @@ def post_fetch_rescue_candidate(
             if error.code!="research_rescue_unavailable":raise
             note_local_rescue_failure()
             return None
-    def try_url(url:str|None)->None:
+    def try_url(url:str|None):
         if not url or url in attempted or monotonic()>=deadline:return
         attempted.add(url)
         candidate.setdefault("urls",[])
@@ -1497,6 +1522,7 @@ def post_fetch_rescue_candidate(
         except ResearchFailure as error:
             if error.code!="research_rescue_unavailable":raise
             note_local_rescue_failure(url)
+            yield accepted
             return
         bound=[]
         for page in fetched:
@@ -1506,29 +1532,36 @@ def post_fetch_rescue_candidate(
                     "url":url,"domain":urllib.parse.urlparse(url).netloc.lower(),
                     "reason":"source_url_mismatch",
                 })
-        filtered,quality=filter_evidence(attach_sec_filing_dates(
-            bound,{url:sec_filing_date_for_url(url,deadline=deadline)}
-            if is_sec_archive_filing_url(url) and any(not valid_publication_timestamp(p.get("published_at")) for p in bound) else {},
-        ))
+        sec_dates={}
+        if is_sec_archive_filing_url(url) and any(not valid_publication_timestamp(p.get("published_at")) for p in bound):
+            # The optional official date lookup is a separate bounded operation.
+            yield accepted
+            if monotonic()<deadline:sec_dates[url]=sec_filing_date_for_url(url,deadline=deadline)
+        filtered,quality=filter_evidence(attach_sec_filing_dates(bound,sec_dates))
         diagnostics.extend(quality)
         for page in filtered:
             domain=publisher_domain(str(page.get("url") or ""))
             if domain and domain not in domains():accepted.append(page)
-    if len(domains())>=2:return accepted
+        yield accepted
+    if len(domains())>=2:return
     for alternate in candidate.get("_alternate_urls",[])[:3]:
         if len(domains())>=2 or monotonic()>=deadline:break
         if not isinstance(alternate,str) or publisher_domain(alternate) in domains():continue
-        try_url(alternate)
-    if len(domains())>=2:return accepted
-    if "primary" not in roles():
-        try_url(sec_edgar_filing_url(
+        yield from try_url(alternate)
+    if len(domains())>=2:return
+    if "primary" not in roles() and monotonic()<deadline:
+        url=sec_edgar_filing_url(
             str(candidate.get("symbol") or ""),str(candidate.get("event_date") or ""),
             cache_path=ROOT/"private"/"sec_source_cache.json",deadline=deadline,
-        ))
-    if len(domains())<2 and "independent" not in roles():
-        try_url(candidate_rescue_url("independent"))
-    if len(domains())<2 and "wire" not in roles():
-        try_url(candidate_rescue_url("wire"))
+        )
+        yield accepted
+        yield from try_url(url)
+    for role in ("independent","wire"):
+        if len(domains())>=2 or monotonic()>=deadline:break
+        if role in roles():continue
+        url=candidate_rescue_url(role)
+        yield accepted
+        yield from try_url(url)
     if len(domains())<2 and not any(
         item.get("reason")=="bundle_rescue_unavailable"
         and str(item.get("url") or "") in set(candidate.get("urls") or [])
@@ -1636,26 +1669,63 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     source_diagnostics.extend(initial_quality)
-    rescued_candidates=0
+    # Run-local continuations; count distinct admitted candidates, not turns/passes.
+    rescue_states={}
+    rescue_turns={}
     initially_ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
     def rescue_thin_candidates(deadline:float)->None:
-        nonlocal rescued_candidates
         with timed_research_stage("evidence_rescue"):
+            pending=[]
             for scout_candidate in prioritize_thin_candidates(scout_candidates,filtered_evidence):
+                symbol=str(scout_candidate.get("symbol") or "")
                 candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
                 accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
                 if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
-                if rescued_candidates>=3 or monotonic()>=deadline:break
-                rescued_candidates+=1
-                rescued_pages=post_fetch_rescue_candidate(
-                    scout_candidate,accepted,diagnostics=source_diagnostics,deadline=deadline,
-                )
-                for page in rescued_pages:
-                    url=page.get("url")
-                    if url and (url not in accepted_urls if isinstance(url,str)
-                                else all(existing.get("url")!=url for existing in filtered_evidence)):
-                        if isinstance(url,str):accepted_urls.add(url)
-                        filtered_evidence.append(page)
+                if monotonic()>=deadline:break
+                if symbol not in rescue_states:
+                    if len(rescue_states)>=3:continue
+                    rescue_states[symbol]=post_fetch_rescue_candidate(
+                        scout_candidate,accepted,diagnostics=source_diagnostics,deadline=deadline,resumable=True,
+                    )
+                state=rescue_states[symbol]
+                if state is not None:pending.append((symbol,state))
+            while pending:
+                following=[]
+                for symbol,state in pending:
+                    if monotonic()>=deadline and not isinstance(state,list):continue
+                    # Direct helper overrides used by existing callers/tests return a
+                    # completed list. The live implementation always returns steps.
+                    if isinstance(state,list):
+                        rescued_pages=state
+                        rescue_states[symbol]=None
+                    else:
+                        try:rescued_pages=next(state)
+                        except StopIteration:
+                            rescue_states[symbol]=None
+                            continue
+                        following.append((symbol,state))
+                    rescue_turns[symbol]=rescue_turns.get(symbol,0)+1
+                    for page in rescued_pages:
+                        url=page.get("url")
+                        if isinstance(url,str) and url and url not in accepted_urls:
+                            accepted_urls.add(url)
+                            filtered_evidence.append(page)
+                pending=following
+            # Deadline-stopped continuations still receive candidate-local failure
+            # attribution; no late provider operation is needed to finalize them.
+            for scout_candidate in scout_candidates:
+                symbol=str(scout_candidate.get("symbol") or "")
+                if symbol not in rescue_states:continue
+                owned=set(scout_candidate.get("urls") or [])
+                domains={publisher_domain(str(p.get("url") or "")) for p in filtered_evidence if isinstance(p.get("url"),str) and p.get("url") in owned}
+                source_diagnostics.append({
+                    "reason":"bundle_rescue_progress","candidate_token":hashlib.sha256(symbol.encode()).hexdigest()[:16],
+                    "turns":str(rescue_turns.get(symbol,0)),
+                    "outcome":"completed" if rescue_states[symbol] is None or len(domains)>=2 else "deadline",
+                })
+                if len(domains)<2 and not any(d.get("reason")=="bundle_rescue_unavailable" and d.get("url") in owned for d in source_diagnostics):
+                    url=str((scout_candidate.get("urls") or [""])[0])
+                    source_diagnostics.append({"url":url,"domain":urllib.parse.urlparse(url).netloc.lower(),"reason":"bundle_rescue_unavailable"})
     if not initially_ranked:rescue_thin_candidates(evidence_deadline)
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
