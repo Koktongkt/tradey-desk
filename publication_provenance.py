@@ -7,6 +7,16 @@ Unknown domains continue through the existing visible-date evidence paths.
 from datetime import datetime, timezone
 
 
+def provider_publication(epoch: object) -> dict | None:
+    """Convert only documented Unix integer seconds to an unverified report."""
+    if type(epoch) is not int or not 946684800 <= epoch <= 4102444799:
+        return None
+    return {'version': 1, 'basis': 'provider_reported', 'provider': 'keenable',
+            'field': 'published_at',
+            'value': datetime.fromtimestamp(epoch, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'precision': 'second'}
+
+
 def publication_record(value):
     if not isinstance(value, dict) or set(value) != {'version', 'basis', 'provider', 'field', 'value', 'precision'}:
         return None

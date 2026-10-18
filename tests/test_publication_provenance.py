@@ -12,6 +12,22 @@ import alpha_radar as radar
 import extraction_worker as worker
 import structured_extraction as adapter
 import focused_capture
+import publication_provenance as provenance
+
+
+class ProviderPublicationTests(unittest.TestCase):
+    def test_integer_seconds_create_provider_report(self):
+        self.assertEqual(provenance.provider_publication(946684800), {
+            'version': 1, 'basis': 'provider_reported', 'provider': 'keenable',
+            'field': 'published_at', 'value': '2000-01-01T00:00:00Z', 'precision': 'second'})
+        self.assertEqual(provenance.provider_publication(4102444799)['value'],
+                         '2099-12-31T23:59:59Z')
+
+    def test_invalid_timestamp_never_guesses_units_or_type(self):
+        for value in (True, False, 946684800.0, 946684800000, '946684800',
+                      None, 946684799, 4102444800, -1, {}, []):
+            with self.subTest(value=value):
+                self.assertIsNone(provenance.provider_publication(value))
 
 URL = 'https://unknown.example/news/story'
 BODY = 'The company raised its revenue guidance after stronger customer demand. ' * 10
