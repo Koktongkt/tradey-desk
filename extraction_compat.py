@@ -267,13 +267,21 @@ async def _invoke(fn, *args, deadline, **kwargs):
 
     async def run():
         _remaining(deadline)
-        if inspect.iscoroutinefunction(fn):
-            return await fn(*args, **kwargs)
-        def call():
-            _remaining(deadline)
-            return fn(*args, **kwargs)
-        value = await asyncio.to_thread(call)
-        return await value if inspect.isawaitable(value) else value
+        try:
+            if inspect.iscoroutinefunction(fn):
+                return await fn(*args, **kwargs)
+            def call():
+                _remaining(deadline)
+                return fn(*args, **kwargs)
+            value = await asyncio.to_thread(call)
+            return await value if inspect.isawaitable(value) else value
+        except (CompatibilityError, TimeoutError):
+            # Deliberate refusals and deadlines keep their terminal meaning.
+            raise
+        except Exception as exc:
+            # Normalize only actual invocation/await failures, never URL checks
+            # or response validation. CancelledError (BaseException) propagates.
+            raise CompatibilityError('provider_error') from exc
     value = await asyncio.wait_for(run(), timeout=_remaining(deadline))
     _remaining(deadline)
     return value

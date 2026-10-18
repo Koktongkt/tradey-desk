@@ -246,6 +246,44 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.calls[-1], (vendor, ['https://example.org'], 'html'))
             self.assertTrue(self.c.rescue_allowed(provider))
 
+    async def test_raw_transport_exceptions_are_normalized_at_invocation(self):
+        provider = self.provider('tavily')
+        for mode in ('sync', 'async', 'sync_awaitable'):
+            for error_type in (OSError, RuntimeError):
+                with self.subTest(mode=mode, error=error_type.__name__):
+                    def fail(urls, *, format):
+                        raise error_type('PRIVATE transport details')
+                    async def async_fail(urls, *, format):
+                        await asyncio.sleep(0)
+                        fail(urls, format=format)
+                    def awaitable(urls, *, format):
+                        return async_fail(urls, format=format)
+                    provider.extract = {'sync': fail, 'async': async_fail,
+                                        'sync_awaitable': awaitable}[mode]
+                    provider.uses_keyless = lambda: False
+                    with self.assertRaises(Exception) as caught:
+                        await self.c.primary(provider, ['https://example.org'],
+                                             format='markdown', deadline=time.monotonic() + 1)
+                    self.assertIsInstance(caught.exception, self.c.CompatibilityError)
+                    self.assertEqual(getattr(caught.exception, 'reason', None), 'provider_error')
+                    self.assertNotIn('PRIVATE', str(caught.exception))
+
+    async def test_invocation_preserves_typed_failures_timeout_and_cancellation(self):
+        provider = self.provider('custom', custom=True)
+        provider.uses_keyless = lambda: False
+        for error in (self.c.CompatibilityError('malformed_response'),
+                      self.c.CompatibilityError('policy_blocked'),
+                      self.c.CompatibilityError('unsafe_url'), TimeoutError(),
+                      asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__, reason=str(error)):
+                async def fail(urls, *, format):
+                    raise error
+                provider.extract = fail
+                with self.assertRaises(type(error)) as caught:
+                    await self.c.primary(provider, ['https://example.org'],
+                                         format='markdown', deadline=time.monotonic() + 1)
+                self.assertIs(caught.exception, error)
+
     async def test_malformed_transport_containers_are_postvalidation_not_transport_failure(self):
         provider = self.provider('exa')
         for malformed in ({'results': []}, [None], [{'url': 'https://example.org'}, 'bad']):

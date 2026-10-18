@@ -254,15 +254,21 @@ async def main():
             legacy=await worker.extract({'version':1,'url':URL})
             assert legacy['page']['publication']==first['page']['publication']
             assert radar.validate_structured_page(URL,legacy)['published_at'] is None
-            # Existing configured rescue route still receives primary errors.
-            async def fail(*args, **kwargs): raise compat.CompatibilityError('provider_error')
+            # Preserve typed coverage and restore actual sync/async exception rescue.
+            def sync_fail(*args, **kwargs): raise OSError('PRIVATE fixture primary unavailable')
+            async def async_fail(*args, **kwargs): raise RuntimeError('PRIVATE fixture primary unavailable')
+            async def typed_fail(*args, **kwargs): raise compat.CompatibilityError('provider_error')
             cache.extract_cache_put(URL, '', provider=p.name)
             async def rescue_transport(name, urls, *, deadline):
                 return fixture_rows(urls)
-            with patch.object(cache,'extract_cache_get',side_effect=AssertionError('cache read')), patch.object(p,'extract',fail), patch.object(compat,'rescue_allowed',return_value=True), patch.object(compat,'ring_order',return_value=['keenable']), patch.object(compat,'keyless',side_effect=rescue_transport) as rescue:
-                rescued=await worker.extract({'version':1,'url':URL})
-                assert rescued['page']['publication']==first['page']['publication']
-                assert rescue.call_count==1
+            for fail in (sync_fail, async_fail, typed_fail):
+                with patch.object(cache,'extract_cache_get',side_effect=AssertionError('cache read')), patch.object(p,'extract',fail), patch.object(compat,'rescue_allowed',return_value=True), patch.object(compat,'ring_order',return_value=['keenable']), patch.object(compat,'keyless',side_effect=rescue_transport) as rescue:
+                    rescued=await worker.extract({'version':1,'url':URL})
+                    assert rescued['status']=='ok', rescued
+                    assert rescued['page']['publication']==first['page']['publication'], rescued
+                    assert radar.validate_structured_page(URL,rescued)['published_at'] is None
+                    assert rescue.call_count==1
+                    assert 'PRIVATE' not in json.dumps(rescued)
             cases.append(returned)
     assert len(cases)==3
 asyncio.run(main())

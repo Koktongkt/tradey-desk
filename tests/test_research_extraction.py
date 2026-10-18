@@ -418,5 +418,135 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.project_row(r)['status'], 'ok')
 
 
+class RealTransportTests(unittest.IsolatedAsyncioTestCase):
+    """Real compatibility invocation and rescue gates; offline I/O boundaries only."""
+    def setUp(self):
+        self.d = importlib.import_module('research_extraction')
+        self.calls = []
+        self.config: dict = {'web': {'extract_backend': 'fixture'}}
+        self.failure = OSError('PRIVATE key=fixture-secret /private/provider-path')
+        self.result = None
+        self.ring_failure = None
+        self.provider = types.SimpleNamespace(name='tavily', supports_extract=lambda: True,
+                                              uses_keyless=lambda: False, extract=self.sync_extract)
+        def vendor(name):
+            def extract(urls):
+                self.calls.append(name)
+                if self.ring_failure is not None:
+                    raise self.ring_failure
+                return [row(u) for u in urls]
+            return extract
+        self.keyless = types.SimpleNamespace(
+            _ring_order=lambda name: list(RING),
+            _is_rate_limitish=lambda error: '429' in error,
+            **{name + '_extract_keyless': vendor(name) for name in RING[:3]})
+        modules = {
+            'agent.web_search_registry': types.SimpleNamespace(get_provider=lambda name: self.provider),
+            'plugins.web.keyless_mcp': self.keyless,
+        }
+        for p in (patch.object(compat, '_config', side_effect=lambda: self.config),
+                  patch.object(compat, '_module', side_effect=lambda name: modules[name]),
+                  patch.object(compat, 'check_url', side_effect=self.safe_url)):
+            p.start(); self.addCleanup(p.stop)
+
+    async def safe_url(self, url):
+        return url
+
+    def sync_extract(self, urls, *, format):
+        self.calls.append('primary')
+        if self.failure is not None:
+            raise self.failure
+        return self.result
+
+    async def async_extract(self, urls, *, format):
+        import asyncio
+        await asyncio.sleep(0)
+        return self.sync_extract(urls, format=format)
+
+    async def extract(self):
+        out = json.loads(await self.d.extract_tool([URL], deadline=time.monotonic() + 5))
+        self.assertNotIn('PRIVATE', json.dumps(out))
+        self.assertNotIn('fixture-secret', json.dumps(out))
+        self.assertNotIn('/private/provider-path', json.dumps(out))
+        return out['results'][0]
+
+    async def test_raw_sync_and_async_primary_failures_rescue_once(self):
+        for method in (self.sync_extract, self.async_extract):
+            for error in (OSError, RuntimeError):
+                with self.subTest(method=method.__name__, error=error.__name__):
+                    self.calls.clear()
+                    self.provider.extract = method
+                    self.failure = error('PRIVATE key=fixture-secret /private/provider-path')
+                    out = await self.extract()
+                    self.assertEqual(out['content'], BODY)
+                    self.assertIsNone(out['error'])
+                    self.assertEqual(self.calls, ['primary', 'exa'])
+
+    async def test_raw_primary_optouts_do_not_rescue(self):
+        for settings in ({'keyless_rescue': False}, {'keyless_fallback': False},
+                         {'provider_tier': {v: 'paid' for v in RING}}):
+            with self.subTest(settings=settings):
+                self.calls.clear()
+                self.config['web'] = {'extract_backend': 'fixture', **settings}
+                self.assertEqual((await self.extract())['reason'], 'provider_error')
+                self.assertEqual(self.calls, ['primary'])
+
+    async def test_typed_refusals_and_malformed_returns_remain_terminal(self):
+        for reason, expected in (('malformed_response', 'malformed_response'),
+                                 ('unsafe_url', 'unsafe_url'), ('policy_blocked', 'provider_error')):
+            with self.subTest(reason=reason):
+                self.calls.clear()
+                self.failure = compat.CompatibilityError(reason)
+                self.assertEqual((await self.extract())['reason'], expected)
+                self.assertEqual(self.calls, ['primary'])
+        self.failure = None
+        for value in ({'results': []}, [None], [row(publication={})]):
+            with self.subTest(value=value):
+                self.calls.clear()
+                self.result = value
+                self.assertEqual((await self.extract())['reason'], 'malformed_response')
+                self.assertEqual(self.calls, ['primary'])
+
+    async def test_postvalidation_raw_or_typed_errors_never_rescue(self):
+        self.failure = None
+        self.result = [row()]
+        for error in (RuntimeError('PRIVATE postvalidation'), compat.CompatibilityError('provider_error')):
+            with self.subTest(error=type(error).__name__):
+                self.calls.clear()
+                with patch.object(self.d, '_project', side_effect=error):
+                    self.assertEqual((await self.extract())['reason'], 'provider_error')
+                self.assertEqual(self.calls, ['primary'])
+
+    async def test_primary_cancellation_propagates_without_rescue(self):
+        import asyncio
+        for method in (self.sync_extract, self.async_extract):
+            with self.subTest(method=method.__name__):
+                self.calls.clear()
+                self.provider.extract = method
+                self.failure = asyncio.CancelledError()
+                with self.assertRaises(asyncio.CancelledError):
+                    await self.extract()
+                self.assertEqual(self.calls, ['primary'])
+
+    async def test_raw_ring_exception_stops_without_retry_or_second_rescue(self):
+        for anonymous in (False, True):
+            for error in (OSError, RuntimeError):
+                with self.subTest(anonymous=anonymous, error=error.__name__):
+                    self.calls.clear()
+                    self.provider.uses_keyless = lambda: anonymous
+                    self.ring_failure = error('PRIVATE key=fixture-secret /private/provider-path')
+                    self.assertEqual((await self.extract())['reason'], 'provider_error')
+                    self.assertEqual(self.calls, ['exa'] if anonymous else ['primary', 'exa'])
+
+    async def test_ring_walks_only_on_rate_limit_rows_after_raw_primary_failure(self):
+        def limited(urls):
+            self.calls.append('exa')
+            return [dict(url=u, error='429 Too many requests') for u in urls]
+        self.keyless.exa_extract_keyless = limited
+        out = await self.extract()
+        self.assertEqual(out['content'], BODY)
+        self.assertEqual(self.calls, ['primary', 'exa', 'parallel'])
+
+
 if __name__ == '__main__':
     unittest.main()
