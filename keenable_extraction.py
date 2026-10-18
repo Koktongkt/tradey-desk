@@ -6,6 +6,7 @@ Synchronous network work belongs in the parent's hard-deadline research child.
 """
 import http.client
 import io
+import socket
 import time
 from urllib.parse import urlencode
 
@@ -21,6 +22,39 @@ def _remaining(deadline):
     if remaining <= 0:
         raise TimeoutError
     return remaining
+
+
+def _deadline_tcp(address, *, deadline, source_address=None):
+    """Resolve once, then budget each TCP candidate against one deadline.
+
+    DNS itself is not cancellable here; the Task 4 parent must hard-kill the
+    research child. No TCP work may start with a stale pre-resolution budget.
+    """
+    _remaining(deadline)
+    host, port = address
+    addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    _remaining(deadline)
+    last_error = OSError('getaddrinfo returns an empty list')
+    for family, kind, protocol, _, sockaddr in addresses:
+        _remaining(deadline)
+        sock = None
+        connected = False
+        try:
+            sock = socket.socket(family, kind, protocol)
+            if source_address:
+                sock.bind(source_address)
+            sock.settimeout(_remaining(deadline))
+            sock.connect(sockaddr)
+            _remaining(deadline)
+            connected = True
+            return sock
+        except OSError as exc:
+            last_error = exc
+        finally:
+            if sock is not None and not connected:
+                sock.close()
+        _remaining(deadline)
+    raise last_error
 
 
 class _DeadlineTLS:
@@ -90,6 +124,10 @@ def fetch(url: str, *, deadline: float) -> dict:
         connection = http.client.HTTPSConnection('api.keenable.ai', timeout=_remaining(deadline))
         # The fixed endpoint has no proxy tunnel. stdlib HTTPSConnection uses
         # its context only to wrap this connected socket, preserving cert checks.
+        # HTTPConnection's private TCP factory hook is stdlib coupling, like
+        # _context below. Ignore its stale timeout; retain the absolute deadline.
+        connection._create_connection = lambda address, timeout, source_address: _deadline_tcp(
+            address, deadline=deadline, source_address=source_address)
         connection._context = _DeadlineTLS(connection._context, deadline)
         connection.connect()
         sock = connection.sock

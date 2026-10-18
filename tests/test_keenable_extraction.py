@@ -226,5 +226,89 @@ class KeenableTests(unittest.TestCase):
         self.assertTrue(all(0 < timeout <= 10 for timeout in timeouts))
 
 
+class TCPDeadlineTests(unittest.TestCase):
+    """Keep stdlib HTTPS orchestration real; replace only offline DNS/sockets."""
+    def setUp(self):
+        self.transport = importlib.import_module('keenable_extraction')
+        self.clock = 10.0
+        self.attempts = []
+        self.sockets = []
+
+    def run_fetch(self, *, dns_cost=0, connect_costs=(6, 6, 6), succeed_last=False):
+        # A stale per-address timeout or missing post-DNS refresh must fail these
+        # tests. Socket doubles model blocking only for their assigned timeout.
+        conn = self.transport.http.client.HTTPSConnection('api.keenable.ai', timeout=10.0)
+        context = Mock()
+        context.wrap_socket.side_effect = lambda sock, **kwargs: sock
+        conn._context = context
+        conn.request = Mock()
+        response = Response(json.dumps(payload()).encode())
+        conn.getresponse = Mock(return_value=response)
+        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.' + str(i + 1), 443))
+                     for i in range(len(connect_costs))]
+
+        def resolve(*args):
+            self.clock += dns_cost
+            return addresses
+
+        def create(*args):
+            index = len(self.sockets)
+            sock = Mock()
+            self.sockets.append(sock)
+            def connect(address):
+                timeout = sock.settimeout.call_args.args[0]
+                self.attempts.append((address, timeout))
+                cost = connect_costs[index]
+                self.clock += min(cost, timeout)
+                if cost >= timeout:
+                    raise TimeoutError
+                if not (succeed_last and index == len(connect_costs) - 1):
+                    raise OSError('candidate refused')
+            sock.connect.side_effect = connect
+            return sock
+
+        with patch.object(self.transport.time, 'monotonic', side_effect=lambda: self.clock), \
+                patch.object(socket, 'getaddrinfo', side_effect=resolve), \
+                patch.object(socket, 'socket', side_effect=create), \
+                patch.object(self.transport.http.client, 'HTTPSConnection', return_value=conn):
+            result = self.transport.fetch(URL, deadline=20.0)
+        return result, conn, response
+
+    def test_tcp_candidates_refresh_budget_and_stop_at_deadline(self):
+        result, conn, _ = self.run_fetch()
+        self.assertEqual([timeout for _, timeout in self.attempts], [10.0, 4.0])
+        self.assertEqual(self.clock, 20.0)
+        self.assertEqual(result, {'version': 1, 'status': 'error', 'reason': 'timeout'})
+        self.assertEqual(len(self.sockets), 2)
+        for sock in self.sockets:
+            sock.close.assert_called_once()
+        conn.request.assert_not_called()
+
+    def test_tcp_budget_is_refreshed_after_dns(self):
+        result, conn, _ = self.run_fetch(dns_cost=3, connect_costs=(8,))
+        self.assertEqual([timeout for _, timeout in self.attempts], [7.0])
+        self.assertEqual(self.clock, 20.0)
+        self.assertEqual(result['reason'], 'timeout')
+        self.sockets[0].close.assert_called_once()
+        conn.request.assert_not_called()
+
+    def test_dns_expiry_starts_no_tcp_candidate(self):
+        result, conn, _ = self.run_fetch(dns_cost=10, connect_costs=(1,))
+        self.assertEqual(self.attempts, [])
+        self.assertEqual(self.sockets, [])
+        self.assertEqual(result['reason'], 'timeout')
+        conn.request.assert_not_called()
+
+    def test_tcp_fallback_closes_failure_and_preserves_success_owner(self):
+        result, conn, response = self.run_fetch(connect_costs=(3, 2), succeed_last=True)
+        self.assertEqual([timeout for _, timeout in self.attempts], [10.0, 7.0])
+        self.assertEqual(result.get('content'), BODY, result)
+        for sock in self.sockets:
+            sock.close.assert_called_once()
+        self.assertTrue(response.closed)
+        conn.request.assert_called_once()
+        conn.getresponse.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()
