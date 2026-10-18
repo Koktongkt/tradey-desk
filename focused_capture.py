@@ -243,6 +243,16 @@ def bind_calls(calls):
         for row in rows:
             returned = row.get('url')
             key = returned if isinstance(returned, str) and returned in requested else None
+            from publication_provenance import extraction_extensions
+            extensions = extraction_extensions(row, returned)
+            if extensions is None:
+                return {}
+            location = extensions.get('extraction_location')
+            if location is not None:
+                bound = location['requested_url']
+                if bound not in requested or (key is not None and key != bound):
+                    return {}
+                key = bound
             if key is None and len(requested) == 1 and len(rows) == 1:
                 key = requested[0]
             if key is None:

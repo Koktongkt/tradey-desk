@@ -1,10 +1,10 @@
 """Project-owned worker. Imports only the configured Hermes extraction dispatcher.
 
-Public web_extract intentionally trims metadata. Keep that routing/rescue/safety
-contract intact: publication provenance is recovered from visible content by the
-parent, never from cache/crawl timestamps or guessed provider metadata. A local
-legacy-cache read guard prevents Reuters URL-year inference from cache-rebound
-locations; it does not attest to network freshness or provider-internal caches.
+The dispatcher exposes only bounded optional publication/location records, not
+arbitrary metadata. Provider-reported dates remain explicitly unverified; the
+parent still requires publication evidence. A local legacy-cache read guard
+prevents Reuters URL-year inference from cache-rebound locations; it does not
+attest to network freshness or provider-internal caches.
 """
 from __future__ import annotations
 import asyncio
@@ -109,7 +109,11 @@ def project_row(row, guarded_location=False):
     content = strip_tool_footer(content)
     if not content.strip() or is_error_document(content, title):
         return error('empty_content')
-    page = {'url': url, 'title': title[:200], 'text': content[:6000]}
+    from publication_provenance import extraction_extensions
+    extensions = extraction_extensions(row, url)
+    if extensions is None:
+        return error('malformed_response')
+    page = {'url': url, 'title': title[:200], 'text': content[:6000], **extensions}
     if guarded_location:
         page['location_provenance'] = 'uncached_dispatch'
     return {'version': 1, 'status': 'ok', 'page': page}

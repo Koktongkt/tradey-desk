@@ -645,15 +645,18 @@ def extract_page_text(body:str)->str:
     return html.unescape(re.sub(r"\s+"," ",source).strip())
 
 
-def extract_published_at(body:str)->str|None:
+def extract_published_at(body:str,*,with_precision:bool=False):
+    def found(value,precision=None):
+        precision=precision or ("day" if value and len(value)==10 else "second")
+        return (value,precision) if with_precision else value
     for tag in re.findall(r"(?is)<meta\b[^>]*>",body):
         attrs={k.lower():html.unescape(v) for k,_,v in re.findall(r"([\w:-]+)\s*=\s*(['\"])(.*?)\2",tag)}
         if attrs.get("property","").lower() in {"article:published_time","og:published_time"} or attrs.get("name","").lower() in {"date","datepublished","pubdate"}:
-            if attrs.get("content"):return attrs["content"].strip()
+            if attrs.get("content"):return found(attrs["content"].strip())
     match=re.search(r'(?is)["\']datePublished["\']\s*:\s*["\']([^"\']+)["\']',body)
-    if match:return html.unescape(match.group(1)).strip()
+    if match:return found(html.unescape(match.group(1)).strip())
     match=re.search(r"(?is)\bdisplayDate\s*=\s*(['\"])(.*?)\1",body)
-    if match:return html.unescape(match.group(2)).strip()
+    if match:return found(html.unescape(match.group(2)).strip())
     publication_date_classes={"date","pubdate","published","publish-date","published-at","published-date","publication-date","news-date"}
     for visible_tag in re.finditer(r"(?is)<(?P<tag>[a-z][\w:-]*)\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>",body):
         attrs={k.lower():html.unescape(v) for k,_,v in re.findall(r"([\w:-]+)\s*=\s*(['\"])(.*?)\2",visible_tag.group("attrs"))}
@@ -664,10 +667,10 @@ def extract_published_at(body:str)->str|None:
         date_match=re.search(r"(?i)\b([A-Z][a-z]{2,8} \d{1,2}, \d{4})\b",visible)
         if date_match:
             for fmt in ("%B %d, %Y","%b %d, %Y"):
-                try:return dt.datetime.strptime(date_match.group(1),fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
+                try:return found(dt.datetime.strptime(date_match.group(1),fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z"),"day")
                 except ValueError:continue
     match=re.search(r"(?is)<time\b[^>]*\bdatetime\s*=\s*(['\"])(.*?)\1",body)
-    return html.unescape(match.group(2)).strip() if match else None
+    return found(html.unescape(match.group(2)).strip() if match else None)
 
 
 def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
@@ -750,7 +753,7 @@ def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,faile
     page=result.get("page")
     if (result.get("status")!="ok" or set(result)!={"version","status","page"}
         or not isinstance(page,dict) or not {"url","title","text"} <= set(page)
-        or set(page)-{"url","title","text","location_provenance"}
+        or set(page)-{"url","title","text","location_provenance","publication","extraction_location"}
         or ("location_provenance" in page and page["location_provenance"]!="uncached_dispatch")):
         return failed("malformed_response")
     returned=page.get("url")
@@ -777,18 +780,57 @@ def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,faile
         dates=[re.search(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)",urllib.parse.urlparse(u).path) for u in (url,returned)]
         if all(dates) and dates[0].group(1)!=dates[1].group(1):
             return failed("url_mismatch")
-    published=extract_published_at(text) or extract_gateway_publication_date(
+    from publication_provenance import extraction_extensions, publication_conflicts
+    extensions=extraction_extensions(page,returned,url)
+    if extensions is None:return failed("malformed_response")
+    article_date,article_precision=extract_published_at(text,with_precision=True)
+    visible_date=extract_gateway_publication_date(
         returned,text,allow_url_year=page.get("location_provenance")=="uncached_dispatch")
+    if article_date and visible_date and publication_conflicts({'value':article_date},visible_date,day_only=True):
+        return failed("malformed_response")
+    published=article_date or visible_date
+    precision=article_precision if article_date else "day"
+    if publication_conflicts(extensions.get("publication"),published,day_only=precision=="day"):
+        return failed("malformed_response")
     text=extract_page_text(text) if re.search(r"</?(?:html|article|main|p|div|time|meta)\b",text,re.I) else re.sub(r"\s+"," ",text).strip()
-    result_page={"url":url,"title":title,"text":text[:6000],"published_at":published}
+    result_page={"url":url,"title":title,"text":text[:6000],"published_at":published,**extensions}
+    if published:result_page["publication_precision"]=precision
     if returned!=url:result_page["returned_url"]=returned
     return result_page
+
+
+def is_related_publication_heading(line:str)->bool:
+    """Recognize whole Markdown section labels, not prose mentioning them."""
+    label=line.strip()
+    label=re.sub(r"^#{1,6}\s+", "", label)
+    label=re.sub(r"\s+#+$", "", label)
+    while label:
+        previous=label
+        label=label.removesuffix(":").strip()
+        for marker in ("**","__","*","_"):
+            if label.startswith(marker) and label.endswith(marker) and len(label)>2*len(marker):
+                label=label[len(marker):-len(marker)].strip()
+                break
+        # Only the whole visible label determines this section barrier. The
+        # destination/title are not fetched or interpreted; allow quoted titles,
+        # angle destinations and nested parentheses without dating sibling text.
+        link=re.fullmatch(r"\[([^\]\n]+)\]\([^\n]*\)",label)
+        if link:label=link.group(1).strip()
+        if label==previous:break
+    return bool(re.fullmatch(r"Related (?:stories|articles)|More News From\b[^\n]*",label,re.I))
 
 
 def extract_gateway_publication_date(url:str,text:str,*,allow_url_year:bool=True)->str|None:
     """Visible publication provenance only; never use crawl/cache or event dates."""
     from extraction_contract import strip_tool_footer
     text=strip_tool_footer(text)
+    # Publication labels in a trailing recommendation section belong to another
+    # story. Narrow the existing parser's input; never broaden its date regex.
+    lines=text.splitlines(keepends=True)
+    for index,line in enumerate(lines):
+        if is_related_publication_heading(line):
+            text="".join(lines[:index])
+            break
     published=None
     host=(urllib.parse.urlparse(url).hostname or "").lower()
     match=None
