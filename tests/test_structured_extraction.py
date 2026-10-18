@@ -28,6 +28,27 @@ def envelope(url=URL, text=BODY):
 
 
 class StructuredExtractionTests(unittest.TestCase):
+    def test_default_dispatch_is_project_owned(self):
+        import research_extraction as project
+        worker = module('extraction_worker')
+        observed = []
+        async def dispatch(urls, format=None, char_limit=None, *, deadline=None):
+            observed.append(deadline - time.monotonic())
+            return json.dumps({'results': [{'url': URL, 'content': BODY}]})
+        with patch.object(project, 'extract_tool', dispatch):
+            for timeout in (0.5, 60):
+                out = asyncio.run(worker.extract({'version': 1, 'url': URL, 'timeout_seconds': timeout}))
+                self.assertEqual(out['status'], 'ok')
+                self.assertEqual(out['page']['location_provenance'], 'uncached_dispatch')
+                self.assertGreater(observed[-1], 0)
+                self.assertLessEqual(observed[-1], min(timeout, 30))
+        for reason in ('timeout', 'unsafe_url', 'url_mismatch', 'output_limit'):
+            async def failure(*args, **kwargs):
+                return json.dumps({'results': [{'url': URL, 'error': reason, 'reason': reason}]})
+            with patch.object(project, 'extract_tool', failure):
+                self.assertEqual(asyncio.run(worker.extract({'version': 1, 'url': URL}))['reason'], reason)
+            self.assertEqual(asyncio.run(worker.extract({'version': 1, 'url': URL}, failure))['reason'], 'provider_error')
+
     def test_b1_html_head_paragraph_denial_and_article_controls(self):
         worker = module('extraction_worker')
         adapter = module('structured_extraction')
@@ -123,6 +144,7 @@ from unittest.mock import patch, AsyncMock
 import alpha_radar as radar
 import extraction_worker as worker
 import structured_extraction as adapter
+import extraction_compat as compat
 import tools.web_tools as web
 import tools.web_result_cache as cache
 class Provider:
@@ -130,9 +152,10 @@ class Provider:
     display_name='Fixture'
     calls=0
     def supports_extract(self): return True
+    def uses_keyless(self): return False
     async def extract(self, urls, format=None):
         self.calls+=1
-        return [{'url':returned,'title':'Release','content':body,'error':None,'metadata':{'sourceURL':requested}}]
+        return [{'url':returned,'title':'Release','content':body,'error':None,'extraction_location':{'version':1,'requested_url':requested,'returned_url':returned}}]
 async def scenario():
     outputs=[]
     for kind, target, old, want_calls, want_accepted in [
@@ -140,7 +163,7 @@ async def scenario():
         ('future','https://www.reuters.com/business/archive-2027-10-17/',False,2,0),
         ('redirect','https://news.reuters.com/business/redirect-2026-10-17/',False,2,1),
         ('old','https://www.reuters.com/business/archive-2025-10-17/',True,2,0),
-        ('general','https://unknown.example/news/story',False,1,1),
+        ('general','https://unknown.example/news/story',False,2,1),
     ]:
         global requested, returned, body
         requested = 'https://unknown.example/news/story' if kind=='general' else 'https://www.reuters.com/business/current-2026-10-17/'
@@ -148,12 +171,9 @@ async def scenario():
         body=('Published: October 17, 2026\n' if kind=='general' else 'Oct 17 (Reuters) - ') + ('The company reported stronger sales and raised earnings guidance. '*10)
         provider=Provider()
         with tempfile.TemporaryDirectory(dir='/home/hermes/.hermes/cache/scratch') as td, ExitStack() as stack:
-            stack.enter_context(patch.object(web,'_load_web_config',return_value={'extract_backend':provider.name,'cache_enabled':True}))
-            stack.enter_context(patch.object(web,'_ensure_web_plugins_loaded'))
+            stack.enter_context(patch('hermes_cli.config.load_config',return_value={'web':{'extract_backend':provider.name}}))
             stack.enter_context(patch('agent.web_search_registry.get_provider',return_value=provider))
-            stack.enter_context(patch.object(web,'async_is_safe_url',AsyncMock(return_value=True)))
-            stack.enter_context(patch('tools.website_policy.check_website_access',return_value=None))
-            stack.enter_context(patch.object(web,'_finish_debug',return_value=None))
+            stack.enter_context(patch.object(compat,'check_url',AsyncMock(side_effect=lambda u:u)))
             stack.enter_context(patch.object(cache,'_cache_dir',return_value=Path(td)))
             original_get=cache.extract_cache_get
             if old:
@@ -163,7 +183,7 @@ async def scenario():
             for i in range(2):
                 env=await worker.extract({'version':1,'url':requested})
                 assert cache.extract_cache_get is original_get, 'guard leaked outside worker dispatch'
-                assert original_get(requested,format='markdown',provider=provider.name)['cached'] is True, 'real dispatcher cache write missing'
+                assert bool(original_get(requested,format='markdown',provider=provider.name)) is old, 'project route touched legacy cache'
                 with patch.object(adapter,'run_worker',return_value=env),patch.object(radar,'is_safe_public_url',return_value=True):
                     page=radar.fetch_source_via_gateway(requested)
                 accepted,quality=radar.filter_evidence([page] if page else [],now=radar.dt.datetime(2026,10,17,tzinfo=radar.dt.timezone.utc))
@@ -518,6 +538,24 @@ print(json.dumps(asyncio.run(scenario())))
         result = subprocess.run(adapter.worker_command(), input='x'*9000, text=True, capture_output=True, timeout=20)
         self.assertEqual(json.loads(result.stdout), {'version':1, 'status':'error', 'reason':'invalid_request'})
 
+    def test_real_supervisor_kills_blocked_provider_and_dns_executor(self):
+        from task4_probe import blocked_probe, assert_dead
+        adapter = module('structured_extraction')
+        command = adapter.worker_command()
+        prefix = command[-1].split('runpy.run_path(')[0]
+        with tempfile.TemporaryDirectory() as td:
+            sentinel = Path(td)/'operational.json'
+            sentinel.write_text('{"paper":true}')
+            for mode in ('provider', 'dns'):
+                pidfile = Path(td)/mode
+                probe = command[:-1]+[prefix+blocked_probe(pidfile, mode)]
+                started = time.monotonic()
+                with patch.object(adapter, 'worker_command', return_value=probe):
+                    self.assertEqual(adapter.run_worker(URL, 2), {'version':1, 'status':'error', 'reason':'timeout'})
+                self.assertLess(time.monotonic()-started, 3)
+                assert_dead(self, pidfile)
+                self.assertEqual(sentinel.read_text(), '{"paper":true}')
+
     def test_supervisor_kills_descendants_on_timeout_and_success(self):
         adapter = module('structured_extraction')
         with tempfile.TemporaryDirectory() as td:
@@ -549,33 +587,34 @@ import asyncio, json, runpy
 from unittest.mock import patch, AsyncMock
 from contextlib import ExitStack
 import tools.web_tools as web
-import tools.web_tools_extract as ext
+import extraction_compat as compat
 class FixtureProvider:
     name='fixture-not-firecrawl'
     display_name='Fixture'
     def supports_extract(self): return True
+    def uses_keyless(self): return False
     async def extract(self, urls, format=None):
         assert urls == ['https://unknown.example/news/story']
         assert format == 'markdown'
-        if self.fail: raise OSError('fixture transport failure')
+        if self.fail: raise compat.CompatibilityError('provider_error')
         return [{'url':urls[0], 'title':'Release', 'content':'Factual body '*30, 'error':None}]
 provider=FixtureProvider()
 worker=runpy.run_path(WORKER_PATH)
 async def scenario():
     with ExitStack() as stack:
-        stack.enter_context(patch.object(web, '_load_web_config', return_value={'extract_backend':'fixture-not-firecrawl','keyless_fallback':True}))
-        stack.enter_context(patch.object(web, '_ensure_web_plugins_loaded'))
-        stack.enter_context(patch('agent.web_search_registry.get_provider', side_effect=lambda name: provider if name=='fixture-not-firecrawl' else None))
-        stack.enter_context(patch.object(web, 'async_is_safe_url', AsyncMock(return_value=True)))
-        stack.enter_context(patch('tools.web_result_cache.extract_cache_get', return_value=None))
-        stack.enter_context(patch('tools.web_result_cache.extract_cache_put'))
-        stack.enter_context(patch('tools.website_policy.check_website_access', return_value=None))
-        stack.enter_context(patch('tools.web_tools_rescue._keyless_rescue_enabled', return_value=True))
-        def rescue(name, urls, results):
-            assert name=='fixture-not-firecrawl'
+        stack.enter_context(patch('hermes_cli.config.load_config', return_value={'web':{'extract_backend':'fixture-not-firecrawl'}}))
+        stack.enter_context(patch('agent.web_search_registry.get_provider', return_value=provider))
+        stack.enter_context(patch.object(compat, 'check_url', AsyncMock(side_effect=lambda u:u)))
+        stack.enter_context(patch.object(compat, 'rescue_allowed', return_value=True))
+        stack.enter_context(patch.object(compat, 'ring_order', return_value=['exa']))
+        async def rescue(name, urls, *, deadline):
+            assert name=='exa'
             assert urls==['https://unknown.example/news/story']
             return [{'url':urls[0], 'title':'Rescue', 'content':'Rescued factual body '*30, 'error':None}]
-        stack.enter_context(patch.object(ext, '_rescue_extract', side_effect=rescue))
+        stack.enter_context(patch.object(compat, 'keyless', rescue))
+        stack.enter_context(patch('tools.web_tools.web_extract_tool', side_effect=AssertionError('stock forbidden')))
+        stack.enter_context(patch('tools.web_result_cache.extract_cache_get', side_effect=AssertionError('cache read')))
+        stack.enter_context(patch('tools.web_result_cache.extract_cache_put', side_effect=AssertionError('cache write')))
         provider.fail=False
         first=await worker['extract']({'version':1,'url':'https://unknown.example/news/story'})
         provider.fail=True

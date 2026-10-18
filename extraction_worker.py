@@ -1,15 +1,9 @@
-"""Project-owned worker. Imports only the configured Hermes extraction dispatcher.
-
-The dispatcher exposes only bounded optional publication/location records, not
-arbitrary metadata. Provider-reported dates remain explicitly unverified; the
-parent still requires publication evidence. A local legacy-cache read guard
-prevents Reuters URL-year inference from cache-rebound locations; it does not
-attest to network freshness or provider-internal caches.
-"""
+"""Bounded worker using project extraction; injected dispatch remains untrusted."""
 from __future__ import annotations
 import asyncio
-from contextlib import contextmanager, redirect_stdout
-from urllib.parse import urlparse
+from contextlib import redirect_stdout
+from time import monotonic
+import math
 import json
 import sys
 from extraction_contract import is_error_document, strict_json_loads, strip_tool_footer
@@ -51,32 +45,6 @@ def declaration_failure(obj):
         if obj['status'] in {'error', 'failed'}:
             return 'provider_error'
     return None
-
-
-@contextmanager
-def final_location_cache_guard():
-    """Isolated-child-only compatibility guard for the legacy Hermes cache.
-
-    Its Reuters entries have no final-location provenance (even when newly
-    written). Treat those reads as misses; leave writes and every other host
-    alone. The dispatcher still owns routing, policy, URL safety and rescue.
-    Enter once per child lifetime (one worker request or the focused CLI),
-    never in overlapping per-call contexts in a shared process.
-    """
-    from tools import web_result_cache
-    original = web_result_cache.extract_cache_get
-
-    def guarded(url, *args, **kwargs):
-        host = (urlparse(url).hostname or '').lower()
-        if host == 'reuters.com' or host.endswith('.reuters.com'):
-            return None
-        return original(url, *args, **kwargs)
-
-    web_result_cache.extract_cache_get = guarded
-    try:
-        yield
-    finally:
-        web_result_cache.extract_cache_get = original
 
 
 def provider_rows(raw):
@@ -125,13 +93,14 @@ async def extract(request, dispatch=None):
             or not 1 <= len(request['url']) <= 4096):
         return error('invalid_request')
     try:
-        guarded_location = False
-        if dispatch is None:
-            from tools.web_tools import web_extract_tool
-            host = (urlparse(request['url']).hostname or '').lower()
-            guarded_location = host == 'reuters.com' or host.endswith('.reuters.com')
-            with final_location_cache_guard():
-                raw = await web_extract_tool([request['url']], format='markdown', char_limit=6000)
+        controlled = dispatch is None
+        if controlled:
+            from research_extraction import extract_tool
+            timeout = request.get('timeout_seconds', 30)
+            if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+                return error('invalid_request')
+            raw = await extract_tool([request['url']], format='markdown', char_limit=6000,
+                                     deadline=monotonic() + min(timeout, 30))
         else:
             raw = await dispatch([request['url']], format='markdown', char_limit=6000)
         rows, reason = provider_rows(raw)
@@ -139,7 +108,11 @@ async def extract(request, dispatch=None):
             return error(reason)
         if rows is None or len(rows) != 1:
             return error('malformed_response')
-        return project_row(rows[0], guarded_location)
+        if controlled and rows[0].get('error'):
+            from structured_extraction import ERROR_REASONS
+            reason = rows[0].get('reason')
+            return error(reason if isinstance(reason, str) and reason in ERROR_REASONS else 'provider_error')
+        return project_row(rows[0], controlled)
     except asyncio.TimeoutError:
         return error('timeout')
     except Exception:

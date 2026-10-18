@@ -1,4 +1,4 @@
-"""Focused-only public CLI entrypoint; tool results are never transformed."""
+"""Child-local focused CLI extraction registration and private receipts."""
 import os
 import sys
 
@@ -6,8 +6,7 @@ from focused_capture import FD_ENV, NONCE_ENV, Recorder
 
 
 def main():
-    # Consume the channel before CLI/model startup; never expose it in argv,
-    # prompts, returned tool text, stdout, logs or descendant environments.
+    # Consume before CLI startup; never propagate the channel to descendants.
     fd_text = os.environ.pop(FD_ENV, '')
     nonce = os.environ.pop(NONCE_ENV, '')
     recorder = None
@@ -18,32 +17,39 @@ def main():
             recorder = Recorder(fd, nonce)
     except (ValueError, OSError):
         pass
-    # Public CLI import precedes tool registration/readiness checks.
     from hermes_cli.main import main as cli_main
-    from tools import web_tools
-    from extraction_worker import final_location_cache_guard
-    original = web_tools.web_extract_tool
+    from tools import web_tools  # Register the actual CLI tool before replacing its stored handler.
+    from tools.registry import registry
+    from research_extraction import extract_tool
+
+    entry = registry.get_entry('web_extract')
+    if entry is None or not entry.is_async:
+        raise RuntimeError('focused extraction registration unavailable')
+    original = entry.handler
+    dispatch = extract_tool
     if recorder is not None:
-        web_tools.web_extract_tool = recorder.wrap(original)
+        recorder.guarded = True  # Only this controlled project path can attest uncached dispatch.
+        dispatch = recorder.wrap(dispatch)
+
+    async def handler(args, **kwargs):
+        return await dispatch(args.get('urls', []), 'markdown', char_limit=args.get('char_limit'))
+
+    entry.handler = handler
     sys.argv[0] = 'hermes'
     try:
-        # One process-lifetime guard, never overlapping per-await contexts.
-        with final_location_cache_guard():
-            if recorder is not None:
-                recorder.guarded = True
-            try:
-                result = cli_main()
-            except SystemExit as exit:
-                if exit.code is None or exit.code == 0:
-                    if recorder is not None:
-                        recorder.complete()
-                raise
-            if result is None or result == 0:
+        try:
+            result = cli_main()
+        except SystemExit as exit:
+            if exit.code is None or exit.code == 0:
                 if recorder is not None:
                     recorder.complete()
-            return result
+            raise
+        if result is None or result == 0:
+            if recorder is not None:
+                recorder.complete()
+        return result
     finally:
-        web_tools.web_extract_tool = original
+        entry.handler = original
         if recorder is not None:
             recorder.guarded = False
 

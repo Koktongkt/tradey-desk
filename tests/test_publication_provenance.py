@@ -203,50 +203,63 @@ from pathlib import Path
 from unittest.mock import patch, AsyncMock
 from contextlib import ExitStack
 import extraction_worker as worker
+import extraction_compat as compat
 import alpha_radar as radar
 from plugins.web import keyless_mcp as k
 from tools import web_tools as web, web_result_cache as cache
 URL='https://unknown.example/news/story'
 BODY='The company raised its revenue guidance after stronger customer demand. '*100
+def fixture_rows(urls):
+    rows = k.keenable_extract_keyless(urls)
+    # The fake provider follows the project's returned-page sourceURL contract,
+    # rather than the retired stock dispatcher's requested-page metadata alias.
+    for row in rows:
+        row['metadata']['sourceURL'] = row['url']
+    return rows
 class Provider:
     name='nondefault-fixture'
     calls=0
+    def uses_keyless(self): return False
     def extract(self, urls, format=None):
         self.calls+=1
-        return k.keenable_extract_keyless(urls)
+        return fixture_rows(urls)
 async def main():
     cases=[]
     for returned in [URL, 'https://news.unknown.example/redirect', 'https://other.example/redirect']:
         with tempfile.TemporaryDirectory() as td, ExitStack() as s:
             p=Provider()
-            s.enter_context(patch.object(web, '_resolve_extract_provider', return_value=(p,None)))
-            s.enter_context(patch.object(web, '_load_web_config', return_value={'cache_enabled':True}))
-            s.enter_context(patch.object(web, 'async_is_safe_url', AsyncMock(return_value=True)))
-            s.enter_context(patch('tools.website_policy.check_website_access', return_value=None))
+            s.enter_context(patch.object(compat, 'resolve', return_value=p))
+            s.enter_context(patch('hermes_cli.config.load_config', return_value={'web':{}}))
+            s.enter_context(patch.object(compat, 'check_url', AsyncMock(side_effect=lambda u:u)))
             s.enter_context(patch.object(radar, 'is_safe_public_url', return_value=True))
-            s.enter_context(patch.object(web, '_finish_debug', return_value=None))
             s.enter_context(patch.object(cache, '_cache_dir', return_value=Path(td)))
-            s.enter_context(patch('tools.web_tools_truncate._store_full_text', return_value=None))
             s.enter_context(patch.object(k, '_keenable_request', return_value={
                 'url':returned,'title':'Article','content':BODY,'published_at':1791980493}))
             first=await worker.extract({'version':1,'url':URL})
             second=await worker.extract({'version':1,'url':URL})
-            assert p.calls==1, p.calls
+            assert p.calls==2, p.calls
             assert first==second
+            if 'other.example' in returned:
+                assert first['reason']=='url_mismatch'
+                cases.append(returned)
+                continue
+            assert 'page' in first, first
             assert first['page']['url']==returned
             assert first['page']['publication']['value']=='2026-10-14T12:21:33Z'
             page=radar.validate_structured_page(URL,second)
             if 'other.example' in returned: assert page is None
             else: assert page['published_at'] is None and page['publication']['basis']=='provider_reported'
-            # Legacy cache entries remain undated, not rebound provenance.
+            # Legacy cache entries are ignored; provider-only reports still cannot date evidence.
             cache.extract_cache_put(URL, BODY, 'Legacy', format='markdown', provider=p.name)
             legacy=await worker.extract({'version':1,'url':URL})
-            assert 'publication' not in legacy['page']
+            assert legacy['page']['publication']==first['page']['publication']
             assert radar.validate_structured_page(URL,legacy)['published_at'] is None
             # Existing configured rescue route still receives primary errors.
-            async def fail(*args, **kwargs): raise RuntimeError('fixture primary unavailable')
+            async def fail(*args, **kwargs): raise compat.CompatibilityError('provider_error')
             cache.extract_cache_put(URL, '', provider=p.name)
-            with patch.object(cache,'extract_cache_get',return_value=None), patch.object(p,'extract',fail), patch('tools.web_tools_extract._rescue_eligible',return_value=True), patch('tools.web_tools_extract._rescue_extract',side_effect=lambda name,urls,failed:k.keenable_extract_keyless(urls)) as rescue:
+            async def rescue_transport(name, urls, *, deadline):
+                return fixture_rows(urls)
+            with patch.object(cache,'extract_cache_get',side_effect=AssertionError('cache read')), patch.object(p,'extract',fail), patch.object(compat,'rescue_allowed',return_value=True), patch.object(compat,'ring_order',return_value=['keenable']), patch.object(compat,'keyless',side_effect=rescue_transport) as rescue:
                 rescued=await worker.extract({'version':1,'url':URL})
                 assert rescued['page']['publication']==first['page']['publication']
                 assert rescue.call_count==1
@@ -270,21 +283,21 @@ from unittest.mock import patch, AsyncMock
 from contextlib import ExitStack
 import tempfile
 import extraction_worker as worker
+import extraction_compat as compat
 from plugins.web import keyless_mcp as k
 from tools import web_tools as web, web_result_cache as cache
 class Provider:
     name='keenable'
     display_name='Keenable'
     def supports_extract(self): return True
+    def uses_keyless(self): return False
     def extract(self, urls, format=None): return k.keenable_extract_keyless(urls)
 with tempfile.TemporaryDirectory() as td, ExitStack() as s:
-    s.enter_context(patch.object(web, '_load_web_config', return_value={'extract_backend':'keenable'}))
-    s.enter_context(patch.object(web, '_ensure_web_plugins_loaded'))
+    s.enter_context(patch('hermes_cli.config.load_config', return_value={'web':{'extract_backend':'fixture'}}))
     s.enter_context(patch('agent.web_search_registry.get_provider', return_value=Provider()))
-    s.enter_context(patch.object(web, 'async_is_safe_url', AsyncMock(return_value=True)))
-    s.enter_context(patch('tools.website_policy.check_website_access', return_value=None))
-    s.enter_context(patch.object(web, '_finish_debug', return_value=None))
-    s.enter_context(patch.object(cache, '_cache_dir', return_value=Path(td)))
+    s.enter_context(patch.object(compat, 'check_url', AsyncMock(side_effect=lambda u:u)))
+    s.enter_context(patch.object(cache, 'extract_cache_get', side_effect=AssertionError('cache read')))
+    s.enter_context(patch.object(cache, 'extract_cache_put', side_effect=AssertionError('cache write')))
     s.enter_context(patch.object(k, '_keenable_request', return_value={
         'url':'https://unknown.example/news/story', 'title':'Article',
         'content':'The company raised its revenue guidance after stronger customer demand. '*10,

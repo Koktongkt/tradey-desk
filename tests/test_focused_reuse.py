@@ -28,6 +28,61 @@ def raw(rows=None, **declarations):
 
 
 class FocusedReuseTests(unittest.TestCase):
+    def test_registered_extract_uses_project_and_records_receipt(self):
+        cap = capture_module()
+        command = cap.focused_command(['hermes', 'chat'])
+        prefix = command[3].split('runpy.run_path(')[0]
+        probe = r'''
+import asyncio, os, subprocess, sys
+from unittest.mock import patch, AsyncMock
+from contextlib import ExitStack
+import hermes_cli.main as cli
+import tools.web_tools as web
+import tools.web_result_cache as cache
+from tools.registry import registry
+import focused_wrapper as wrapper
+import research_extraction as project
+import extraction_compat as compat
+import focused_capture as cap
+original = registry.get_entry('web_extract').handler
+# A stored reference must work too, not only today's module-global lambda.
+async def stock(args, **kw): raise AssertionError('stock handler called')
+registry.get_entry('web_extract').handler = stock
+class Provider:
+    name='fixture'
+async def primary(provider, urls, **kw):
+    return [{'url': urls[0], 'title': 'Project receipt', 'content': 'Verified factual body ' * 30}]
+def main():
+    assert cap.FD_ENV not in os.environ and cap.NONCE_ENV not in os.environ
+    child = subprocess.check_output([sys.executable, '-c', 'import os; print(dict(os.environ))'], text=True)
+    assert 'TRADEY_FOCUSED_CAPTURE' not in child
+    got = registry.dispatch('web_extract', {'urls':['https://news.example/story'], 'char_limit':6000})
+    assert __import__('json').loads(got)['results'][0]['title'] == 'Project receipt', got
+    print('registry-project-ok')
+with ExitStack() as stack:
+    stack.enter_context(patch.object(cli, 'main', main))
+    stack.enter_context(patch.object(web, 'web_extract_tool', side_effect=AssertionError('stock')))
+    stack.enter_context(patch.object(cache, 'extract_cache_get', side_effect=AssertionError('cache read')))
+    stack.enter_context(patch.object(cache, 'extract_cache_put', side_effect=AssertionError('cache write')))
+    stack.enter_context(patch.object(compat, 'check_url', AsyncMock(side_effect=lambda u:u)))
+    stack.enter_context(patch.object(compat, 'resolve', return_value=Provider()))
+    stack.enter_context(patch.object(compat, 'uses_keyless', return_value=False))
+    stack.enter_context(patch.object(compat, 'primary', primary))
+    wrapper.main()
+    assert registry.get_entry('web_extract').handler is stock
+registry.get_entry('web_extract').handler = original
+'''
+        with tempfile.TemporaryFile() as channel:
+            env = dict(os.environ, **{cap.FD_ENV:str(channel.fileno()), cap.NONCE_ENV:'b'*64})
+            done = subprocess.run(command[:3]+[prefix+probe]+command[4:], env=env,
+                                  pass_fds=(channel.fileno(),), text=True, capture_output=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr[-4000:])
+            self.assertEqual(done.stdout, 'registry-project-ok\n')
+            self.assertNotIn('b'*64, done.stdout + done.stderr)
+            pages = cap.read_capture(channel.fileno(), 'b'*64)
+            self.assertEqual(pages[URL]['page']['title'], 'Project receipt')
+            self.assertEqual(pages[URL]['page']['location_provenance'], 'uncached_dispatch')
+
     def test_over_cap_returned_row_count_is_not_reusable(self):
         cap=capture_module()
         rows=[{'url':URL,'content':BODY}]+[{'url':f'https://unrequested.example/{i}','content':'body'} for i in range(5)]
@@ -36,6 +91,18 @@ class FocusedReuseTests(unittest.TestCase):
             recorder.record({'urls':[URL],'format':'markdown','char_limit':6000},raw(rows))
             recorder.complete()
             self.assertEqual(cap.read_capture(channel.fileno(),'a'*64),{})
+
+    def test_focused_parent_bounds_pipes_and_input(self):
+        cap = capture_module()
+        with patch.object(cap, 'focused_command', side_effect=lambda c:c):
+            for stream, size in [('stdout', 100001), ('stderr', 16385)]:
+                script = f'import sys; sys.{stream}.write("x"*{size}); sys.{stream}.flush()'
+                with self.subTest(stream=stream), self.assertRaises(OSError):
+                    cap.run_focused([sys.executable, '-c', script], input='', capture_output=True,
+                                    text=True, timeout=3, cwd=Path(radar.__file__).parent)
+            with self.assertRaises(OSError):
+                cap.run_focused([sys.executable, '-c', 'print("no")'], input='x'*8193,
+                                capture_output=True, text=True, timeout=3, cwd=Path(radar.__file__).parent)
 
     def test_parent_channel_permissions_are_explicit_even_with_restrictive_umask(self):
         cap=capture_module()
@@ -68,6 +135,8 @@ import hermes_cli.main as cli
 import tools.web_tools as web
 import tools.web_result_cache as cache
 import focused_wrapper as wrapper
+import research_extraction as project
+from tools.registry import registry
 import focused_capture as cap
 async def original(*a,**kw):
     return '{"results":[{"url":"https://news.example/story","content":"article"}]}'
@@ -76,13 +145,14 @@ for fault, wanted in [(None,True),(SystemExit(0),True),(SystemExit(7),False),(Ru
         os.environ[cap.FD_ENV]=str(channel.fileno())
         os.environ[cap.NONCE_ENV]='a'*64
         old_cache=cache.extract_cache_get
+        old_handler=registry.get_entry('web_extract').handler
         def main():
-            asyncio.run(web.web_extract_tool(['https://news.example/story']))
+            registry.dispatch('web_extract', {'urls':['https://news.example/story']})
             if fault is not None:raise fault
-        with patch.object(web,'web_extract_tool',original), patch.object(cli,'main',main):
+        with patch.object(project,'extract_tool',original), patch.object(cli,'main',main):
             try:wrapper.main()
             except (RuntimeError,SystemExit) as got:assert got is fault
-            assert web.web_extract_tool is original
+            assert registry.get_entry('web_extract').handler is old_handler
             assert cache.extract_cache_get is old_cache
             assert bool(cap.read_capture(channel.fileno(),'a'*64)) is wanted
 print('wrapper-exit-semantics-ok')
@@ -90,6 +160,23 @@ print('wrapper-exit-semantics-ok')
         done = subprocess.run(command[:3]+[prefix+probe]+command[4:],capture_output=True,text=True,timeout=30)
         self.assertEqual(done.returncode,0,done.stderr[-4000:])
         self.assertEqual(done.stdout.strip(),'wrapper-exit-semantics-ok')
+
+    def test_real_focused_parent_kills_blocked_provider_and_dns_executor(self):
+        from task4_probe import blocked_probe, assert_dead
+        cap = capture_module()
+        command = cap.focused_command(['hermes', 'chat'])
+        prefix = command[3].split('runpy.run_path(')[0]
+        with tempfile.TemporaryDirectory() as td:
+            sentinel = Path(td)/'operational.json'
+            sentinel.write_text('{"paper":true}')
+            for mode in ('provider', 'dns'):
+                pidfile = Path(td)/mode
+                probe = command[:3]+[prefix+blocked_probe(pidfile, mode, focused=True)]
+                with patch.object(cap, 'focused_command', return_value=probe):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        cap.run_focused(['hermes','chat'], input='', capture_output=True, text=True, timeout=2, cwd=td)
+                assert_dead(self, pidfile)
+                self.assertEqual(sentinel.read_text(), '{"paper":true}')
 
     def test_parent_reaps_owned_group_after_success_and_timeout(self):
         cap = capture_module()
@@ -144,6 +231,26 @@ print('complete')
             self.assertEqual(radar.gather_evidence(urls,focused_pages=focused,collection_deadline=radar.monotonic()-1,diagnostics=diagnostics),[])
             direct.assert_not_called()
             self.assertEqual({d['reason'] for d in diagnostics},{'source_deadline_exhausted'})
+
+    def test_explicit_original_alias_returned_bindings_do_not_cross_associate(self):
+        cap = capture_module()
+        alias = 'https://news.example/normalized'
+        redirected = 'https://news.example/returned'
+        def row(requested, returned):
+            return {'url':returned, 'content':BODY, 'extraction_location':{
+                'version':1, 'requested_url':requested, 'returned_url':returned}}
+        for rows, expected in [
+            ([row(URL, redirected), row(OTHER, OTHER)], {URL, OTHER}),
+            ([row(alias, redirected), row(OTHER, OTHER)], set()),
+            ([row(OTHER, URL), row(URL, OTHER)], set()),
+            ([row(URL, redirected), row(URL, alias)], set()),
+        ]:
+            with self.subTest(rows=rows), tempfile.TemporaryFile() as channel:
+                recorder = cap.Recorder(channel.fileno(), 'a'*64)
+                recorder.guarded = True
+                recorder.record({'urls':[URL,OTHER], 'format':'markdown', 'char_limit':6000}, raw(rows))
+                recorder.complete()
+                self.assertEqual(set(cap.read_capture(channel.fileno(), 'a'*64)), expected)
 
     def test_capture_cannot_normalize_or_inject_a_new_exact_key(self):
         cap=capture_module()
@@ -507,28 +614,16 @@ from tools.registry import registry
 import focused_wrapper as wrapper
 import focused_capture as cap
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-import extraction_worker as worker
+import research_extraction as project
 original_cache = cache.extract_cache_get
-real_guard = worker.final_location_cache_guard
-guards = []
-@contextmanager
-def counted_guard():
-    guards.append('enter')
-    try:
-        with real_guard(): yield
-    finally:
-        guards.append('exit')
+original_handler = registry.get_entry('web_extract').handler
 original_calls = []
 responses = ['{"results":[{"url":"https://news.example/%s","content":"body"}]}' % i for i in range(3)]
 async def original(*args, **kwargs):
     original_calls.append((args,kwargs))
-    guard = cache.extract_cache_get
-    assert guard is not original_cache
-    assert guard('https://www.reuters.com/article') is None
-    assert guard('https://other.example/article') == 'ordinary-cache'
+    assert cache.extract_cache_get is original_cache
     await asyncio.sleep(0.001)
-    assert cache.extract_cache_get is guard
+    assert cache.extract_cache_get is original_cache
     return responses[int(args[0][0].rsplit('/',1)[1])]
 def main():
     assert cap.FD_ENV not in os.environ and cap.NONCE_ENV not in os.environ
@@ -539,14 +634,13 @@ def main():
     assert len(original_calls) == 3
     assert all(a[1] == 'markdown' and kw == {'char_limit':6000} for a,kw in original_calls)
     print('{"candidates":[]}')
-with patch.object(cache,'extract_cache_get',return_value='ordinary-cache') as normal_cache:
+with patch.object(cache,'extract_cache_get',side_effect=AssertionError('cache read')) as normal_cache:
     original_cache = normal_cache
-    with patch.object(web, 'web_extract_tool', original), patch.object(cli, 'main', main), patch.object(worker,'final_location_cache_guard',counted_guard):
+    with patch.object(project, 'extract_tool', original), patch.object(cli, 'main', main):
         wrapper.main()
-        assert web.web_extract_tool is original
+        assert registry.get_entry('web_extract').handler is original_handler
         assert cache.extract_cache_get is original_cache
-        assert guards == ['enter','exit']
-    assert normal_cache.call_count == 3
+    assert normal_cache.call_count == 0
 '''
         with tempfile.TemporaryFile() as channel:
             env = dict(os.environ, **{cap.FD_ENV: str(channel.fileno()), cap.NONCE_ENV: 'b' * 64})

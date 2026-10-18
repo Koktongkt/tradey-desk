@@ -72,7 +72,38 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
             remaining = timeout - (monotonic() - started)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
-            stdout, stderr = process.communicate(input=input, timeout=remaining)
+            payload = input.encode('utf-8') if isinstance(input, str) else input
+            if len(payload) > 8192:
+                raise OSError('focused input limit')
+            # Bound both pipes while the child is alive; communicate() alone
+            # buffers unbounded chatter from tools and blocked executor threads.
+            import selectors
+            process.stdin.write(payload.decode('utf-8') if text else payload)
+            process.stdin.close()
+            buffers = {'stdout': bytearray(), 'stderr': bytearray()}
+            caps = {'stdout': 100_000, 'stderr': 16_384}
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
+                selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+                while selector.get_map():
+                    remaining = timeout - (monotonic() - started)
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fileobj.fileno(), 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        else:
+                            buffers[key.data].extend(chunk)
+                            if len(buffers[key.data]) > caps[key.data]:
+                                raise OSError('focused output limit')
+            remaining = timeout - (monotonic() - started)
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            process.wait(timeout=remaining)
+            stdout, stderr = (bytes(buffers[name]) for name in ('stdout', 'stderr'))
+            if text:
+                stdout, stderr = stdout.decode('utf-8'), stderr.decode('utf-8')
             result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         finally:
             if process is not None:
