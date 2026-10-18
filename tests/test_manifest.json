@@ -20,6 +20,7 @@
    "test_research_timestamp",
    "test_runtime_paths",
    "test_structured_extraction",
+   "test_focused_reuse",
    "test_safety",
    "test_shadow",
    "test_sqlite_ledger",

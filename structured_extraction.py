@@ -53,7 +53,7 @@ def record_attempts(rows, path):
     import datetime as dt
     import re
     from durable_jsonl import append_jsonl
-    direct_reasons = {'cache_hit', 'success', 'source_fetch_failed', 'source_fetch_timeout',
+    direct_reasons = {'focused_reuse_hit', 'cache_hit', 'success', 'source_fetch_failed', 'source_fetch_timeout',
                       'source_http_forbidden', 'source_rate_limited',
                       'source_upstream_error', 'source_connection_failed',
                       'source_deadline_exhausted', 'source_url_mismatch'}
@@ -67,6 +67,8 @@ def record_attempts(rows, path):
         if re.fullmatch(r'[0-9a-f]{32}', str(collection or '')):
             out['collection_id'] = collection
         out['network_attempted'] = row.get('network_attempted') is True
+        if row.get('focused_reuse') in {'hit', 'miss'}:
+            out['focused_reuse'] = row['focused_reuse']
         out['timestamp'] = dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00', 'Z')
         out['direct_reason'] = row.get('direct_reason') if row.get('direct_reason') in direct_reasons else 'source_fetch_failed'
         out['fallback_result'] = row.get('fallback_result') if row.get('fallback_result') in fallback_results else 'unavailable'

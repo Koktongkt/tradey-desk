@@ -405,7 +405,7 @@ class CandidateAlternativesTests(unittest.TestCase):
                 ('io_error',OSError('private'),'research_focused_retrieval_unavailable'),
                 ('durable_append_error',radar.DurableAppendError('private'),'research_persistence_failure')]
         for label, fault, reason in faults:
-            with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval):
+            with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval), patch('focused_capture.run_focused',side_effect=lambda *a,**kw:calls(*a,**kw)):
                 calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
                 self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()

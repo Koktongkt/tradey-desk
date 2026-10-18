@@ -520,17 +520,19 @@ def candidate_alternate_urls(scout:list[str],focused:list[str],selected:list[str
 
 def focused_retrieval(candidates:list[dict[str,Any]],deadline:float|None=None)->dict[str,list[str]]:
     """Search primary, independent and wire lanes once for all scout candidates."""
+    from focused_capture import run_focused, FocusedURLs
     if not candidates:return {}
     try:
         with timed_research_stage("focused_retrieval"):
             remaining_time=FOCUSED_RETRIEVAL_TIMEOUT_SECONDS if deadline is None else min(FOCUSED_RETRIEVAL_TIMEOUT_SECONDS,deadline-monotonic())
             if remaining_time<=0:raise ResearchFailure("research_focused_retrieval_timeout")
-            result=subprocess.run(focused_retrieval_command(),input=focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=remaining_time,cwd=ROOT)
+            result=run_focused(focused_retrieval_command(),input=focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=remaining_time,cwd=ROOT)
     except DurableAppendError:raise
     except subprocess.TimeoutExpired as error:raise ResearchFailure("research_focused_retrieval_timeout") from error
     except OSError as error:raise ResearchFailure("research_focused_retrieval_unavailable") from error
     if result.returncode:raise ResearchFailure("research_focused_retrieval_unavailable")
-    return parse_focused_retrieval(result.stdout,{str(c.get("symbol") or "").upper() for c in candidates},max_urls=15)
+    choices=parse_focused_retrieval(result.stdout,{str(c.get("symbol") or "").upper() for c in candidates},max_urls=15)
+    return FocusedURLs(choices,getattr(result,"focused_pages",{}) if choices else {})
 
 
 def research_command()->list[str]:
@@ -723,6 +725,15 @@ def fetch_source_via_gateway(
     remaining=deadline-monotonic()
     if remaining<=0:return failed("timeout")
     result=structured_extraction.run_worker(url,remaining)
+    page=validate_structured_page(url,result,deadline=deadline,failed=failed)
+    if page is not None and detail is not None:detail["fallback_result"]="success"
+    return page
+
+
+def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,failed=None)->dict[str,Any]|None:
+    """Shared step4 page boundary. Caller must validate requested URL safety first."""
+    import structured_extraction
+    if failed is None:failed=lambda reason:None
     if not isinstance(result,dict) or type(result.get("version")) is not int or result["version"]!=1:
         return failed("malformed_response")
     if result.get("status")=="error":
@@ -745,7 +756,7 @@ def fetch_source_via_gateway(
                 return failed("url_mismatch")
         except ValueError:
             return failed("url_mismatch")
-    if monotonic()>=deadline:return failed("timeout")
+    if deadline is not None and monotonic()>=deadline:return failed("timeout")
     text=page.get("text");title=page.get("title")
     if not isinstance(text,str) or not isinstance(title,str) or len(text)>6000 or len(title)>200:
         return failed("malformed_response")
@@ -762,7 +773,6 @@ def fetch_source_via_gateway(
     published=extract_published_at(text) or extract_gateway_publication_date(
         returned,text,allow_url_year=page.get("location_provenance")=="uncached_dispatch")
     text=extract_page_text(text) if re.search(r"</?(?:html|article|main|p|div|time|meta)\b",text,re.I) else re.sub(r"\s+"," ",text).strip()
-    if detail is not None:detail["fallback_result"]="success"
     result_page={"url":url,"title":title,"text":text[:6000],"published_at":published}
     if returned!=url:result_page["returned_url"]=returned
     return result_page
@@ -841,6 +851,7 @@ def gather_evidence(
     collection_deadline:float|None=None,
     strict_gateway_provider:bool=False,
     attempt_path:Path|None=None,
+    focused_pages:dict[str,Any]|None=None,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     urls=list(dict.fromkeys(urls))  # one in-flight fetch and one result per exact URL
@@ -887,8 +898,22 @@ def gather_evidence(
         with lock:
             if not collected[0]:results[i]=page
 
+    reused_urls:set[str]=set()
     def worker(i:int,u:str)->None:
         if results[i]:return
+        if focused_pages is not None:
+            attempts[i]["focused_reuse"]="miss"
+            captured=focused_pages.get(u)
+            if captured is not None and monotonic()<deadline and is_safe_public_url(u):
+                page=validate_structured_page(u,captured,deadline=deadline)
+                accepted,_=filter_evidence([page],now=current) if page is not None else ([],[])
+                if accepted and monotonic()<deadline:
+                    checked_at=getattr(captured,"checked_at",None)
+                    if checked_at is not None:accepted[0]={**accepted[0],"checked_at":checked_at}
+                    with lock:reused_urls.add(u)
+                    attempts[i].update(direct_reason="focused_reuse_hit",focused_reuse="hit",remaining_ms=max(0,round((deadline-monotonic())*1000)))
+                    publish_page(i,u,accepted[0])
+                    return
         host=(urllib.parse.urlparse(u).hostname or "").lower()
         if monotonic()>=deadline:
             with lock:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_deadline_exhausted"}
@@ -1002,7 +1027,7 @@ def gather_evidence(
     if cache_path is not None:
         stamp=current.isoformat().replace("+00:00","Z")
         for page in results:
-            if page and isinstance(page.get("url"),str) and page["url"] not in cached_urls:
+            if page and isinstance(page.get("url"),str) and page["url"] not in cached_urls and page["url"] not in reused_urls:
                 cache[page["url"]]={"checked_at":stamp,"page":page}
         cache=dict(sorted(cache.items(),key=lambda item:str(item[1].get("checked_at", "")) if isinstance(item[1],dict) else "",reverse=True)[:200])
         try:
@@ -1521,8 +1546,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         if scout_diagnostic["reason"]=="no_discovered_candidate":return {"status":"none","none_reason":"no_fresh_setup"}
         if scout_diagnostic["reason"]=="invalid_json":raise ResearchFailure("research_scout_parse_failure")
         raise ResearchFailure("research_scout_schema_rejected")
+    focused_pages=None
     if cfg.get("focused_retrieval_enabled",False):
         focused=focused_retrieval(scout_candidates,deadline=overall_deadline)
+        focused_pages=getattr(focused,"focused_pages",None)
         try:source_history=read_jsonl(ROOT/"private"/"research_diagnostics.jsonl")
         except (OSError,ValueError):source_history=[]  # optional hint, never a qualification gate
         unhealthy=recently_unreachable_domains(source_history,dt.datetime.now(dt.timezone.utc))
@@ -1548,6 +1575,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
             collection_deadline=evidence_deadline,
             attempt_path=ROOT/"private"/"source_attempts.jsonl",
+            **({"focused_pages":focused_pages} if focused_pages is not None else {}),
         )
     fetched_evidence=[page for page in fetched_evidence if page.get("url")]
     sec_dates={}

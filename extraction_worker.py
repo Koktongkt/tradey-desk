@@ -55,12 +55,13 @@ def declaration_failure(obj):
 
 @contextmanager
 def final_location_cache_guard():
-    """Isolated-worker-only compatibility guard for the legacy Hermes cache.
+    """Isolated-child-only compatibility guard for the legacy Hermes cache.
 
     Its Reuters entries have no final-location provenance (even when newly
     written). Treat those reads as misses; leave writes and every other host
     alone. The dispatcher still owns routing, policy, URL safety and rescue.
-    One request runs per worker process; this is not a shared-server hook.
+    Enter once per child lifetime (one worker request or the focused CLI),
+    never in overlapping per-call contexts in a shared process.
     """
     from tools import web_result_cache
     original = web_result_cache.extract_cache_get
@@ -78,6 +79,42 @@ def final_location_cache_guard():
         web_result_cache.extract_cache_get = original
 
 
+def provider_rows(raw):
+    """Pure strict top-level projection shared by worker and focused receipts."""
+    if not isinstance(raw, str) or len(raw.encode('utf-8')) > MAX_PROVIDER_RESPONSE:
+        return None, 'output_limit'
+    try:
+        payload = strict_json_loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        return None, 'malformed_response'
+    if not isinstance(payload, dict):
+        return None, 'malformed_response'
+    reason = declaration_failure(payload)
+    if reason:
+        return None, reason
+    rows = payload.get('results')
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return None, 'malformed_response'
+    return rows, None
+
+
+def project_row(row, guarded_location=False):
+    """Project untrusted provider content; provenance is caller-owned only."""
+    reason = declaration_failure(row)
+    if reason:
+        return error(reason)
+    url, content, title = row.get('url'), row.get('content'), row.get('title', '')
+    if not isinstance(url, str) or not 1 <= len(url) <= 4096 or not isinstance(content, str) or not isinstance(title, str):
+        return error('malformed_response')
+    content = strip_tool_footer(content)
+    if not content.strip() or is_error_document(content, title):
+        return error('empty_content')
+    page = {'url': url, 'title': title[:200], 'text': content[:6000]}
+    if guarded_location:
+        page['location_provenance'] = 'uncached_dispatch'
+    return {'version': 1, 'status': 'ok', 'page': page}
+
+
 async def extract(request, dispatch=None):
     if (not isinstance(request, dict) or type(request.get('version')) is not int
             or request['version'] != 1 or not isinstance(request.get('url'), str)
@@ -93,34 +130,12 @@ async def extract(request, dispatch=None):
                 raw = await web_extract_tool([request['url']], format='markdown', char_limit=6000)
         else:
             raw = await dispatch([request['url']], format='markdown', char_limit=6000)
-        if not isinstance(raw, str) or len(raw.encode('utf-8')) > MAX_PROVIDER_RESPONSE:
-            return error('output_limit')
-        try:
-            payload = strict_json_loads(raw)
-        except ValueError:
-            return error('malformed_response')
-        if not isinstance(payload, dict):
-            return error('malformed_response')
-        reason = declaration_failure(payload)
+        rows, reason = provider_rows(raw)
         if reason:
             return error(reason)
-        rows = payload.get('results')
-        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        if rows is None or len(rows) != 1:
             return error('malformed_response')
-        row = rows[0]
-        reason = declaration_failure(row)
-        if reason:
-            return error(reason)
-        url, content, title = row.get('url'), row.get('content'), row.get('title', '')
-        if not isinstance(url, str) or not 1 <= len(url) <= 4096 or not isinstance(content, str) or not isinstance(title, str):
-            return error('malformed_response')
-        content = strip_tool_footer(content)
-        if not content.strip() or is_error_document(content, title):
-            return error('empty_content')
-        page = {'url': url, 'title': title[:200], 'text': content[:6000]}
-        if guarded_location:
-            page['location_provenance'] = 'uncached_dispatch'
-        return {'version': 1, 'status': 'ok', 'page': page}
+        return project_row(rows[0], guarded_location)
     except asyncio.TimeoutError:
         return error('timeout')
     except Exception:

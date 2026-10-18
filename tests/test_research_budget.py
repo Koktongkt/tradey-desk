@@ -114,7 +114,7 @@ class DeadlineContextTests(unittest.TestCase):
 
 class ResearchBudgetGuardTests(unittest.TestCase):
     def test_focused_stage_obeys_remaining_global_budget(self):
-        with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["hermes"]), patch.object(alpha_radar.subprocess,"run",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
+        with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["hermes"]), patch("focused_capture.run_focused",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
             alpha_radar.focused_retrieval([{"symbol":"AAA","catalyst":"dated","event_date":"2026-09-27"}],deadline=109)
             self.assertEqual(run.call_args.kwargs["timeout"],9)
             with self.assertRaises(alpha_radar.ResearchFailure) as caught:

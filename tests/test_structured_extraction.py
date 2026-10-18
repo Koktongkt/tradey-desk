@@ -48,7 +48,7 @@ class StructuredExtractionTests(unittest.TestCase):
                     direct = {'url': URL, 'text': text, 'published_at': '2026-10-17T00:00:00Z'}
                     with tempfile.TemporaryDirectory() as td:
                         cache = Path(td)/'cache.json'
-                        cache.write_text(json.dumps({URL: {'checked_at': now.isoformat(), 'page': direct}}))
+                        cache.write_text(json.dumps({URL: {'checked_at': radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(), 'page': direct}}))
                         with patch.object(radar, 'fetch_source', side_effect=AssertionError('cache expected')):
                             cached = radar.gather_evidence([URL], cache_path=cache)
                     for pages in ([direct], cached, [page] if page else []):
