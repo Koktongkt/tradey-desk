@@ -289,7 +289,7 @@ async def _safe_urls(urls, deadline):
 
 def _rows(value):
     if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
-        raise CompatibilityError('provider_error')
+        raise CompatibilityError('malformed_response')
     return value
 
 

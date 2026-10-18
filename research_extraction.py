@@ -30,7 +30,7 @@ def _compat_reason(reason):
     # Compatibility vocabulary is not the worker's public vocabulary.
     return {'invalid_url': 'invalid_request', 'secret_url': 'unsafe_url',
             'policy_blocked': 'provider_error', 'unsafe_url': 'unsafe_url',
-            'provider_error': 'provider_error'}.get(reason, 'provider_error')
+            'provider_error': 'provider_error', 'malformed_response': 'malformed_response'}.get(reason, 'provider_error')
 
 
 def _remaining(deadline):
@@ -96,6 +96,10 @@ async def _bind(rows, originals, normalized, deadline):
                 identity = await _bounded(lambda: compat.check_url(claim), deadline)
                 if identity != safe:
                     raise _Failure('url_mismatch')
+        # Validate declared publication before any error can admit rescue/walking.
+        # Its required transport location must exist, not be synthesized below.
+        if 'publication' in row and extraction_extensions(row, returned) is None:
+            raise _Failure('malformed_response')
         loc = row.get('extraction_location')
         if 'extraction_location' in row:
             if (not isinstance(loc, dict) or set(loc) != {'version', 'requested_url', 'returned_url'}

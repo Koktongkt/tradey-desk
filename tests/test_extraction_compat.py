@@ -246,6 +246,19 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.calls[-1], (vendor, ['https://example.org'], 'html'))
             self.assertTrue(self.c.rescue_allowed(provider))
 
+    async def test_malformed_transport_containers_are_postvalidation_not_transport_failure(self):
+        provider = self.provider('exa')
+        for malformed in ({'results': []}, [None], [{'url': 'https://example.org'}, 'bad']):
+            with self.subTest(malformed=malformed):
+                async def invoke(*args, **kwargs):
+                    return malformed
+                with patch.object(self.c, '_invoke', side_effect=invoke):
+                    with self.assertRaises(self.c.CompatibilityError) as caught:
+                        await self.c.primary(provider, ['https://example.org'],
+                                             format='markdown', deadline=time.monotonic() + 1)
+                self.assertEqual(caught.exception.reason, 'malformed_response')
+        self.assertEqual(self.calls, [])
+
     async def test_free_matrix_never_calls_opaque_provider(self):
         deadline = time.monotonic() + 1
         for vendor in ['exa', 'parallel', 'firecrawl', 'keenable']:

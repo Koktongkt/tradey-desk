@@ -18,6 +18,7 @@ URL = 'https://unknown.example/news/story'
 OTHER = 'https://unknown.example/news/other'
 BODY = 'The company raised revenue guidance following stronger customer demand. ' * 12
 RING = ['exa', 'parallel', 'firecrawl', 'keenable']
+REAL_PRIMARY = compat.primary
 
 
 def row(url=URL, **extra):
@@ -76,7 +77,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     def errors(self, out, reason):
         self.assertTrue(out['results'])
         for r in out['results']:
-            self.assertEqual(r['reason'], reason)
+            self.assertEqual(r.get('reason'), reason)
             self.assertIsInstance(r['error'], str)
             self.assertFalse(r.get('content'))
 
@@ -86,6 +87,54 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             self.responses['exa'] = [dict(url=URL, error='429 Too many requests', **{field: value})]
             self.errors(await self.extract(), 'malformed_response')
             self.assertEqual([c[0] for c in self.calls], ['exa'])
+
+    async def test_real_primary_malformed_containers_are_terminal_without_rescue(self):
+        # Keep primary/_safe_urls/_rows real; only transport and admission are fake.
+        self.provider.extract = lambda urls, *, format: None
+        async def invoke(fn, urls, *, format, deadline):
+            return await self.attempt('primary', urls, deadline, format)
+        for malformed in ({'results': []}, [None], [row(), 'not a row']):
+            with self.subTest(malformed=malformed):
+                self.calls.clear()
+                self.responses['primary'] = malformed
+                self.responses['exa'] = [row()]
+                with patch.object(compat, 'primary', new=REAL_PRIMARY), \
+                     patch.object(compat, '_invoke', side_effect=invoke):
+                    out = await self.extract(deadline=time.monotonic() + 10)
+                self.errors(out, 'malformed_response')
+                self.assertEqual([c[0] for c in self.calls], ['primary'])
+
+    async def test_publication_malformation_cannot_admit_primary_rescue_or_ring_walk(self):
+        self.provider.extract = lambda urls, *, format: None
+        async def invoke(fn, urls, *, format, deadline):
+            return await self.attempt('primary', urls, deadline, format)
+        location = {'version': 1, 'requested_url': URL, 'returned_url': URL}
+        for anonymous in (False, True):
+            for error in ('429 Too many requests', 'upstream unavailable'):
+                for extension in (
+                    {'publication': {}, 'extraction_location': location},
+                    {'publication': None, 'extraction_location': location},
+                    {'publication': provider_publication(1791979200)},
+                    {'publication': provider_publication(1791979200), 'extraction_location': {}},
+                ):
+                    with self.subTest(anonymous=anonymous, error=error, extension=extension):
+                        self.anonymous = anonymous
+                        self.calls.clear()
+                        malformed = [row(error=error, **extension)]
+                        self.responses.update(primary=malformed, exa=malformed, parallel=[row()])
+                        with patch.object(compat, 'primary', new=REAL_PRIMARY), \
+                             patch.object(compat, '_invoke', side_effect=invoke):
+                            out = await self.extract(deadline=time.monotonic() + 10)
+                        self.errors(out, 'malformed_response')
+                        self.assertEqual([c[0] for c in self.calls], ['exa'] if anonymous else ['primary'])
+
+    async def test_valid_publication_does_not_promote_declared_error_to_success(self):
+        self.responses['primary'] = [row(error='upstream unavailable',
+            publication=provider_publication(1791979200),
+            extraction_location={'version': 1, 'requested_url': URL, 'returned_url': URL})]
+        self.rescue = False
+        self.errors(await self.extract(), 'provider_error')
+        self.assertEqual([c[0] for c in self.calls], ['primary'])
 
     async def test_error_envelopes_remain_bounded_for_maximum_unicode_urls(self):
         urls = ['https://unknown.example/' + '\U0001f600' * 4000 + str(i) for i in range(5)]
@@ -315,7 +364,8 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_only_publication_stays_unverified_and_conflicts_fail(self):
         report = provider_publication(1791979200)
-        self.responses['primary'] = [row(publication=report)]
+        self.responses['primary'] = [row(publication=report,
+            extraction_location={'version': 1, 'requested_url': URL, 'returned_url': URL})]
         r = (await self.extract())['results'][0]
         self.assertEqual(r['publication'], report)
         page = radar.validate_structured_page(URL, worker.project_row(r))
