@@ -20,6 +20,7 @@
    "test_research_timestamp",
    "test_runtime_paths",
    "test_extraction_compat",
+   "test_research_extraction",
    "test_keenable_extraction",
    "test_publication_provenance",
    "test_structured_extraction",
