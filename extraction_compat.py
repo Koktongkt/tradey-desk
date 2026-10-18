@@ -57,7 +57,9 @@ def _call(module, name, *args, **kwargs) -> Any:
 
 def _config():
     config = _call('hermes_cli.config', 'load_config')
-    if not isinstance(config, dict):
+    # Hermes serves defaults/LKG as a dict subclass on read/parse failure.
+    # Those settings are not authority for provider, policy, or free admission.
+    if not isinstance(config, dict) or hasattr(config, 'read_error'):
         raise CompatibilityError('provider_error')
     return config
 
@@ -122,8 +124,10 @@ def _policy(url):
         return _function(module, name, *args)(*args)
 
     try:
-        security = _config().get('security') or {}
-        policy = security.get('website_blocklist') or {}
+        security = _config().get('security', {})
+        if not isinstance(security, dict):
+            raise ValueError
+        policy = security.get('website_blocklist', {})
         if not isinstance(policy, dict):
             raise ValueError
         enabled = call('_require_type', policy, 'enabled', bool, True)
@@ -187,6 +191,7 @@ async def check_url(url: str) -> str:
 
 def uses_keyless(provider: object) -> bool:
     """Mirror known providers' EXTRACT predicate; unknown routing fails closed."""
+    _config()  # Reject failed snapshots before upstream predicates consume them.
     name = getattr(provider, 'name', '')
     extract = getattr(provider, 'extract', None)
     known = name in _DIRECT and getattr(extract, '__module__', '') == f'plugins.web.{name}.provider'
@@ -199,6 +204,19 @@ def uses_keyless(provider: object) -> bool:
             raise CompatibilityError('provider_error') from exc
     elif name == 'firecrawl':
         result = _call('plugins.web.firecrawl.provider', '_use_keyless_ring', 'extract')
+        if result is False:
+            managed = _call('plugins.web.firecrawl.provider', 'is_managed_route', 'extract')
+            if not isinstance(managed, bool):
+                raise CompatibilityError('provider_error')
+            if not managed:
+                direct = _call('plugins.web.firecrawl.provider', '_get_direct_firecrawl_config')
+                if (not isinstance(direct, tuple) or len(direct) != 3
+                        or direct[0] not in ('sdk', 'keyless')):
+                    raise CompatibilityError('provider_error')
+                # No ring does not mean keyed: explicit no-key Firecrawl can
+                # construct an anonymous cloud client even when free is off.
+                # Primary is direct keyed/managed only; never add a fallback.
+                result = direct[0] == 'keyless'
     elif name in _KEYS:
         key = _call('agent.web_search_provider', 'get_provider_env', _KEYS[name])
         result = _call('plugins.web.keyless_mcp', 'use_keyless', name, key)

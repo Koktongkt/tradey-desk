@@ -1,12 +1,34 @@
 """Offline compatibility contracts; doubles replace config/network boundaries only."""
 import asyncio
+import ast
+import builtins
 import importlib
 import importlib.util
 import time
 import types
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+
+
+def source_definitions(path, names, **state):
+    """Execute installed definitions in private globals, not live module state."""
+    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+    selected = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
+    if {node.name for node in selected} != set(names):
+        raise AssertionError(f'missing compatibility definitions in {path}')
+    namespace = {'__name__': 'offline_characterization', **state}
+    code = 'from __future__ import annotations\n' + '\n'.join(ast.unparse(node) for node in selected)
+    exec(compile(code, str(path), 'exec'), namespace)
+    return types.SimpleNamespace(**namespace)
+
+
+# Use deployed runtime source, not the generated environment workspace.
+RUNTIME_SOURCE = Path.home() / '.hermes/hermes-agent'
+BASELINE_SOURCE = Path.home() / '.hermes/cache/scratch/project-extraction-unpatched'
+# The review baseline is optional after the task's scratch snapshot is pruned.
+FIRECRAWL_SOURCES = [RUNTIME_SOURCE] + ([BASELINE_SOURCE] if BASELINE_SOURCE.is_dir() else [])
 
 
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
@@ -40,7 +62,10 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.calls.append((vendor, urls))
                 return [{'url': u, 'content': vendor, 'metadata': {'published_at': 'unverified'}} for u in urls]
             setattr(self.modules['plugins.web.keyless_mcp'], vendor + '_extract_keyless', extract)
-        self.modules['plugins.web.firecrawl.provider'] = types.SimpleNamespace(_use_keyless_ring=lambda capability: capability != 'extract')
+        self.modules['plugins.web.firecrawl.provider'] = types.SimpleNamespace(
+            _use_keyless_ring=lambda capability: capability != 'extract',
+            is_managed_route=lambda capability: False,
+            _get_direct_firecrawl_config=lambda: ('sdk', {'api_key': 'key'}, ('direct', None, 'key')))
         self.modules['keenable_extraction'] = types.SimpleNamespace(fetch=self.fetch)
         self.patcher = patch.object(self.c, '_module', side_effect=lambda name: self.modules[name])
         self.patcher.start()
@@ -91,6 +116,108 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 await self.c.keyless('exa', ['https://example.org/a'], deadline=time.monotonic() + 1)
             self.assertEqual(caught.exception.reason, 'policy_blocked')
         self.assertEqual(self.calls, [])
+
+    async def test_failed_config_snapshots_never_authorize_settings(self):
+        # Removing the read_error admission check would authorize defaults/LKG.
+        marker = source_definitions(RUNTIME_SOURCE / 'hermes_cli/config_read_errors.py', ['FailedConfigRead']).FailedConfigRead
+        for error in [ValueError('malformed YAML'), PermissionError('unreadable config')]:
+            for fallback in [{}, {'web': {'extract_backend': 'exa'}, 'security': {'website_blocklist': {'enabled': False}}}]:
+                with self.subTest(error=type(error).__name__, fallback=fallback):
+                    self.config = marker(fallback, error=error)
+                    self.active = self.providers['exa'] = self.provider('exa')
+                    for action in [self.c.resolve, lambda: self.c.ring_order('exa'),
+                                   lambda: self.c.uses_keyless(self.provider('exa'))]:
+                        with self.subTest(action=action):
+                            with self.assertRaises(self.c.CompatibilityError) as caught:
+                                action()
+                            self.assertEqual(caught.exception.reason, 'provider_error')
+                    with self.subTest(action='rescue'):
+                        self.assertFalse(self.c.rescue_allowed(self.provider('exa')))
+                    for action in [lambda: self.c.check_url('https://example.org'),
+                                   lambda: self.c.primary(self.provider('exa'), ['https://example.org'], format='markdown', deadline=time.monotonic() + 1),
+                                   lambda: self.c.keyless('exa', ['https://example.org'], deadline=time.monotonic() + 1)]:
+                        with self.subTest(action=action):
+                            with self.assertRaises(self.c.CompatibilityError) as caught:
+                                await action()
+                            self.assertEqual(caught.exception.reason, 'provider_error')
+        self.assertEqual(self.calls, [])
+
+    async def test_falsey_malformed_policy_mapping_is_not_empty_policy(self):
+        # `value or {}` must not turn explicit malformed settings into permission.
+        for value in [False, None, 0, '', []]:
+            with self.subTest(value=value):
+                self.config['security'] = {'website_blocklist': value}
+                with self.assertRaises(self.c.CompatibilityError) as caught:
+                    await self.c.keyless('exa', ['https://example.org'], deadline=time.monotonic() + 1)
+                self.assertEqual(caught.exception.reason, 'policy_blocked')
+        self.assertEqual(self.calls, [])
+
+    def firecrawl_runtime(self, root, *, key='', api_url='', selected='firecrawl', explicit=True, gateway=False):
+        helpers = types.SimpleNamespace(
+            NOUS_MANAGED_PROVIDER='nous', read_web_capability_selection=lambda capability: selected,
+            selection_error=lambda *args: 'unavailable')
+        keyless = source_definitions(root / 'plugins/web/keyless_mcp.py', ['use_keyless'],
+            provider_tier=lambda name: self.config['web'].get('provider_tier', {}).get(name, 'auto'),
+            keyless_enabled=lambda: self.config['web'].get('keyless_fallback', True))
+        def importer(name, *args, **kwargs):
+            return {'tools.tool_backend_helpers': helpers, 'plugins.web.keyless_mcp': keyless}.get(name) or builtins.__import__(name, *args, **kwargs)
+        def post(url, **kwargs):
+            self.calls.append(('anonymous', url, kwargs))
+            return types.SimpleNamespace(raise_for_status=lambda: None, json=lambda: {'content': 'anonymous'})
+        def sdk(**kwargs):
+            def scrape(**payload):
+                self.calls.append(('sdk', kwargs, payload))
+                return {'content': 'sdk'}
+            return types.SimpleNamespace(scrape=scrape)
+        source = source_definitions(root / 'plugins/web/firecrawl/provider.py',
+            ['_use_keyless_ring', '_get_direct_firecrawl_config', 'is_managed_route', '_get_firecrawl_client', '_KeylessFirecrawlClient'],
+            _env=lambda name: key if name == 'FIRECRAWL_API_KEY' else api_url,
+            _is_explicit_firecrawl_selection=lambda: explicit,
+            _is_tool_gateway_ready=lambda: gateway,
+            _FIRECRAWL_CLOUD_API_URL='https://api.firecrawl.dev',
+            __builtins__={**vars(builtins), '__import__': importer},
+            _wt=lambda: cache, Firecrawl=sdk, httpx=types.SimpleNamespace(post=post),
+            _gateway=types.SimpleNamespace(
+                read_nous_access_token=lambda: 'controlled-token',
+                resolve_managed_tool_gateway=lambda *args, **kwargs: types.SimpleNamespace(
+                    nous_user_token='controlled-token', gateway_origin='https://managed.example')))
+        cache = types.SimpleNamespace()
+        self.modules['plugins.web.firecrawl.provider'] = source
+        provider = self.provider('firecrawl')
+        def extract(urls, *, format):
+            client = source._get_firecrawl_client('extract')
+            return [client.scrape(url=url, formats=[format]) for url in urls]
+        extract.__module__ = 'plugins.web.firecrawl.provider'
+        provider.extract = extract
+        return source, provider
+
+    async def test_firecrawl_anonymous_primary_optout_or_paid_never_calls(self):
+        # Actual predicate says no ring, but actual client would still free-call.
+        for root in FIRECRAWL_SOURCES:
+            for web in [{'keyless_fallback': False}, {'provider_tier': {'firecrawl': 'paid'}}]:
+                with self.subTest(root=str(root), web=web):
+                    self.config['web'] = {'extract_backend': 'firecrawl', **web}
+                    source, provider = self.firecrawl_runtime(root)
+                    self.assertFalse(source._use_keyless_ring('extract'))
+                    self.assertEqual(source._get_direct_firecrawl_config()[0], 'keyless')
+                    with self.assertRaises(self.c.CompatibilityError) as caught:
+                        await self.c.primary(provider, ['https://example.org'], format='markdown', deadline=time.monotonic() + 1)
+                    self.assertEqual(caught.exception.reason, 'provider_error')
+        self.assertEqual(self.calls, [])
+
+    async def test_firecrawl_keyed_selfhosted_and_configured_managed_primary_preserved(self):
+        for root in FIRECRAWL_SOURCES:
+            for settings in [dict(key='controlled-key'), dict(api_url='https://selfhosted.example'),
+                             dict(selected='nous', explicit=True, gateway=True)]:
+                with self.subTest(root=str(root), settings=settings):
+                    self.config['web'] = {'keyless_fallback': False, 'provider_tier': {'firecrawl': 'paid'}}
+                    source, provider = self.firecrawl_runtime(root, **settings)
+                    self.assertFalse(source._use_keyless_ring('extract'))
+                    self.assertFalse(self.c.uses_keyless(provider))
+                    rows = await self.c.primary(provider, ['https://example.org'], format='html', deadline=time.monotonic() + 1)
+                    self.assertEqual(rows, [{'content': 'sdk'}])
+                    self.assertEqual(self.calls[-1][0], 'sdk')
+        self.assertEqual(len(self.calls), 3 * len(FIRECRAWL_SOURCES))
 
     async def test_normalization_keeps_identity_outside_transport(self):
         original = ' https://example.org/Köln '
