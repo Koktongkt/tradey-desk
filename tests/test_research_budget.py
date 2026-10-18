@@ -1,8 +1,11 @@
 """Guard tests for the 540-second radar envelope and stage deadlines.
 
-The 510-second active allocation is discovery 165 + focused retrieval 120
-+ shared evidence/rescue 120 + shared synthesis 60 + shared enrichment 45;
-the outer cycle reserves 30 seconds for intake/persistence/scheduling overhead.
+The 510-second active envelope has adaptive, non-additive caps: discovery 165,
+focused retrieval 150, shared evidence/rescue 120, shared synthesis phase 90
+(including intermediate enrichment), and cumulative enrichment 45. Focused
+retrieval reserves 200 downstream seconds including five seconds of transition
+headroom (a bounded margin, not a hard-real-time guarantee); the outer cycle reserves another
+30 seconds for intake/persistence/scheduling overhead.
 Calibration requires observing real provider latency and qualified-candidate rates.
 """
 import json
@@ -113,14 +116,119 @@ class DeadlineContextTests(unittest.TestCase):
 
 
 class ResearchBudgetGuardTests(unittest.TestCase):
+    def test_focused_allowance_accounts_for_command_and_prompt_preparation(self):
+        for preparation in ("command", "prompt"):
+            for allowance in (10, 0):
+                with self.subTest(preparation=preparation, allowance=allowance):
+                    clock=[100.0]
+                    deadline=120+alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS+allowance
+                    def prepare():
+                        clock[0]+=20
+                        return ["fixture"] if preparation=="command" else "fixture prompt"
+                    with patch.object(alpha_radar,"monotonic",side_effect=lambda:clock[0]), patch.object(alpha_radar,"focused_retrieval_command",side_effect=prepare if preparation=="command" else None,return_value=["fixture"]), patch.object(alpha_radar,"focused_retrieval_prompt",side_effect=(lambda _:prepare()) if preparation=="prompt" else None,return_value="fixture prompt"), patch("focused_capture.run_focused",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
+                        if allowance:
+                            alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
+                            self.assertEqual(run.call_args.kwargs["timeout"],allowance)
+                            self.assertGreaterEqual(deadline-clock[0]-run.call_args.kwargs["timeout"],alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS)
+                        else:
+                            with self.assertRaises(alpha_radar.ResearchFailure) as caught:
+                                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
+                            self.assertEqual(caught.exception.code,"research_focused_retrieval_timeout")
+                            run.assert_not_called()
+
+    def test_live_research_boundary_preserves_synthesis_after_diagnostic_overhead(self):
+        clock=[100.0]
+        launches=[]
+        urls=["https://www.sec.gov/news/fixture","https://www.reuters.com/article/fixture"]
+        selected={"symbol":"AAA","urls":urls}
+        pages=[{"url":url,"text":"fixture article"} for url in urls]
+        def process(command, **kwargs):
+            launches.append((command,kwargs["timeout"],clock[0]))
+            if command==["discovery fixture"]:
+                clock[0]+=165
+                return subprocess.CompletedProcess(command,0,"fixture scout","")
+            self.assertEqual(command,["synthesis fixture"])
+            self.assertGreaterEqual(kwargs["timeout"],30)
+            clock[0]+=30
+            self.assertGreaterEqual(610-clock[0],45)
+            return subprocess.CompletedProcess(command,0,'{"status":"none","none_reason":"no_fresh_setup"}',"")
+        def focused(command, **kwargs):
+            # Finish just inside the actual allowance, as in the reviewed failure.
+            clock[0]+=kwargs["timeout"]-0.01
+            return subprocess.CompletedProcess(command,0,'{"candidates":[]}',"")
+        def gather(*args, **kwargs):
+            self.assertAlmostEqual(kwargs["collection_deadline"]-clock[0],120)
+            clock[0]+=120
+            return pages
+        def diagnostics(*args):
+            clock[0]+=0.02
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,"ROOT",Path(td)), patch.object(alpha_radar,"monotonic",side_effect=lambda:clock[0]), patch.object(alpha_radar,"discovery_command",return_value=["discovery fixture"]), patch.object(alpha_radar,"focused_retrieval_command",return_value=["focused fixture"]), patch.object(alpha_radar,"synthesis_command",return_value=["synthesis fixture"]), patch.object(alpha_radar.subprocess,"run",side_effect=process), patch("focused_capture.run_focused",side_effect=focused), patch.object(alpha_radar,"scout_parse_result",return_value=([selected],{})), patch.object(alpha_radar,"record_scout_diagnostic"), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(alpha_radar,"filter_evidence",return_value=(pages,[])), patch.object(alpha_radar,"ranked_candidate_evidence",return_value=[(selected,pages)]), patch.object(alpha_radar,"record_research_diagnostics",side_effect=diagnostics), patch.object(alpha_radar,"record_synthesis_none"):
+            result=alpha_radar.live_research({"focused_retrieval_enabled":True,"max_position_usd":500},intake=lambda c:c)
+        self.assertEqual(result["status"],"none")
+        self.assertEqual(len(launches),2)
+        self.assertLessEqual(clock[0],565)  # Still reserve the full enrichment cap.
+
+    def test_focused_stage_has_150_second_ceiling_with_ample_time(self):
+        for deadline in (None,610):
+            with self.subTest(deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_focused",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
+                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
+                self.assertEqual(run.call_args.kwargs["timeout"],150)
+
     def test_focused_stage_obeys_remaining_global_budget(self):
-        with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["hermes"]), patch("focused_capture.run_focused",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
-            alpha_radar.focused_retrieval([{"symbol":"AAA","catalyst":"dated","event_date":"2026-09-27"}],deadline=109)
-            self.assertEqual(run.call_args.kwargs["timeout"],9)
+        # Full discovery leaves at most 145 focused seconds, before overhead;
+        # faster discovery can still permit the full 150-second focused cap.
+        for now,deadline,expected in ((260,610,150),(265,610,145),(266,610,144),
+                                      (100,309,9),(100,300.5,0.5)):
+            with self.subTest(now=now,deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=now), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_focused",return_value=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")) as run:
+                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
+                self.assertEqual(run.call_args.kwargs["timeout"],expected)
+                self.assertGreaterEqual(deadline-now-expected,200)
+
+    def test_focused_stage_does_not_launch_at_or_below_reserve_boundary(self):
+        for deadline in (300,299.5,100):
+            with self.subTest(deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command") as command, patch("focused_capture.run_focused") as run:
+                with self.assertRaises(alpha_radar.ResearchFailure) as caught:
+                    alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
+                self.assertEqual(caught.exception.code,"research_focused_retrieval_timeout")
+                run.assert_not_called()
+
+    def test_focused_prompt_finishes_after_parallel_search_then_extraction(self):
+        prompt=alpha_radar.focused_retrieval_prompt([{"symbol":"AAA"},{"symbol":"BBB"}])
+        for fragment in ("web_search exactly three times in parallel",
+                         "web_extract exactly three times in parallel",
+                         "After extraction, make no further search or extraction calls",
+                         "immediately return the final strict JSON",
+                         "Return a usable subset rather than chasing all candidates"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment,prompt)
+        self.assertLess(prompt.index("web_search"),prompt.index("web_extract"))
+        if "After extraction" in prompt:
+            self.assertLess(prompt.index("web_extract"),prompt.index("After extraction"))
+
+    def test_bounded_focused_stage_preserves_partial_success_and_capture_fault_semantics(self):
+        url="https://www.reuters.com/article/fixture"
+        done=subprocess.CompletedProcess([],0,json.dumps({"candidates":[{"symbol":"AAA","urls":[url]}],"focused_pages":{"forged":"body"}}),"")
+        captures={url:{"actual":"capture"}}
+        setattr(done,"focused_pages",captures)
+        with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_focused",return_value=done) as run:
+            result=alpha_radar.focused_retrieval([{"symbol":"AAA"},{"symbol":"BBB"}],deadline=610)
+            self.assertEqual(result,{"AAA":[url]})
+            self.assertEqual(getattr(result,"focused_pages"),captures)
+            self.assertEqual(run.call_args.kwargs["timeout"],150)
+            done.returncode=1
             with self.assertRaises(alpha_radar.ResearchFailure) as caught:
-                alpha_radar.focused_retrieval([{"symbol":"AAA","catalyst":"dated","event_date":"2026-09-27"}],deadline=100)
-            self.assertEqual(caught.exception.code,"research_focused_retrieval_timeout")
-            run.assert_called_once()
+                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=610)
+            self.assertEqual(caught.exception.code,"research_focused_retrieval_unavailable")
+            done.returncode=0
+            done.stdout='{"candidates":[]}'
+            self.assertEqual(getattr(alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=610),"focused_pages"),{})
+        for error,code in ((subprocess.TimeoutExpired(["fixture"],150,output=done.stdout),"research_focused_retrieval_timeout"),
+                           (OSError("fixture unavailable"),"research_focused_retrieval_unavailable")):
+            with self.subTest(code=code), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_focused",side_effect=error):
+                with self.assertRaises(alpha_radar.ResearchFailure) as caught:
+                    alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=610)
+                self.assertEqual(caught.exception.code,code)
+                self.assertIs(caught.exception.__cause__,error)
 
     def test_bounded_research_call_source_pins(self):
         source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
@@ -132,7 +240,8 @@ class ResearchBudgetGuardTests(unittest.TestCase):
              ("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)",
               "timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT"), ()),
             ("focused_retrieval_prompt_feeds_bounded_subprocess",
-             ("focused_retrieval_prompt(candidates),capture_output=True,text=True,timeout=",), ()),
+             ("prompt=focused_retrieval_prompt(candidates)",
+              "run_focused(command,input=prompt,capture_output=True,text=True,timeout=remaining_time"), ()),
             ("discovery_enforces_five_total_urls",
              ("scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)",), ()),
         )
@@ -144,17 +253,30 @@ class ResearchBudgetGuardTests(unittest.TestCase):
                     self.assertNotIn(fragment, source)
         with patch.object(alpha_radar,"configured_default_model",return_value=("test-provider","test/model")):
             command=alpha_radar.focused_retrieval_command()
-        self.assertEqual(command[command.index("--max-turns")+1],"4")
-        self.assertEqual(command[command.index("--run-budget")+1],"90")
+        for flag,expected in (("--max-turns","7"),("--run-budget","110")):
+            with self.subTest(flag=flag):
+                self.assertEqual(command[command.index(flag)+1],expected)
+        self.assertEqual(command[command.index("-t")+1],"web")
+        self.assertEqual(command[command.index("--provider")+1],"test-provider")
+        self.assertEqual(command[command.index("-m")+1],"test/model")
 
     def test_nine_minute_envelope_pins_stage_constants_and_run_cycle_timeout(self):
-        # Earlier caps remain 165/120/120. Synthesis phase can borrow up to 90,
+        # Caps are 165/150/120. Synthesis phase can borrow up to 90,
         # but launches reserve remaining shared enrichment inside active 510.
         # The extra 30 seconds is borrowed from unused upstream caps, not
         # additive; adaptive caps cannot all be added, outer 540 keeps final 30.
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 510)
         self.assertEqual(alpha_radar.DISCOVERY_TIMEOUT_SECONDS, 165)
-        self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 120)
+        self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 150)
+        self.assertEqual(alpha_radar.FOCUSED_TRANSITION_HEADROOM_SECONDS, 5)
+        self.assertEqual(alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS, 200)
+        self.assertEqual(alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS,
+                         alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS+
+                         alpha_radar.MIN_SYNTHESIS_WINDOW_SECONDS+alpha_radar.ENRICHMENT_BUDGET_SECONDS+
+                         alpha_radar.FOCUSED_TRANSITION_HEADROOM_SECONDS)
+        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS-
+                         alpha_radar.DISCOVERY_TIMEOUT_SECONDS-
+                         alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS,145)
         self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS, 120)
         self.assertEqual(alpha_radar.SYNTHESIS_BUDGET_SECONDS, 60)
         self.assertEqual(alpha_radar.SYNTHESIS_PHASE_BUDGET_SECONDS, 90)

@@ -67,10 +67,28 @@ checks the installed job's expression, script, workdir, delivery and enabled sta
 
 Premarket/radar retains its **540-second outer timeout**, with an active deadline
 of **510 seconds** and **30 seconds reserved for final overhead**. Discovery stays
-capped at 165 seconds, focused retrieval at 120 seconds (four model turns), and
-the shared evidence fetch/rescue pipeline at 120 seconds. There is one discovery
-and at most three distinct candidate attempts; qualification, source receipts,
-earnings, and execution-risk gates are unchanged.
+capped at 165 seconds and the shared evidence fetch/rescue pipeline at 120 seconds.
+Focused retrieval allows **seven model turns**, an advisory `--run-budget 110`,
+and a **150-second hard subprocess cap**. With an active deadline, its timeout is
+`min(150, active_deadline - now - 200)`, calculated after command and prompt
+preparation immediately before launch; at zero or below it launches nothing and
+returns `research_focused_retrieval_timeout`. A standalone call without a supplied
+deadline retains the 150-second cap. Retrieval must perform parallel search,
+then parallel extraction, then final JSON: no further search/extraction after
+extraction, and return the usable subset instead of chasing all candidates.
+
+The explicit **200-second downstream reserve** is full evidence/rescue (120) +
+one viable synthesis launch (30) + cumulative enrichment (45) + **five seconds of
+transition headroom**. This is a bounded local-overhead margin, not a guaranteed
+hard-real-time path: slower preparation, persistence, scheduling, or other local
+work can still exhaust the deadline. After the full 165-second discovery cap,
+focused retrieval gets at most **145 seconds minus local overhead**; its full
+150-second cap remains possible with faster discovery. The reserve budgets one
+viable path, not every alternative's maximum. Synthesis's shared 90-second phase
+already includes intermediate enrichment and deferred rescue; its 60-second
+per-synthesis cap remains unchanged and can use unused upstream time. There is
+one discovery and at most three distinct candidate attempts; qualification,
+source receipts, earnings, and execution-risk gates are unchanged.
 
 Synthesis alternatives share one **90-second monotonic phase window**, rather
 than resetting a per-candidate phase allowance. Intermediate enrichment, intake,
