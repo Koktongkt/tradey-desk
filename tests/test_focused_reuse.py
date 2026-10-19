@@ -104,6 +104,94 @@ registry.get_entry('web_extract').handler = original
                 cap.run_focused([sys.executable, '-c', 'print("no")'], input='x'*8193,
                                 capture_output=True, text=True, timeout=3, cwd=Path(radar.__file__).parent)
 
+    def test_input_backpressure_keeps_hard_deadline_and_kills_owned_group(self):
+        from task4_probe import assert_dead
+        from time import monotonic
+        cap = capture_module()
+        script = '''
+import json, os, subprocess, sys, time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+Path(sys.argv[1]).write_text(json.dumps([os.getpid(), child.pid]))
+time.sleep(1)
+'''
+        launch = subprocess.Popen
+        with tempfile.TemporaryDirectory() as td, patch.object(cap, 'focused_command', side_effect=lambda c:c), patch.object(
+            subprocess, 'Popen', side_effect=lambda *a, **kw:launch(*a, **dict(kw, pipesize=4096))
+        ):
+            pidfile = Path(td)/'pids'
+            started = monotonic()
+            caught = None
+            try:
+                cap.run_focused([sys.executable, '-c', script, str(pidfile)], input='x'*8192,
+                                capture_output=True, text=True, timeout=.2, cwd=td)
+            except Exception as error:
+                caught = error
+            elapsed = monotonic() - started
+            assert_dead(self, pidfile)
+            self.assertIsInstance(caught, subprocess.TimeoutExpired, f'{caught!r}, elapsed={elapsed:.3f}')
+            self.assertEqual(caught.timeout, .2)
+            self.assertLess(elapsed, .8, 'stdin backpressure escaped the parent deadline')
+
+    def test_input_backpressure_still_monitors_both_output_caps(self):
+        from time import monotonic
+        cap = capture_module()
+        launch = subprocess.Popen
+        with patch.object(cap, 'focused_command', side_effect=lambda c:c), patch.object(
+            subprocess, 'Popen', side_effect=lambda *a, **kw:launch(*a, **dict(kw, pipesize=4096))
+        ):
+            for stream, size in [('stdout', 100001), ('stderr', 16385)]:
+                script = f'import signal, sys, time; signal.alarm(1); sys.{stream}.write("x"*{size}); sys.{stream}.flush(); time.sleep(1)'
+                with self.subTest(stream=stream):
+                    started = monotonic()
+                    with self.assertRaisesRegex(OSError, 'focused output limit'):
+                        cap.run_focused([sys.executable, '-c', script], input=b'x'*8192,
+                                        capture_output=True, text=False, timeout=.5, cwd=Path(radar.__file__).parent)
+                    self.assertLess(monotonic() - started, .8)
+
+    def test_oversized_encoded_input_is_rejected_before_spawn(self):
+        cap = capture_module()
+        with patch.object(cap, 'focused_command', side_effect=lambda c:c), patch.object(
+            subprocess, 'Popen', side_effect=OSError('spawn forbidden')
+        ) as launch:
+            for value in ('x'*8193, 'é'*4097, b'x'*8193):
+                with self.subTest(kind=type(value).__name__), self.assertRaisesRegex(OSError, 'focused input limit'):
+                    cap.run_focused(['offline'], input=value, capture_output=True, text=True,
+                                    timeout=1, cwd=Path(radar.__file__).parent)
+            self.assertEqual(launch.call_count, 0, 'oversized input must not spawn')
+
+    def test_multiplexed_input_delivers_all_bytes_and_eof_without_changing_output(self):
+        cap = capture_module()
+        launch = subprocess.Popen
+        script = '''
+import signal, sys
+signal.alarm(1)  # Bound the intentionally deadlocking pre-fix implementation.
+sys.stdout.buffer.write(b'o'*8192); sys.stdout.buffer.flush()
+sys.stderr.buffer.write(b'e'*8192); sys.stderr.buffer.flush()
+sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.stdout.buffer.flush()
+'''
+        with patch.object(cap, 'focused_command', side_effect=lambda c:c), patch.object(
+            subprocess, 'Popen', side_effect=lambda *a, **kw:launch(*a, **dict(kw, pipesize=4096))
+        ):
+            for text, payload in [(True, 'é'*4096), (False, b'x'*8192)]:
+                with self.subTest(text=text):
+                    done = cap.run_focused([sys.executable, '-c', script], input=payload,
+                                           capture_output=True, text=text, timeout=.5, cwd=Path(radar.__file__).parent)
+                    self.assertEqual(done.returncode, 0)
+                    self.assertEqual(done.stdout, ('o'*8192 if text else b'o'*8192) + payload)
+                    self.assertEqual(done.stderr, 'e'*8192 if text else b'e'*8192)
+
+    def test_early_stdin_close_does_not_bypass_remaining_deadline(self):
+        cap = capture_module()
+        launch = subprocess.Popen
+        script = 'import os, time; os.close(0); time.sleep(1)'
+        with patch.object(cap, 'focused_command', side_effect=lambda c:c), patch.object(
+            subprocess, 'Popen', side_effect=lambda *a, **kw:launch(*a, **dict(kw, pipesize=4096))
+        ), self.assertRaises(subprocess.TimeoutExpired):
+            cap.run_focused([sys.executable, '-c', script], input='x'*8192,
+                            capture_output=True, text=True, timeout=.2, cwd=Path(radar.__file__).parent)
+
     def test_parent_channel_permissions_are_explicit_even_with_restrictive_umask(self):
         cap=capture_module()
         script='''

@@ -42,6 +42,9 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
     import tempfile
     from time import monotonic
     started = monotonic()
+    payload = input.encode('utf-8') if isinstance(input, str) else input
+    if len(payload) > 8192:
+        raise OSError('focused input limit')
     with ExitStack() as cleanup:
         fd = None
         env = dict(os.environ)
@@ -67,30 +70,47 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
         process = None
         try:
             process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=text, cwd=cwd, env=env,
+                                       stderr=subprocess.PIPE, text=False, bufsize=0, cwd=cwd, env=env,
                                        pass_fds=() if fd is None else (fd,), start_new_session=True)
             remaining = timeout - (monotonic() - started)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
-            payload = input.encode('utf-8') if isinstance(input, str) else input
-            if len(payload) > 8192:
-                raise OSError('focused input limit')
-            # Bound both pipes while the child is alive; communicate() alone
-            # buffers unbounded chatter from tools and blocked executor threads.
+            # Multiplex raw, nonblocking pipes under one absolute deadline.
+            # A bounded input can still exceed the kernel's pipe capacity.
             import selectors
-            process.stdin.write(payload.decode('utf-8') if text else payload)
-            process.stdin.close()
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                os.set_blocking(pipe.fileno(), False)
+            offset = 0
             buffers = {'stdout': bytearray(), 'stderr': bytearray()}
             caps = {'stdout': 100_000, 'stderr': 16_384}
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
                 selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+                if payload:
+                    selector.register(process.stdin, selectors.EVENT_WRITE, 'stdin')
+                else:
+                    process.stdin.close()
                 while selector.get_map():
                     remaining = timeout - (monotonic() - started)
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(command, timeout)
                     for key, _ in selector.select(remaining):
-                        chunk = os.read(key.fileobj.fileno(), 8192)
+                        if key.data == 'stdin':
+                            try:
+                                offset += os.write(key.fd, payload[offset:])
+                            except BlockingIOError:
+                                continue
+                            except BrokenPipeError:
+                                # Early close must not bypass output/deadline checks.
+                                offset = len(payload)
+                            if offset == len(payload):
+                                selector.unregister(key.fileobj)
+                                process.stdin.close()
+                            continue
+                        try:
+                            chunk = os.read(key.fd, 8192)
+                        except BlockingIOError:
+                            continue
                         if not chunk:
                             selector.unregister(key.fileobj)
                         else:
