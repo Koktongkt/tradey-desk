@@ -34,7 +34,11 @@ DEFAULT_STREAMS = (
     "private/protection_orders.jsonl",
     "private/research_diagnostics.jsonl",
     "private/reviews.jsonl",
+    "private/source_attempts.jsonl",
     "public/disagreements.jsonl",
+    "public/overlay/candidates.jsonl",
+    "public/overlay/decision_audit.jsonl",
+    "public/overlay/order_ledger.jsonl",
 )
 
 

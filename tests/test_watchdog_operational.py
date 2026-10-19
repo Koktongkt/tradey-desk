@@ -138,6 +138,44 @@ class OperationalTests(unittest.TestCase):
             self.assertEqual(first.streams, second.streams)
             self.assertEqual(before, self.state())
 
+    def test_ledger_streams_outside_defaults_are_recognized(self):
+        # Production journal drift: newer features (source-attempts tracking,
+        # overlay publication) write ledger streams the operational reader did
+        # not whitelist, so every snapshot was rejected as history-incomplete
+        # and the protection watchdog failed closed. After the registry
+        # includes those streams, a journal holding them reads complete, and
+        # their projections are verified against the SQLite history.
+        from watchdog.operational import read_operational
+        rows = {
+            'private/source_attempts.jsonl': [
+                {'timestamp': '2026-10-19T14:02:50Z', 'url': 'https://example.com/a'}],
+            'public/overlay/candidates.jsonl': [
+                {'timestamp': '2026-10-17T05:16:00Z', 'symbol': 'ABC'}],
+            'public/overlay/decision_audit.jsonl': [
+                {'timestamp': '2026-10-17T05:16:00Z', 'symbol': 'ABC'}],
+            'public/overlay/order_ledger.jsonl': [
+                {'timestamp': '2026-10-17T05:16:00Z', 'symbol': 'ABC'}],
+        }
+        for stream, stream_rows in rows.items():
+            for row in stream_rows:
+                # setUp closes its connection; reopen a private writer.
+                connection = sqlite3.connect(self.db)
+                try:
+                    payload = json.dumps(row, sort_keys=True, separators=(',', ':'))
+                    connection.execute(
+                        'INSERT INTO ledger_entries VALUES (?,1,?,?,?)',
+                        (stream, payload, hashlib.sha256(payload.encode()).hexdigest(), '2026-01-01T00:00:00Z'))
+                    connection.commit()
+                finally:
+                    connection.close()
+                path = self.root / stream
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(payload + '\n')
+        result = read_operational(self.root)
+        self.assertTrue(result.complete, result.reasons)
+        for stream, stream_rows in rows.items():
+            self.assertEqual(result.streams[stream], stream_rows)
+
     def test_money_and_timestamp_contracts(self):
         from datetime import datetime, timezone
         from decimal import Decimal
