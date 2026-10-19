@@ -114,7 +114,8 @@ lookup (after strict config admission). Missing/unsupported providers and helper
 exceptions still fail closed. Keenable now sends the stock nonsecret app header
 `X-Keenable-Title: hermes-agent`; it adds no authentication or payload.
 
-The unpatched canonical full suite now passes **1189 tests**. A fresh-process
+At the historical startup/header-correction milestone, the unpatched canonical
+full suite passed **1189 tests**. A fresh-process
 regression starts with an empty real registry, uses actual plugin discovery and
 worker extraction, and fakes only network boundaries. Header and local-server
 transport-accounting regressions also pass. The probe counts requests Session
@@ -136,3 +137,35 @@ readiness. Delayed/conflicting cap snapshots remain provisional category control
 not verified same-day caps. The unknown-date gate is unchanged. No deployment,
 Task 7, patch retirement, schedules, keys, model changes or trading calls occurred.
 See `task-5-report.md` and private `task5-corrected-*.json` artifacts.
+
+### Final-review correction milestone (offline)
+
+The later historical Task 5 telemetry-finalization milestone passed **1192 tests**;
+it did not fix the standalone stdin deadline or the `/proc` observation race.
+The Task 6 I1/I2/I3 correction wave now has a verified canonical full result of
+**56 modules / 1204 tests**, **0 failures, 0 errors, 0 skipped** (82.114 seconds),
+using the supported Python 3.14.7 runtime and actual unpatched Hermes
+`d923a5eb487a17c0a68801bba9ef0f56c81040a8`. The six affected modules separately
+passed **175 tests**. Private evidence is in
+`test_artifacts/project-extraction/task6-canonical-full.log` and
+`task6-focused-final-green.log`; the detailed Task 6 report preserves all RED
+runs and the first combined run's subsequently corrected overflow-classification
+failure. Earlier logs and live cohorts are unchanged.
+
+Credential-named query parameters now use the installed compatibility-checked
+URL helper before safety/policy/provider I/O; encoded names, known prefixes and
+userinfo are refused, while benign facet names remain allowed. Unchecked or
+secret-bearing identities are omitted from error projections. Controlled
+Keenable error envelopes are bound to their requested URL internally and retain
+typed failure reasons without trusting external provider `reason` fields or
+manufacturing body/location/publication evidence. The standalone supervisor now
+multiplexes nonblocking stdin/stdout/stderr under its existing deadline and caps;
+real-PID tests cover reduced pipes, early input close and owned-group cleanup.
+Only disappearance-related exceptions are caught at the two test `/proc` reads;
+permission errors and genuinely live processes still fail.
+
+The canonical log's argparse invalid-choice, dry-run blocker, `SYSTEM_FAILURE`
+and cleanup diagnostics are intentional negative-fixture output, not production
+failures. Unexpected errors were not suppressed. This offline security/type/pipe
+wave made no live provider/cohort requests and is not deployment authorization;
+independent scoped review and the separate cutover gates still apply.

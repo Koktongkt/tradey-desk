@@ -150,6 +150,9 @@ def _truncate(content, limit):
 def _project(row, original, limit):
     # Lazy import prevents the eventual worker -> dispatcher dependency cycling.
     from extraction_worker import declaration_failure
+    if isinstance(row, compat._TransportFailure):
+        # Already subjected to normal size and exact-request binding in _bind.
+        return _error(original, row.reason)
     for field in ('error', 'success', 'status', 'blocked_by_policy'):
         if field in row and declaration_failure({field: row[field]}) == 'malformed_response':
             return _error(original, 'malformed_response')
@@ -199,10 +202,23 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
     format = 'markdown' if format is None else format
     char_limit = 6000 if char_limit is None else char_limit
     originals = urls if isinstance(urls, list) and 1 <= len(urls) <= 5 else ['']
+    admitted = False
 
-    def fail(reason):
-        return _envelope([_error(u if isinstance(u, str) and len(u) <= 4096 else '', reason)
-                          for u in originals])
+    def fail(reason, *, redact_urls=False):
+        # Unchecked identities may carry credentials, including when the
+        # required secret detector is unsupported or admission times out.
+        redact_urls = redact_urls or not admitted
+        rows = [_error(u if isinstance(u, str) and len(u) <= 4096 else '', reason)
+                for u in originals]
+        if redact_urls:
+            # Retain the existing encoded-envelope overflow classification even
+            # when privacy requires omitting all unchecked request identities.
+            try:
+                _size(rows)
+            except _Failure as exc:
+                reason = exc.reason
+            rows = [_error('', reason) for _ in originals]
+        return _envelope(rows)
     if (not isinstance(urls, list) or not 1 <= len(urls) <= 5
             or any(not isinstance(u, str) or not 1 <= len(u) <= 4096 for u in urls)
             or not isinstance(format, str) or format not in ('markdown', 'html')
@@ -214,6 +230,7 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
         normalized = []
         for url in originals:
             normalized.append(await _bounded(lambda: compat.check_url(url), deadline))
+        admitted = True
         if len(set(normalized)) != len(normalized):
             return fail('invalid_request')
         _remaining(deadline)
@@ -259,7 +276,7 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
     except _Failure as exc:
         return fail(exc.reason)
     except compat.CompatibilityError as exc:
-        return fail(_compat_reason(exc.reason))
+        return fail(_compat_reason(exc.reason), redact_urls=exc.reason == 'secret_url')
     except TimeoutError:
         return fail('timeout')
     except Exception:

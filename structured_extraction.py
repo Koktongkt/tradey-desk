@@ -99,21 +99,39 @@ def run_worker(url: str, timeout_seconds: float = 30):
     try:
         command = worker_command()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True,
+                                   stderr=subprocess.PIPE, start_new_session=True, bufsize=0,
                                    cwd=Path(__file__).resolve().parent)
-        process.stdin.write(request)
-        process.stdin.close()
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            os.set_blocking(pipe.fileno(), False)
+        offset = 0
         stdout = bytearray()
         stderr_size = 0
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+            selector.register(process.stdin, selectors.EVENT_WRITE, 'stdin')
             while selector.get_map():
                 remaining = timeout_seconds - (monotonic() - start)
                 if remaining <= 0:
                     return failure('timeout')
                 for key, _ in selector.select(remaining):
-                    chunk = os.read(key.fileobj.fileno(), 8192)
+                    if key.data == 'stdin':
+                        try:
+                            offset += os.write(key.fd, request[offset:])
+                        except BlockingIOError:
+                            continue
+                        except BrokenPipeError:
+                            # Still supervise output/deadline after an early close.
+                            offset = len(request)
+                        if offset == len(request):
+                            selector.unregister(key.fileobj)
+                            process.stdin.close()
+                        continue
+                    try:
+                        chunk = os.read(key.fd, 8192)
+                    except BlockingIOError:
+                        continue
                     if not chunk:
                         selector.unregister(key.fileobj)
                     elif key.data == 'stdout':

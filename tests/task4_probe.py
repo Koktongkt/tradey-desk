@@ -61,8 +61,11 @@ def assert_dead(test, pidfile):
     for pid in pids:
         for _ in range(100):
             path = Path(f'/proc/{pid}/stat')
-            if not path.exists() or path.read_text().split()[2] == 'Z':
-                break
+            try:
+                if not path.exists() or path.read_text().split()[2] == 'Z':
+                    break
+            except (FileNotFoundError, ProcessLookupError):
+                break  # It disappeared between existence and state observation.
             time.sleep(.01)
         else:
             test.fail(f'owned process {pid} survived hard deadline')

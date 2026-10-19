@@ -513,6 +513,117 @@ print(json.dumps(asyncio.run(scenario())))
             self.assertIsNone(row['direct_status'])
             self.assertEqual(row['fallback_result'],'not_attempted')
 
+    def run_small_pipe(self, code, url=None, budget=.1):
+        """Replace only the safe spawn seam; all PIDs/pipes/kills are real."""
+        import fcntl
+        import os
+        adapter = module('structured_extraction')
+        real_popen = subprocess.Popen
+        processes = []
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **{**kwargs, 'pipesize':4096})
+            processes.append(process)
+            assert process.stdin is not None
+            self.assertEqual(fcntl.fcntl(process.stdin.fileno(), fcntl.F_GETPIPE_SZ), 4096)
+            return process
+        large_url = 'https://example.com/' + 'a' * (4096 - len('https://example.com/'))
+        started = time.monotonic()
+        with patch.object(adapter, 'worker_command', return_value=[sys.executable, '-B', '-c', code]), \
+             patch.object(subprocess, 'Popen', side_effect=launch):
+            result = adapter.run_worker(large_url if url is None else url, budget)
+        elapsed = time.monotonic() - started
+        self.assertEqual(len(processes), 1)
+        for process in processes:
+            self.assertIsNotNone(process.returncode)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(process.pid, os.WNOHANG)
+            self.assertTrue(all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr)))
+        return result, elapsed
+
+    def test_stdin_backpressure_shares_hard_deadline(self):
+        result, elapsed = self.run_small_pipe('import time; time.sleep(.7)')
+        self.assertEqual(result, {'version':1, 'status':'error', 'reason':'timeout'})
+        self.assertLess(elapsed, .5)
+
+    def test_output_caps_apply_while_stdin_is_pending(self):
+        for fd, size in [(1,100001), (2,16385)]:
+            with self.subTest(fd=fd):
+                # Bounded safety exit prevents a broken supervisor hanging RED.
+                code = ('import os,threading; '
+                        'threading.Timer(.7, lambda: os._exit(0)).start(); '
+                        f'os.write({fd}, b"x" * {size})')
+                result, elapsed = self.run_small_pipe(code, budget=.4)
+                self.assertEqual(result, {'version':1, 'status':'error', 'reason':'output_limit'})
+                self.assertLess(elapsed, .5)
+
+    def test_early_stdin_close_still_drains_output(self):
+        result, _ = self.run_small_pipe('import os; os.close(0); print("{}", flush=True)', budget=1)
+        self.assertEqual(result, {})
+
+    def test_large_admitted_input_is_fully_written(self):
+        code = 'import sys,json; obj=json.load(sys.stdin); assert len(obj["url"]) == 4096; print("{}")'
+        result, _ = self.run_small_pipe(code, budget=1)
+        self.assertEqual(result, {})
+
+    def test_encoded_request_limit_precedes_spawn(self):
+        adapter = module('structured_extraction')
+        with patch.object(adapter, 'worker_command', side_effect=AssertionError('spawned')):
+            self.assertEqual(adapter.run_worker('https://example.com/' + '\u2603' * 4000, .1),
+                             {'version':1, 'status':'error', 'reason':'invalid_request'})
+
+    def test_pending_input_kills_owned_descendant_and_reaps_leader(self):
+        from task4_probe import assert_dead
+        with tempfile.TemporaryDirectory() as td:
+            pidfile = Path(td)/'pids'
+            code = ('import subprocess,sys,time,json,os; from pathlib import Path; '
+                    'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"], '
+                    'stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); '
+                    f'Path({str(pidfile)!r}).write_text(json.dumps([os.getpid(),p.pid])); '
+                    'time.sleep(.7)')
+            result, elapsed = self.run_small_pipe(code, budget=.3)
+            self.assertEqual(result, {'version':1, 'status':'error', 'reason':'timeout'})
+            self.assertLess(elapsed, .6)
+            assert_dead(self, pidfile)
+
+    def test_proc_disappearance_shared_assertion_is_dead(self):
+        import task4_probe
+        import os
+        with tempfile.TemporaryDirectory() as td:
+            pidfile = Path(td)/'pids'
+            pidfile.write_text(json.dumps([os.getpid()]))
+            original = Path.read_text
+            for error in (FileNotFoundError, ProcessLookupError, PermissionError):
+                def read(path, *args, **kwargs):
+                    if str(path).startswith('/proc/'):
+                        raise error('offline observation fixture')
+                    return original(path, *args, **kwargs)
+                with self.subTest(error=error.__name__), patch.object(Path, 'read_text', read):
+                    if error is PermissionError:
+                        with self.assertRaises(PermissionError): task4_probe.assert_dead(self, pidfile)
+                    else:
+                        task4_probe.assert_dead(self, pidfile)
+            with patch.object(task4_probe.time, 'sleep'):
+                with self.assertRaises(AssertionError):
+                    task4_probe.assert_dead(self, pidfile)  # this process is genuinely alive
+
+    def test_proc_disappearance_descendant_assertion_is_dead(self):
+        original = Path.read_text
+        original_exists = Path.exists
+        def exists(path):
+            return True if str(path).startswith('/proc/') else original_exists(path)
+        for error in (FileNotFoundError, ProcessLookupError, PermissionError):
+            def read(path, *args, **kwargs):
+                if str(path).startswith('/proc/'):
+                    raise error('offline observation fixture')
+                return original(path, *args, **kwargs)
+            with self.subTest(error=error.__name__), patch.object(Path, 'read_text', read), \
+                 patch.object(Path, 'exists', exists):
+                if error is PermissionError:
+                    with self.assertRaises(PermissionError):
+                        self.test_supervisor_kills_descendants_on_timeout_and_success()
+                else:
+                    self.test_supervisor_kills_descendants_on_timeout_and_success()
+
     def test_deeply_nested_worker_json_is_a_typed_failure(self):
         adapter=module('structured_extraction')
         code="print('['*2000+'0'+']'*2000)"
@@ -572,8 +683,11 @@ print(json.dumps(asyncio.run(scenario())))
                 pid = int(pidfile.read_text())
                 for _ in range(50):
                     stat = Path(f'/proc/{pid}/stat')
-                    if not stat.exists() or stat.read_text().split()[2] == 'Z':
-                        break
+                    try:
+                        if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                            break
+                    except (FileNotFoundError, ProcessLookupError):
+                        break  # Disappearance is dead; other read errors propagate.
                     time.sleep(0.01)
                 else:
                     self.fail('owned descendant still running')

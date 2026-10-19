@@ -49,6 +49,7 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             'agent.redact': types.SimpleNamespace(_PREFIX_RE=__import__('re').compile(r'sk-secret')),
             'tools.url_safety': types.SimpleNamespace(
                 normalize_url_for_request=lambda u: u.strip().replace('ö', '%C3%B6'),
+                sensitive_query_param_name=importlib.import_module('tools.url_safety').sensitive_query_param_name,
                 is_safe_url=lambda u: '127.0.0.1' not in u),
         }
         # Actual stateless policy helpers, never the shared policy cache.

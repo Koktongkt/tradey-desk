@@ -23,6 +23,18 @@ _KEYS = {'exa': 'EXA_API_KEY', 'parallel': 'PARALLEL_API_KEY',
 _DIRECT = (*_RING, 'tavily')
 
 
+class _TransportFailure(dict):
+    """Internal requested-identity failure, never reconstructed from vendor rows.
+
+    The dict participates in normal size/identity validation but claims no
+    returned location, article body or publication. Only the owned transport
+    boundary below may create it from its exact version-1 error contract.
+    """
+    def __init__(self, url, reason):
+        super().__init__(url=url, error=reason)
+        self.reason = reason
+
+
 class CompatibilityError(RuntimeError):
     """Stable project reason; do not expose upstream exceptions/secrets."""
     def __init__(self, reason: str):
@@ -169,11 +181,23 @@ async def check_url(url: str) -> str:
     if not isinstance(normalized, str):
         raise CompatibilityError('provider_error')
     try:
+        # Hermes returns the first credential-named, nonempty query key or
+        # None, not a boolean. Check the callable and result contracts before
+        # safety/policy I/O; unsupported runtimes may not authorize dispatch.
+        variants = (url, unquote(url), normalized, unquote(normalized))
+        for item in variants:
+            name = _call('tools.url_safety', 'sensitive_query_param_name', item)
+            if name is not None:
+                if not isinstance(name, str) or not name:
+                    raise CompatibilityError('provider_error')
+                raise CompatibilityError('secret_url')
         pattern = getattr(_module('agent.redact'), '_PREFIX_RE')
         if any(pattern.search(item) for item in (url, unquote(url), normalized, unquote(normalized))):
             raise CompatibilityError('secret_url')
         parsed = urlsplit(normalized)
-        if parsed.scheme.lower() not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+        if parsed.username or parsed.password:
+            raise CompatibilityError('secret_url')
+        if parsed.scheme.lower() not in ('http', 'https') or not parsed.hostname:
             raise CompatibilityError('invalid_url')
         # Literal private targets remain refused even if Hermes permits private URLs.
         try:
@@ -322,7 +346,16 @@ async def keyless(vendor: str, urls: list[str], *, deadline: float) -> list[dict
         # Task 1's deadline is a transport argument, not a fresh per-URL budget.
         fn = _function('keenable_extraction', 'fetch', '', deadline=deadline)
         async def fetch(url):
-            return await asyncio.to_thread(fn, url, deadline=deadline)
+            row = await asyncio.to_thread(fn, url, deadline=deadline)
+            # Do not recognize reason/status in generic external provider rows.
+            # Extra declarations/extensions cannot be hidden by this adaptation.
+            if (isinstance(row, dict) and set(row) == {'version', 'status', 'reason'}
+                    and type(row['version']) is int and row['version'] == 1
+                    and row['status'] == 'error' and isinstance(row['reason'], str)
+                    and row['reason'] in {'timeout', 'output_limit', 'provider_error',
+                                          'empty_content', 'invalid_request', 'malformed_response'}):
+                return _TransportFailure(url, row['reason'])
+            return row
         return _rows([await _invoke(fetch, url, deadline=deadline) for url in safe])
     fn = _function('plugins.web.keyless_mcp', vendor + '_extract_keyless', safe)
     return _rows(await _invoke(fn, safe, deadline=deadline))

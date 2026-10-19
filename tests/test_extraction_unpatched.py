@@ -251,6 +251,185 @@ print(json.dumps({'status': result['status'], 'requests': network.call_count}))
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout), {'status': 'ok', 'requests': 1})
 
+    def run_boundary_script(self, body):
+        import os
+        import subprocess
+        from runtime_paths import hermes_runtime
+        python, source = hermes_runtime()
+        bootstrap = '''
+import sys, json, asyncio, socket
+from pathlib import Path
+from unittest.mock import patch
+from contextlib import ExitStack
+source, project = map(Path, sys.argv[1:3])
+sys.path.insert(0, str(source))
+import hermes_bootstrap
+sys.path.insert(0, str(project))
+import extraction_compat as compat
+import extraction_worker as worker
+import tools.url_safety as safety
+assert Path(safety.__file__).resolve().is_relative_to(source)
+assert not (source / 'tools/web_publication.py').exists()
+'''
+        completed = subprocess.run([python, '-I', '-c', bootstrap + body, str(source), str(ROOT)],
+                                   env=os.environ.copy(), capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_real_secret_query_gate_before_safety_and_both_entrypoints(self):
+        self.run_boundary_script(r'''
+import hermes_cli.main as cli
+from tools.registry import registry
+import tools.web_tools
+import focused_wrapper as wrapper
+opaque = ''.join(chr(n) for n in [100,117,109,109,121,45,111,112,97,113,117,101])
+urls = ['https://example.com/a?' + key + '=' + opaque
+        for key in ['access_token', 'password', '%61ccess%5ftoken', '%2570assword']]
+urls += ['https://' + opaque + '@example.com/a',
+         'https://example.com/sk-' + 'x' * 48]
+with ExitStack() as stack:
+    safe = stack.enter_context(patch.object(safety, 'is_safe_url', return_value=True))
+    policy = stack.enter_context(patch.object(compat, '_policy', return_value=None))
+    resolve = stack.enter_context(patch.object(compat, 'resolve', side_effect=AssertionError('vendor admission')))
+    for url in urls:
+        try:
+            asyncio.run(compat.check_url(url))
+        except compat.CompatibilityError as exc:
+            assert exc.reason in ('secret_url', 'invalid_url'), 'wrong refusal'
+        else:
+            raise AssertionError('secret admitted')
+        result = asyncio.run(worker.extract({'version':1, 'url':url}))
+        assert result['status'] == 'error', 'secret admitted'
+        assert opaque not in json.dumps(result), 'credential echo'
+        def main():
+            raw = registry.dispatch('web_extract', {'urls':[url], 'char_limit':6000})
+            result = json.loads(raw)
+            assert result['results'][0]['error'], 'secret admitted'
+            assert opaque not in raw and url not in raw, 'credential echo'
+        with patch.object(cli, 'main', main):
+            wrapper.main()
+    assert safe.call_count == policy.call_count == resolve.call_count == 0, 'secret reached I/O'
+''')
+
+    def test_real_query_helper_benign_facets_and_unsupported_contract(self):
+        self.run_boundary_script(r'''
+url = 'https://example.com/a?code=blue&key=price&auth=type&session=summer&sig=sign'
+with patch.object(safety, 'is_safe_url', return_value=True), patch.object(compat, '_policy', return_value=None):
+    assert asyncio.run(compat.check_url(url)) == url
+    for helper in [None, lambda: None, lambda url: False, lambda url: 3]:
+        with patch.object(safety, 'sensitive_query_param_name', helper):
+            try:
+                asyncio.run(compat.check_url(url))
+            except compat.CompatibilityError as exc:
+                assert exc.reason == 'provider_error'
+            else:
+                raise AssertionError('unsupported helper admitted')
+            from research_extraction import extract_tool
+            opaque = ''.join(chr(n) for n in [100,117,109,109,121,45,111,112,97,113,117,101])
+            raw = asyncio.run(extract_tool(['https://example.com/a?access_token=' + opaque]))
+            assert opaque not in raw, 'unsupported helper credential echo'
+''')
+
+    def test_real_keenable_errors_through_worker_and_registered_mixed_batch(self):
+        self.run_boundary_script(r'''
+import io
+from types import SimpleNamespace
+from unittest.mock import Mock
+import keenable_extraction as transport
+import hermes_cli.main as cli
+from tools.registry import registry
+import tools.web_tools
+import focused_wrapper as wrapper
+from time import monotonic
+url = 'https://example.com/a'
+other = 'https://example.com/b'
+provider = SimpleNamespace(name='keenable', uses_keyless=lambda: True)
+calls = []
+case = None
+class Response:
+    status = 200
+    def __init__(self, raw): self.raw = io.BytesIO(raw)
+    def read1(self, size): return self.raw.read(size)
+    def isclosed(self): return False
+    def close(self): pass
+def connect(*args, **kwargs):
+    conn = Mock()
+    def request(method, path, **kwargs):
+        calls.append(path)
+    conn.request.side_effect = request
+    def response():
+        # Second member succeeds, proving a failure never poisons/replays it.
+        success = len(calls) == 2
+        if case == 'timeout' and not success:
+            raise TimeoutError
+        payload = {'url': other if success else url, 'title':'Article',
+                   'content':'Company revenue increased. ' * 40}
+        if not success and case == 'empty_content': payload['content'] = ''
+        if not success and case == 'forged_reason':
+            payload.update(status='error', reason='timeout')
+        raw = json.dumps(payload).encode()
+        if not success and case == 'output_limit': raw = b'x' * 100001
+        result = Response(raw)
+        if not success and case == 'provider_error': result.status = 503
+        return result
+    conn.getresponse.side_effect = response
+    return conn
+with ExitStack() as stack:
+    stack.enter_context(patch.object(safety, 'is_safe_url', return_value=True))
+    stack.enter_context(patch.object(compat, '_policy', return_value=None))
+    stack.enter_context(patch.object(compat, 'resolve', return_value=provider))
+    stack.enter_context(patch.object(compat, '_available', return_value=['keenable', 'exa']))
+    stack.enter_context(patch.object(compat, 'ring_order', return_value=['keenable', 'exa']))
+    stack.enter_context(patch.object(transport.http.client, 'HTTPSConnection', side_effect=connect))
+    ring = stack.enter_context(patch.object(compat, 'keyless', wraps=compat.keyless))
+    for case in ['timeout', 'output_limit', 'provider_error', 'empty_content', 'forged_reason']:
+        expected = 'provider_error' if case == 'forged_reason' else case
+        calls.clear(); ring.reset_mock()
+        result = asyncio.run(worker.extract({'version':1, 'url':url}))
+        assert result == worker.error(expected), (case, result)
+        assert len(calls) == ring.call_count == 1, 'extra attempt'
+        for urls in [[url], [url, other]]:
+            calls.clear(); ring.reset_mock()
+            def main():
+                rows = json.loads(registry.dispatch('web_extract', {'urls':urls}))['results']
+                assert rows[0]['reason'] == expected, (case, rows[0]['reason'])
+                assert rows[0]['url'] == url and not rows[0]['content']
+                assert 'publication' not in rows[0] and 'extraction_location' not in rows[0]
+                if len(urls) == 2:
+                    assert rows[1]['error'] is None and rows[1]['url'] == other
+            with patch.object(cli, 'main', main): wrapper.main()
+            assert len(calls) == len(urls) and ring.call_count == 1, 'batch replay'
+''')
+
+    def test_external_reason_and_envelope_extensions_never_gain_internal_trust(self):
+        self.run_boundary_script(r'''
+from types import SimpleNamespace
+url = 'https://example.com/a'
+base = {'url':url, 'title':'Article', 'content':'Company release. ' * 80,
+        'error':'service failed', 'reason':'timeout', 'version':1, 'status':'error'}
+provider = SimpleNamespace(name='fixture', uses_keyless=lambda: False,
+                           extract=lambda urls, format: [row])
+with ExitStack() as stack:
+    stack.enter_context(patch.object(safety, 'is_safe_url', return_value=True))
+    stack.enter_context(patch.object(compat, '_policy', return_value=None))
+    stack.enter_context(patch.object(compat, 'resolve', return_value=provider))
+    rescue = stack.enter_context(patch.object(compat, 'rescue_allowed', return_value=False))
+    for row, expected in [(base, 'provider_error'),
+        ({**base, 'publication':False}, 'malformed_response'),
+        ({**base, 'extraction_location':False}, 'url_mismatch')]:
+        result = asyncio.run(worker.extract({'version':1, 'url':url}))
+        assert result == worker.error(expected), result
+    # A malformed transport envelope must not be translated as a typed error.
+    provider = SimpleNamespace(name='keenable', uses_keyless=lambda: True)
+    stack.enter_context(patch.object(compat, 'resolve', return_value=provider))
+    stack.enter_context(patch.object(compat, '_available', return_value=['keenable']))
+    stack.enter_context(patch.object(compat, 'ring_order', return_value=['keenable']))
+    for extension in ['publication', 'extraction_location']:
+        raw = {**worker.error('timeout'), extension:False}
+        with patch('keenable_extraction.fetch', return_value=raw):
+            result = asyncio.run(worker.extract({'version':1, 'url':url}))
+        assert result == worker.error('malformed_response'), result
+''')
+
     def test_imports_from_selected_unpatched_root(self):
         import os
         import runtime_paths
