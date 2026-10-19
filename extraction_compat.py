@@ -92,6 +92,10 @@ def resolve() -> object:
     Only when no selection exists may Hermes perform its normal availability walk.
     """
     web = _web()
+    # Standalone workers do not pass through Hermes's web dispatcher startup.
+    # Use the installed idempotent discovery boundary, then fail closed below
+    # if initialization did not register a supported selected provider.
+    _call('tools.web_tools', '_ensure_web_plugins_loaded')
     selected = web.get('extract_backend') or web.get('backend')
     if selected:
         if not isinstance(selected, str):

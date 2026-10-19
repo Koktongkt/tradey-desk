@@ -441,6 +441,7 @@ class RealTransportTests(unittest.IsolatedAsyncioTestCase):
             _is_rate_limitish=lambda error: '429' in error,
             **{name + '_extract_keyless': vendor(name) for name in RING[:3]})
         modules = {
+            'tools.web_tools': types.SimpleNamespace(_ensure_web_plugins_loaded=lambda: None),
             'agent.web_search_registry': types.SimpleNamespace(get_provider=lambda name: self.provider),
             'plugins.web.keyless_mcp': self.keyless,
         }

@@ -89,22 +89,35 @@ recorded. The child-local initial ring cursor is aligned to zero; this is a
 controlled comparison, not production's random initial rotation. No persistent
 provider pin or settings are changed.
 
-## Observed Task 5 blockers (2026-10-19 UTC)
+## Task 5 corrected controls (2026-10-19 UTC; no deployment)
 
-The canonical unpatched full suite passed, but release acceptance did not.
-On the frozen 12-source cohort, baseline worker/focused accepted 2 each; project
-worker/focused accepted 0 each. There were no new timeouts. Worker provider lookup
-ran before plugin registration; focused primary received HTTP 401 and the project
-Keenable rescue HTTP 400 in the bounded diagnostic. Stock Keenable requires
-`X-Keenable-Title`; the project transport lacks it. These are separate startup/
-adapter/provider failures, not evidence that all publishers are unreachable.
-Baseline HTTP telemetry was incomplete, so no exact request-cost comparison is
-claimed. See `task-5-report.md` in the task workspace and private artifacts.
+The initial controls accepted 2/12 on baseline and 0/12 on project paths; that
+blocked result is preserved in the private task report. The authorized narrow
+scope extension fixes worker startup by calling the installed idempotent
+`tools.web_tools._ensure_web_plugins_loaded` through compatibility before provider
+lookup (after strict config admission). Missing/unsupported providers and helper
+exceptions still fail closed. Keenable now sends the stock nonsecret app header
+`X-Keenable-Title: hermes-agent`; it adds no authentication or payload.
 
-The historical six are preserved separately; this run does not reproduce a
-historical 3/6 acceptance claim. Current source timestamps and stale/unknown/
-source-access outcomes remain separate. Cap data retrieval timestamps and quote
-ages are recorded; some cap snapshots are delayed. All live acceptance losses,
-transport fixes, exact request accounting and cap freshness limitations require
-review before any cutover. No deployment, Task 7, patch retirement, schedules,
-orders, model changes or recovery claim is authorized by these tests.
+The unpatched canonical full suite now passes **1189 tests**. A fresh-process
+regression starts with an empty real registry, uses actual plugin discovery and
+worker extraction, and fakes only network boundaries. Header and local-server
+transport-accounting regressions also pass. The probe counts requests Session
+send, httpx single requests and standalone stdlib requests once, excluding nested
+stdlib calls and async resumes; profiling covers child threads.
+
+One corrected four-run comparison used the unchanged frozen 12 URLs, evidence
+clock, config fingerprint and initial ring cursor. Baseline and project, worker
+and focused, each accepted **2/12**, rejected 10 for `source_freshness_unknown`,
+and made **24 HTTP request starts** (two per source). No timeouts or lost baseline
+successes occurred; project shared-cache calls remained zero. Every row observed
+primary HTTP 401 followed by rescue HTTP 200. The prior rescue 400 did not recur
+with the required header; this supports the contract diagnosis, not a claim that
+all possible 400 causes are excluded. Primary authentication failure remains.
+
+The historical six and initial blocked evidence remain intact. This does not
+reproduce the old 3/6 claim or establish end-to-end model handoff or release
+readiness. Delayed/conflicting cap snapshots remain provisional category controls,
+not verified same-day caps. The unknown-date gate is unchanged. No deployment,
+Task 7, patch retirement, schedules, keys, model changes or trading calls occurred.
+See `task-5-report.md` and private `task5-corrected-*.json` artifacts.

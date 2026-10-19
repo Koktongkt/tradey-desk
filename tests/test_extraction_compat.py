@@ -40,6 +40,7 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.providers = {}
         self.active = None
         self.modules: dict[str, Any] = {
+            'tools.web_tools': types.SimpleNamespace(_ensure_web_plugins_loaded=lambda: None),
             'hermes_cli.config': types.SimpleNamespace(load_config=lambda: self.config),
             'agent.web_search_registry': types.SimpleNamespace(
                 get_provider=lambda name: self.providers.get(name),
@@ -94,6 +95,18 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.c.resolve()
             self.assertEqual(caught.exception.reason, 'provider_error')
         self.assertEqual(self.calls, [])
+
+    async def test_registration_failure_never_looks_up_or_falls_back(self):
+        self.config['web']['extract_backend'] = 'firecrawl'
+        self.providers['firecrawl'] = self.provider('firecrawl')
+        def broken():
+            raise RuntimeError('private startup error')
+        self.modules['tools.web_tools']._ensure_web_plugins_loaded = broken
+        with patch.object(self.modules['agent.web_search_registry'], 'get_provider') as lookup:
+            with self.assertRaises(self.c.CompatibilityError) as caught:
+                self.c.resolve()
+            self.assertEqual(caught.exception.reason, 'provider_error')
+            lookup.assert_not_called()
 
     async def test_resolution_preserves_selected_direct_provider_and_managed_alias(self):
         provider = self.provider('firecrawl')

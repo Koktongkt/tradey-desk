@@ -65,6 +65,31 @@ def run_probe(urls, mode, runner=None, *, now=None):
                 if all(r['request_count_complete'] for r in rows) else None, 'rows': rows}
 
 
+def transport_start(frame, event):
+    """A transport boundary, excluding nested clients and coroutine resumes."""
+    import dis
+    module = frame.f_globals.get('__name__', '')
+    name = frame.f_code.co_name
+    boundary = ((module == 'requests.sessions' and name == 'send') or
+                (module == 'httpx._client' and name == '_send_single_request') or
+                (module == 'http.client' and name == 'request'))
+    if event != 'call' or not boundary:
+        return False
+    # Profile emits a call again when an async function resumes at RESUME > 0.
+    if frame.f_code.co_flags & 0x80:
+        instructions = list(dis.get_instructions(frame.f_code))
+        resume = next((i for i in instructions if i.offset == frame.f_lasti), None)
+        if resume is None or resume.opname != 'RESUME' or resume.arg != 0:
+            return False
+    if module == 'http.client':
+        parent = frame.f_back
+        while parent:
+            if (parent.f_globals.get('__name__') == 'requests.sessions' and parent.f_code.co_name == 'send'):
+                return False
+            parent = parent.f_back
+    return True
+
+
 def run_source(url, mode):
     """Use the real hard-boundary owners; only their launch command is adapted."""
     import json
@@ -164,7 +189,13 @@ def child(mode, url, telemetry, source, project):
         assert not detail['patched_publication_module'], 'unpatched compatibility root required'
     write_private(telemetry, detail)
     started = time.monotonic()
+    detail['per_call_deadline_seconds'] = 30
+    detail['telemetry_version'] = 2
+    profile_lock = threading.RLock()
     def profile(frame, event, arg):
+        with profile_lock:
+            observe(frame, event, arg)
+    def observe(frame, event, arg):
         if event == 'return' and frame.f_globals.get('__name__') == 'http.client' and frame.f_code.co_name == 'getresponse':
             detail.setdefault('http_statuses', []).append(getattr(arg, 'status', None))
         if event != 'call':
@@ -183,9 +214,7 @@ def child(mode, url, telemetry, source, project):
                 raise RuntimeError('shared_cache_forbidden')
         # Actual HTTP request starts (not successful response claims); thread-safe
         # under the GIL. Persist immediately so killed attempts remain visible.
-        if (module == 'httpx._client' and name == '_send_single_request') or (
-            module == 'requests.sessions' and name == 'send') or (
-            module == 'http.client' and name == 'request'):
+        if transport_start(frame, event):
             request = frame.f_locals.get('request')
             endpoint = str(getattr(request, 'url', '')) if request is not None else (
                 str(getattr(frame.f_locals.get('self'), 'host', '')) + str(frame.f_locals.get('url', '')))

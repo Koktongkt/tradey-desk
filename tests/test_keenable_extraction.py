@@ -131,6 +131,17 @@ class KeenableTests(unittest.TestCase):
         self.assertTrue(self.response.closed)
         self.conn.close.assert_called_once()
 
+    def test_mandatory_nonsecret_app_header_has_no_payload_or_credentials(self):
+        with patch.dict('os.environ', {'KEENABLE_API_KEY': 'credential-sentinel'}):
+            result = self.fetch()
+        args, kwargs = self.conn.request.call_args
+        self.assertEqual(kwargs['headers'], {'Accept': 'application/json',
+            'Connection': 'close', 'X-Keenable-Title': 'hermes-agent'})
+        self.assertEqual(len(args), 2)
+        self.assertEqual(set(kwargs), {'headers'})
+        self.assertNotIn('credential-sentinel', repr(self.conn.request.call_args))
+        self.assertNotIn('credential-sentinel', repr(result))
+
     def test_bad_timestamp_omits_only_report(self):
         for stamp in (None, True, 946684800.0, 946684800000, '946684800'):
             with self.subTest(stamp=stamp):

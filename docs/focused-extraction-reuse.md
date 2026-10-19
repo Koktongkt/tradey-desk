@@ -97,7 +97,12 @@ focused` with the same frozen cohort/time as worker mode. The driver replaces
 only CLI main with one deterministic registry invocation; it runs no model and
 trusts only the actual host recorder/parent receipt. This verifies the focused
 tool path, not an end-to-end agent handoff. See structured-extraction.md for
-runtime selection, limits, sinks and the observed release blockers.
+runtime selection, limits, sinks and the observed release blockers. In the single
+corrected frozen-cohort comparison, both focused paths accepted 2/12 with 24 HTTP
+starts each and no lost baseline successes or timeouts. The required nonsecret
+Keenable app header and worker plugin registration are now covered by regressions;
+primary HTTP 401 and ten unknown-date rejections remain. This does not authorize
+handoff, cutover or scheduler restoration.
 
 Run with the installed project environment:
 

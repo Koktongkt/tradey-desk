@@ -134,7 +134,8 @@ def fetch(url: str, *, deadline: float) -> dict:
         sock.settimeout(_remaining(deadline))
         connection.sock = _DeadlineSocket(sock, deadline)
         connection.request('GET', '/v1/fetch/public?' + urlencode({'url': url}),
-                           headers={'Accept': 'application/json', 'Connection': 'close'})
+                           headers={'Accept': 'application/json', 'Connection': 'close',
+                                    'X-Keenable-Title': 'hermes-agent'})
         sock.settimeout(_remaining(deadline))
         response = connection.getresponse()
         _remaining(deadline)
