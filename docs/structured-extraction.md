@@ -1,47 +1,110 @@
-# Structured exact-URL fallback operations
+# Structured exact-URL extraction operations
 
-## Scope
+## Scope and ownership
 
-This release replaces only the exact-URL fallback after the deterministic direct HTTP fetch fails. It does not replace discovery, focused retrieval, candidate rescue searches, synthesis, independent review, or paper-order controls.
+The exact-URL fallback uses the project dispatcher `research_extraction.extract_tool`,
+through `extraction_worker.py` and the isolated runtime discovered by
+`runtime_paths.hermes_runtime()`. `extraction_compat.py` is the read-only Hermes
+boundary for configuration, provider routing, website policy and URL safety.
+Discovery, synthesis, independent review and execution are outside this path.
 
-The worker invokes the installed Hermes configured `web_extract` dispatcher without an agent/model handoff. Provider selection, website policy, URL safety, supported extraction rescue, and unknown-publisher eligibility remain under the same dispatcher. No new publisher allowlist, provider pin, API key, or model setting is introduced.
+Both worker and focused extraction bypass **all shared Hermes result-cache
+reads/writes**, full-text spills and publication follow-up requests. The project
+source cache is unchanged. Anonymous Keenable uses the project single-response
+transport; other eligible providers retain their installed transports. One primary
+and at most one eligible anonymous ring are allowed, with no extra retries.
+This ownership does not guarantee reachability or provider-internal freshness.
 
-## Evidence versus extraction
+## Evidence is not transport
 
-A successful structured extraction means content was returned, not that an investment source qualified. Parent validation binds the request and returned location; normal body, publication provenance, stale/future, independent-publisher and candidate gates remain authoritative. Missing publication dates must not be replaced by cache, crawl, modification or event timestamps. SEC filing-date enrichment remains separate.
+`status=ok` only means a bounded page envelope was returned. The parent still
+requires safe same-publisher binding, substantive body, supported publication
+provenance, freshness/future checks and normal candidate gates. Provider-reported
+publication is explicitly unverified. Crawl/cache/modification/event times cannot
+date evidence. SEC enrichment is separate. Neither the model nor probe overrides
+these validators. The host's `uncached_dispatch` marker is not proof of fresh
+publisher HTTP or absence of provider-side caching.
 
-The public Hermes tool projection does not retain all provider metadata. Supported visible publication markup/datelines may establish publication dates; unsupported or absent provenance remains unknown. Cache hits are not proof of current network health. A fast extraction does not establish universal publisher reach or a qualifying two-source candidate.
+## Bounds and containment
 
-## Narrow legacy extraction-cache handling
+The supervisor allows at most 30 seconds per URL, including runtime startup and
+output, clamped to the caller's remaining evidence deadline. Request/stdout/stderr
+caps are 8192/100000/16384 bytes. Page text/title limits are 6000/200 characters.
+The parent owns, kills and reaps the child process group on every exit. This is
+not a sandbox against descendants escaping the group or a hard-real-time claim.
+Blocking DNS/provider threads require that hard parent boundary, not only an
+async timeout. Failures remain typed; unreachable sources never become verified.
 
-The installed Hermes extraction cache stores content under the requested URL and discards the returned article location. Its public tool projection also strips the cache flag. Replaying a redirected Reuters article could therefore supply the requested URL's year to a yearless Reuters dateline. Rejecting the first conflicting redirect alone does not fix this replay.
+## Offline compatibility verification
 
-Inside the isolated, single-request worker only, a scoped cache-read guard treats legacy Hermes extraction-cache reads for `reuters.com` and its subdomains as misses. All installed entries for those hosts lack final-location annotation, including old entries and newly written ones; none can establish final-location provenance. The guard is restored in `finally`, including dispatch failures/timeouts. It does not change persistent configuration, installed Hermes source, cache writes, TTLs, provider selection, policy/URL controls or rescue. Other hosts retain their ordinary cache reads. This is not a publisher eligibility list.
-
-A guarded dispatcher result carries `page.location_provenance="uncached_dispatch"` in the private worker envelope. Parent validation accepts only that explicit marker and permits Reuters URL-assisted year inference only with it; missing provenance leaves the yearless dateline undated, and invalid provenance is malformed. The marker means the legacy Hermes cache could not rebind that location, **not** a verified fresh HTTP fetch, independently authenticated final URL, or visibility into provider-internal caching. Safe returned same-publisher locations and explicit visible full-year publication dates remain supported. Conflicting requested/returned Reuters path dates still fail closed.
-
-The separate parent project source cache, including its validated `returned_url`, publication timestamp, and existing TTL, is unchanged. Repeated Reuters fallbacks may cost an additional provider call and fail if a new extraction cannot be obtained; validated parent-cache reuse avoids that call. No budgets or evidence/trading gates are widened. Revisit this compatibility guard if the installed dispatcher/cache API changes; a future metadata-preserving cache contract would need explicit validation before enabling those reads.
-
-Leading HTML denial bodies are checked after excluding head/title/script/style material, including paragraph/div wrappers. Later incidental error mentions in otherwise substantive articles are not scanned as leading denial blocks.
-
-## Failure handling and deadlines
-
-The existing exact-URL fallback allocation is at most 30 seconds, clamped to the remaining shared evidence deadline. The worker uses bounded request/response/stderr channels. Ordinary fallback failures retain the legacy None return; strict rescue retains `research_rescue_unavailable`. Public research decision reasons are not replaced by arbitrary provider prose.
-
-The supervisor kills the launched process group on completion/failure. This does not promise hard real-time scheduling or containment of arbitrary processes that deliberately escape that group. Existing synchronous parent DNS validation can consume time before the worker is launched. Do not widen budgets or claim provider recovery from the mere presence of this implementation.
-
-## Private diagnostics
-
-The separate private source-attempt ledger distinguishes direct transport from fallback outcome and elapsed/budget measurements. Opaque identifiers correlate collection/source activity without persisting raw URLs, content, prompts, credentials or exception prose. Keep these records private; do not publish them to the dashboard or register them as public views. Use the accompanying research diagnostics for source quality/acceptance, rather than interpreting extraction success as source acceptance.
-
-## Verification
-
-Run the installed project environment's full test suite, not only the extraction tests:
+A clean checkout of the parent of the local shared publication patch is required.
+Reuse the existing detached checkout; do not change live Hermes or install ad hoc
+packages. The bare store interpreter cannot bootstrap a checkout with no PM
+selection. Use the **existing PM-committed dependency venv interpreter**, via
+`HERMES_PYTHON`, without installing/copying dependencies. Then run:
 
 ```sh
-$HOME/.local/share/tradey/venv-linux/bin/python -m unittest discover -s tests -p 'test_*.py' -q
+export HERMES_SOURCE_ROOT="$UNPATCHED"
+export HERMES_PYTHON="$SUPPORTED_PYTHON"
+PYTHONPATH="$UNPATCHED" "$SUPPORTED_PYTHON" tests/run_tests.py full
+"$PROJECT_PYTHON" -m unittest discover -s tests -p test_extraction_unpatched.py -v
 ```
 
-Live verification uses an isolated harness with scratch-only output and no research cycle, broker calls, candidate persistence or order operations. Exercise representative original blocked URLs and a successful control. Record returned status, body size, supported publication date, binding and elapsed time; distinguish cache-served/provider output from fresh network proof where provider telemetry is unavailable.
+The integration module asserts actual loaded `__file__` paths and exact source
+SHA inside real isolated worker/focused children, and absence of
+`tools/web_publication.py`. Environment variables alone are not evidence.
+Legacy custom-provider test fixtures must supply their own explicit typed
+publication reports; they cannot rely on stock unpatched Hermes emitting a local
+patch's extension. Publication/evidence assertions remain unchanged.
 
-Before rollout: independent adversarial review, all blocking fixes RED-tested, full suite green, explicit source/test/doc staging, pushed remote SHA readback, and restoration/readback of exactly the previously paused producer/consumer cron states. A verified release is not proof of the next scheduled scan's recovery.
+## Bounded public-network probe
+
+```sh
+"$PROJECT_PYTHON" scripts/probe_project_extraction.py \
+  --cohort test_artifacts/project-extraction/cohort.json \
+  --output test_artifacts/project-extraction/worker.json --mode worker
+# Repeat with --mode focused, the identical frozen cohort and --as-of UTC timestamp.
+```
+
+Input is a JSON list of 1–12 explicit public URLs; duplicates and invalid schemes
+are refused. Output must remain under this worktree's ignored
+`test_artifacts/project-extraction/` (0700); detailed files are 0600. Stdout contains
+only counts, elapsed time and instrumented HTTP starts. The probe does not call a
+research cycle, model, synthesis, review, journal or broker. Focused mode runs the
+actual wrapper, registered async tool and authenticated parent receipt; its CLI
+main callback deterministically dispatches exactly one extraction, rather than
+letting an LLM choose calls. Providers and validators are not replaced.
+
+Each source has a terminal row, requested/returned URL, transport result,
+publication basis/date, acceptance/reason, elapsed time and observed transport
+starts. Null request totals mean unavailable telemetry, **not zero requests**.
+Provider calls include async coroutine resumes and are diagnostic events, not
+retry counts. Provider-internal HTTP/cache activity is not observable here.
+
+For baseline comparison, `--project-root <live-project>` selects the unmodified
+old routing in a separate child, with old cache/spill/debug sinks redirected to
+private scratch. It does not compare the feature to itself. Config fingerprints,
+project/Hermes SHAs, actual module paths, evidence clock and ring origin are
+recorded. The child-local initial ring cursor is aligned to zero; this is a
+controlled comparison, not production's random initial rotation. No persistent
+provider pin or settings are changed.
+
+## Observed Task 5 blockers (2026-10-19 UTC)
+
+The canonical unpatched full suite passed, but release acceptance did not.
+On the frozen 12-source cohort, baseline worker/focused accepted 2 each; project
+worker/focused accepted 0 each. There were no new timeouts. Worker provider lookup
+ran before plugin registration; focused primary received HTTP 401 and the project
+Keenable rescue HTTP 400 in the bounded diagnostic. Stock Keenable requires
+`X-Keenable-Title`; the project transport lacks it. These are separate startup/
+adapter/provider failures, not evidence that all publishers are unreachable.
+Baseline HTTP telemetry was incomplete, so no exact request-cost comparison is
+claimed. See `task-5-report.md` in the task workspace and private artifacts.
+
+The historical six are preserved separately; this run does not reproduce a
+historical 3/6 acceptance claim. Current source timestamps and stale/unknown/
+source-access outcomes remain separate. Cap data retrieval timestamps and quote
+ages are recorded; some cap snapshots are delayed. All live acceptance losses,
+transport fixes, exact request accounting and cap freshness limitations require
+review before any cutover. No deployment, Task 7, patch retirement, schedules,
+orders, model changes or recovery claim is authorized by these tests.

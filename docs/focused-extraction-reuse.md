@@ -16,19 +16,20 @@ random 256-bit run nonce in the child environment. The wrapper consumes/removes
 those variables and makes the descriptor non-inheritable before CLI startup.
 Neither value is added to prompts, tool results, stdout or diagnostics.
 
-The wrapper imports the public CLI entrypoint before web tools. It saves and
-wraps `tools.web_tools.web_extract_tool`, which the installed async registry
-handler resolves dynamically. Each invocation awaits the saved original once
-with the identical argument objects, then returns its exact original result.
-Captures precede downstream Hermes result-transform hooks; they are not a claim
-about the final model-visible result after those hooks.
+The wrapper imports the public CLI before web tools, then replaces the actual
+stored async registry handler for `web_extract` with the project dispatcher
+`research_extraction.extract_tool`. It restores that handler in `finally`.
+Receipts wrap this controlled project path, not a provider or model assertion.
+This avoids the retired assumption that the registry dynamically resolves
+`tools.web_tools.web_extract_tool` after registration. Captures precede downstream
+Hermes result-transform hooks; they are not a claim about the final model-visible
+result after those hooks.
 
-One `final_location_cache_guard` spans the whole focused CLI lifetime, including
-parallel calls. It bypasses legacy Reuters extraction-cache reads, leaving other
-publishers, cache writes, configured dispatch/rescue and safety policy unchanged.
-Only the wrapper's outer attestation can authorize returned-location provenance;
+All shared Hermes extraction-cache reads/writes, full-text spills and
+publication follow-up requests are absent on this path, for every publisher.
+Only the wrapper's guarded recorder can authorize `uncached_dispatch` provenance;
 a provider row or model-authored receipt cannot attest to it. This does not
-promise network freshness or bypass provider-internal caches.
+promise fresh publisher HTTP or bypass provider-internal caches.
 
 Capture limits are optional reuse limits, **not** model/tool budget changes:
 15 invocations, 15 requested URLs overall, five requested/returned rows per call,
@@ -83,14 +84,20 @@ consensus and trading/execution gates are unchanged.
 
 ## Offline verification
 
-`tests/test_focused_reuse.py` includes installed-bootstrap tests executing the
-actual installed async registry dispatch across parallel threads with an offline
-original extraction function. It checks original argument/result identity, one
-lifetime guard, normal non-Reuters cache reads, restoration and exit semantics.
-Other tests cover strict artifacts/provider declarations, bounds, binding,
-permissions, optional failures, process-group cleanup, selected-subset reuse,
-quality misses, cache timestamps, deadlines, telemetry and the two-publisher gate.
-Existing step4 extraction/security/date regressions remain in the full suite.
+`tests/test_focused_reuse.py` covers real installed-bootstrap async registry
+routing, controlled project dispatch and receipts, restoration/exit semantics,
+strict artifacts, binding, deadlines and reuse quality gates. Task 5 adds
+`tests/test_extraction_unpatched.py` for actual selected-root module assertions,
+private probe boundaries, duplicate refusal, exact row accounting and forbidden
+journal/execution guards. Two custom-provider publication fixtures now declare
+their own typed reports instead of depending on a stock Hermes local patch.
+
+For bounded live verification use `scripts/probe_project_extraction.py --mode
+focused` with the same frozen cohort/time as worker mode. The driver replaces
+only CLI main with one deterministic registry invocation; it runs no model and
+trusts only the actual host recorder/parent receipt. This verifies the focused
+tool path, not an end-to-end agent handoff. See structured-extraction.md for
+runtime selection, limits, sinks and the observed release blockers.
 
 Run with the installed project environment:
 

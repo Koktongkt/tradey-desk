@@ -215,6 +215,11 @@ def fixture_rows(urls):
     # rather than the retired stock dispatcher's requested-page metadata alias.
     for row in rows:
         row['metadata']['sourceURL'] = row['url']
+        # Custom-provider fixture owns the typed report. Stock unpatched Hermes
+        # intentionally does not emit this project extension.
+        from publication_provenance import provider_publication
+        row['publication'] = provider_publication(1791980493)
+        row['extraction_location'] = {'version': 1, 'requested_url': urls[0], 'returned_url': row['url']}
     return rows
 class Provider:
     name='nondefault-fixture'
@@ -297,7 +302,13 @@ class Provider:
     display_name='Keenable'
     def supports_extract(self): return True
     def uses_keyless(self): return False
-    def extract(self, urls, format=None): return k.keenable_extract_keyless(urls)
+    def extract(self, urls, format=None):
+        from publication_provenance import provider_publication
+        rows = k.keenable_extract_keyless(urls)
+        for row in rows:
+            row['publication'] = provider_publication(1791980493)
+            row['extraction_location'] = {'version': 1, 'requested_url': urls[0], 'returned_url': row['url']}
+        return rows
 with tempfile.TemporaryDirectory() as td, ExitStack() as s:
     s.enter_context(patch('hermes_cli.config.load_config', return_value={'web':{'extract_backend':'fixture'}}))
     s.enter_context(patch('agent.web_search_registry.get_provider', return_value=Provider()))
