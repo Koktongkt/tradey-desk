@@ -51,6 +51,92 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(report['request_count'])
         self.assertFalse(report['rows'][0]['request_count_complete'])
 
+    def test_partial_observations_never_complete_the_cohort(self):
+        probe = self.probe()
+        success = {'version': 1, 'status': 'ok', 'page': {
+            'url': 'https://example.com/a', 'title': 'Release', 'text': 'Company release. ' * 100}}
+        complete = {'attempts': [{'transport': 'offline'}], 'telemetry_version': 3,
+                    'finalized': True, 'supervisor_completed': True}
+        cases = [
+            ({'version': 1, 'status': 'error', 'reason': 'timeout'},
+             {**complete, 'finalized': False, 'supervisor_completed': False, 'harness_failure': 'interrupted'}),
+            ({'version': 1, 'status': 'error', 'reason': 'worker_exit'},
+             {**complete, 'supervisor_completed': False}),
+            (success, {**complete, 'finalized': False}),
+            (success, {'attempts': [{'transport': 'legacy'}], 'telemetry_version': 2}),
+            (success, {**complete, 'harness_failure': 'interrupted'}),
+        ]
+        for result, detail in cases:
+            with self.subTest(detail=detail):
+                report = probe.run_probe(['https://example.com/a', 'https://example.com/b'],
+                    'worker', runner=lambda url, mode: (result, detail) if url.endswith('/a') else (success, complete))
+                self.assertIsNone(report['request_count'])
+                self.assertFalse(report['rows'][0]['request_count_complete'])
+                self.assertEqual(len(report['rows'][0]['attempts']), 1)
+                self.assertTrue(report['rows'][1]['request_count_complete'])
+
+    def test_finalized_normal_observation_counts_even_when_evidence_rejected(self):
+        probe = self.probe()
+        result = {'version': 1, 'status': 'ok', 'page': {
+            'url': 'https://example.com/a', 'title': 'Release', 'text': 'Company release. ' * 100}}
+        for attempts, expected in (([{'transport': 'offline'}], 1), ([], None)):
+            with self.subTest(attempts=attempts):
+                report = probe.run_probe(['https://example.com/a'], 'worker',
+                    runner=lambda *args: (result, {'attempts': attempts, 'telemetry_version': 3,
+                        'finalized': True, 'supervisor_completed': True}))
+                self.assertEqual(report['request_count'], expected)
+                self.assertEqual(report['rows'][0]['reason'], 'source_freshness_unknown')
+                self.assertEqual(report['rows'][0]['request_count_complete'], expected is not None)
+
+    def test_real_supervisors_require_final_file_and_normal_exit(self):
+        # Replace only the child launch command: real PIDs, pipes, deadlines and
+        # group cleanup remain owned by the actual worker/focused supervisors.
+        import json
+        import sys
+        import subprocess
+        from unittest.mock import patch
+        import structured_extraction as worker
+        import focused_capture as capture
+        probe = self.probe()
+        original_popen = subprocess.Popen
+        cases = [('partial', False), ('abnormal', True), ('missing', None),
+                 ('invalid', None), ('normal', True), ('timeout', False)]
+        for mode in ('worker', 'focused'):
+            for case, finalized in cases:
+                with self.subTest(mode=mode, case=case):
+                    def launch(command, *args, **kwargs):
+                        telemetry = command[-3]
+                        detail = {'attempts': [{'transport': 'offline'}],
+                                  'telemetry_version': 3, 'finalized': finalized,
+                                  'supervisor_completed': True}  # untrusted child claim
+                        code = 'import pathlib,sys,time; sys.stdin.read(); '
+                        if case == 'invalid':
+                            code += f'pathlib.Path({telemetry!r}).write_text("{{"); '
+                        elif case != 'missing':
+                            code += f'pathlib.Path({telemetry!r}).write_text({json.dumps(detail)!r}); '
+                        code += 'print(\'{"version":1,"status":"error","reason":"provider_error"}\', flush=True); '
+                        if case == 'abnormal':
+                            code += 'sys.exit(7)'
+                        elif case == 'timeout':
+                            code += 'time.sleep(10)'
+                        return original_popen([sys.executable, '-I', '-c', code], *args, **kwargs)
+                    real_worker, real_focused = worker.run_worker, capture.run_focused
+                    def bounded_worker(url, timeout):
+                        return real_worker(url, 0.5)
+                    def bounded_focused(command, **kwargs):
+                        return real_focused(command, **{**kwargs, 'timeout': 0.5})
+                    with patch('subprocess.Popen', side_effect=launch), \
+                         patch.object(worker, 'run_worker', side_effect=bounded_worker), \
+                         patch.object(capture, 'run_focused', side_effect=bounded_focused):
+                        report = probe.run_probe(['https://example.com/a'], mode)
+                    row = report['rows'][0]
+                    self.assertEqual(row['request_count_complete'], case == 'normal')
+                    self.assertEqual(row['supervisor_completed'], case not in ('abnormal', 'timeout'))
+                    self.assertEqual(report['request_count'], 1 if case == 'normal' else None)
+                    self.assertEqual(len(row['attempts']), 0 if case in ('missing', 'invalid') else 1)
+                    if case == 'timeout':
+                        self.assertEqual(row['transport_status'], 'error')
+
     def test_private_output_boundary(self):
         probe = self.probe()
         with self.assertRaises(ValueError):
@@ -186,6 +272,9 @@ print(json.dumps({'status': result['status'], 'requests': network.call_count}))
                     for path in detail['module_paths'].values():
                         self.assertTrue(Path(path).is_relative_to(source))
                     self.assertEqual(detail['entrypoint'], mode)
+                    self.assertEqual(detail['telemetry_version'], 3)
+                    self.assertIs(detail['finalized'], True)
+                    self.assertIs(detail['supervisor_completed'], True)
 
 
 if __name__ == '__main__':

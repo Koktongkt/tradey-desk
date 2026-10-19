@@ -57,7 +57,11 @@ def run_probe(urls, mode, runner=None, *, now=None):
                      'publication_basis': 'article_evidence' if page and page.get('published_at') else 'unknown',
                      'published_at': page.get('published_at') if page else None,
                      'elapsed_seconds': monotonic() - start, **detail,
-                     'request_count_complete': bool(detail.get('attempts'))})
+                     'request_count_complete': (
+                         bool(detail.get('attempts')) and detail.get('telemetry_version') == 3
+                         and detail.get('finalized') is True
+                         and detail.get('supervisor_completed') is True
+                         and not detail.get('harness_failure'))})
     count = sum(row['accepted'] for row in rows)
     return {'mode': mode, 'as_of': now.isoformat(), 'total': len(urls), 'accepted': count,
             'rejected': len(rows) - count, 'elapsed_seconds': sum(r['elapsed_seconds'] for r in rows),
@@ -114,14 +118,32 @@ def run_source(url, mode):
             f'runpy.run_path({str(Path(__file__).resolve())!r},run_name="__main__")'
         )
         command = [python, '-I', '-c', bootstrap, '--child', mode, url, str(telemetry), str(source), str(project)]
+        supervisor_completed = False
         if mode == 'worker':
-            with patch.object(worker, 'worker_command', return_value=command):
+            # run_worker returns only the payload, not a CompletedProcess. Observe
+            # its real launch and supervisor-generated failures without changing
+            # production supervision or inferring exit success from row status.
+            processes, supervisor_failures = [], []
+            popen, failure = worker.subprocess.Popen, worker.failure
+            def launch(*args, **kwargs):
+                process = popen(*args, **kwargs)
+                processes.append(process)
+                return process
+            def failed(reason):
+                supervisor_failures.append(reason)
+                return failure(reason)
+            with patch.object(worker, 'worker_command', return_value=command), \
+                 patch.object(worker.subprocess, 'Popen', side_effect=launch), \
+                 patch.object(worker, 'failure', side_effect=failed):
                 result = worker.run_worker(url, 30)
+            supervisor_completed = (len(processes) == 1 and processes[0].returncode == 0
+                                    and not supervisor_failures)
         else:
             try:
                 with patch.object(capture, 'focused_command', return_value=command):
                     completed = capture.run_focused(['hermes'], input='', capture_output=True,
                         text=True, timeout=30, cwd=project)
+                supervisor_completed = completed.returncode == 0
                 result = json.loads(completed.stdout) if completed.returncode == 0 else worker.failure('worker_exit')
                 # Success requires the parent's authenticated, completed receipt.
                 if result.get('status') == 'ok':
@@ -129,8 +151,20 @@ def run_source(url, mode):
             except subprocess.TimeoutExpired:
                 result = worker.failure('timeout')
             except (OSError, ValueError):
+                supervisor_completed = False
                 result = worker.failure('worker_unavailable')
-        detail = json.loads(telemetry.read_text()) if telemetry.exists() else {'attempts': [], 'harness_failure': 'no_telemetry'}
+        try:
+            detail = json.loads(telemetry.read_text())
+            if not isinstance(detail, dict) or not isinstance(detail.get('attempts'), list):
+                raise ValueError('invalid_telemetry')
+        except FileNotFoundError:
+            detail = {'attempts': [], 'harness_failure': 'no_telemetry'}
+        except (OSError, ValueError):
+            # A kill can interrupt a snapshot write. Unreadable observation is
+            # unknown, never zero; do not discard the source's terminal row.
+            detail = {'attempts': [], 'harness_failure': 'invalid_telemetry'}
+        # Parent-owned: a child file cannot assert successful supervision.
+        detail['supervisor_completed'] = supervisor_completed
         return result, detail
 
 
@@ -184,13 +218,13 @@ def child(mode, url, telemetry, source, project):
               'module_paths': paths, 'patched_publication_module': (source/'tools/web_publication.py').exists(),
               'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest(),
               'ring_cursor_initial': 0, 'ring_origin': str(Path(ring.__file__).resolve()),
-              'attempts': [], 'provider_calls': [], 'cache_calls': 0, 'baseline': baseline}
+              'attempts': [], 'provider_calls': [], 'cache_calls': 0, 'baseline': baseline,
+              'telemetry_version': 3, 'finalized': False}
     if not baseline:
         assert not detail['patched_publication_module'], 'unpatched compatibility root required'
     write_private(telemetry, detail)
     started = time.monotonic()
     detail['per_call_deadline_seconds'] = 30
-    detail['telemetry_version'] = 2
     profile_lock = threading.RLock()
     def profile(frame, event, arg):
         with profile_lock:
@@ -239,6 +273,9 @@ def child(mode, url, telemetry, source, project):
             with redirect_stdout(sys.stderr):
                 focused_wrapper.main()
             print(json.dumps(result))
+        # Only reaching the end normally finalizes observation; finally also
+        # persists exceptions, but must leave those snapshots incomplete.
+        detail['finalized'] = True
     finally:
         sys.setprofile(None)
         threading.setprofile_all_threads(None)

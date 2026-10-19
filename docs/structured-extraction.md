@@ -77,7 +77,22 @@ letting an LLM choose calls. Providers and validators are not replaced.
 
 Each source has a terminal row, requested/returned URL, transport result,
 publication basis/date, acceptance/reason, elapsed time and observed transport
-starts. Null request totals mean unavailable telemetry, **not zero requests**.
+starts. Null request totals mean incomplete/unavailable telemetry, **not zero
+requests**. Telemetry v3 marks incremental snapshots `finalized=false`; only
+normal child completion writes `finalized=true`. Complete accounting also
+requires parent-observed successful supervision (real zero child exit and no
+supervisor failure), at least one observed start, and no harness failure. Typed
+transport/evidence rejection is separate from supervision: a normally completed
+source with unknown publication date can still have complete request accounting.
+Readable partial starts are retained after timeout/abnormal exit; missing or
+partial-JSON files produce an incomplete terminal row. Any incomplete row makes
+the whole-cohort request total null, including finalized runs with zero observed
+starts (which do not prove zero requests).
+
+Historical v2 artifacts are not rewritten or silently admitted to the v3
+completion protocol. The corrected 48 successful historical rows retain their
+independent observed two-start, 401/200, no-timeout evidence; they do not prove
+that the later finalization protocol ran.
 Provider calls include async coroutine resumes and are diagnostic events, not
 retry counts. Provider-internal HTTP/cache activity is not observable here.
 
