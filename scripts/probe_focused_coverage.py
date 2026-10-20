@@ -149,27 +149,81 @@ def install_safety(directory):
         setattr(sqlite_ledger, name, no_ledger)
     forbidden = {'autotrader', 'execution', 'broker_bridge', 'broker_mcp_bridge',
                  'reviewer', 'intake'}
-    def allowed(path):
-        if isinstance(path, int) or path is None:
-            return
-        value = Path(os.fsdecode(path)).absolute()
-        if str(value) == '/dev/null':
-            return
-        if not value.resolve().is_relative_to(sink):
-            raise PermissionError('forbidden_probe_write')
+    def target(path, dir_fd=None):
+        # Linux descriptor identity is inspected, never inferred from open mode.
+        # Unknown/closed/unlinked descriptors fail closed. This remains a local
+        # Python guard, not protection against native code or same-UID races.
+        if isinstance(path, int):
+            info = os.fstat(path)
+            value = Path(os.readlink('/proc/self/fd/' + str(path)))
+            current = value.stat()
+            if info.st_nlink == 0 or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError('unbound_descriptor')
+        else:
+            value = Path(os.fsdecode(path))
+            if not value.is_absolute() and dir_fd not in (None, -1):
+                value = Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / value
+        return value.absolute()
+    def allowed(path, dir_fd=None, *, null=False):
+        try:
+            value = target(path, dir_fd)
+            if null and str(value) == '/dev/null':
+                return
+            resolved = value.resolve()
+            if not resolved.is_relative_to(sink):
+                raise ValueError('outside')
+            if resolved.exists() and resolved.is_file() and resolved.stat().st_nlink != 1:
+                raise ValueError('shared_inode')
+        except (OSError, TypeError, ValueError):
+            raise PermissionError('forbidden_probe_write') from None
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+    # CPython's open audit event omits dir_fd. Resolve that boundary before the
+    # event, rather than accidentally checking a different same-named cwd path.
+    original_open = os.open
+    def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+        if flags & write_flags and dir_fd not in (None, -1):
+            allowed(path, dir_fd, null=True)
+            path, dir_fd = target(path, dir_fd), None
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+    os.open = guarded_open
+    # These stdlib descriptor writes emit no audit event. Guard their destination
+    # explicitly; pipe/socket traffic is not a filesystem mutation.
+    def guard_fd_write(fn, destination):
+        def call(*args, **kwargs):
+            fd = args[destination] if len(args) > destination else kwargs['dst']
+            info = os.fstat(fd)
+            if not (stat.S_ISFIFO(info.st_mode) or stat.S_ISSOCK(info.st_mode)):
+                allowed(fd, null=True)
+            return fn(*args, **kwargs)
+        return call
+    for name, destination in (('write',0), ('pwrite',0), ('writev',0), ('pwritev',0),
+                              ('sendfile',0), ('copy_file_range',1)):
+        if hasattr(os, name):
+            setattr(os, name, guard_fd_write(getattr(os, name), destination))
     def audit(event, args):
         if event == 'import' and args[0].split('.')[0] in forbidden:
             raise PermissionError('forbidden_probe_module')
         if event == 'open':
             mode, flags = args[1], args[2]
-            if (isinstance(mode, str) and any(c in mode for c in 'wax+')) or (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)):
-                allowed(args[0])
+            if (isinstance(mode, str) and any(c in mode for c in 'wax+')) or (isinstance(flags, int) and flags & write_flags):
+                allowed(args[0], null=True)
+        elif event == 'mmap.__new__' and args[0] != -1 and args[2] not in (1, 3):
+            # ACCESS_READ/ACCESS_COPY cannot mutate the backing file.
+            allowed(args[0])
         elif event == 'sqlite3.connect':
             allowed(args[0])
-        elif event in {'os.mkdir', 'os.remove', 'os.rmdir', 'os.chmod', 'os.truncate'}:
+        elif event in {'os.mkdir', 'os.chmod'}:
+            allowed(args[0], args[2])
+        elif event in {'os.remove', 'os.rmdir'}:
+            allowed(args[0], args[1])
+        elif event in {'os.chown', 'os.utime'}:
+            allowed(args[0], args[3])
+        elif event in {'os.truncate', 'os.setxattr', 'os.removexattr'}:
             allowed(args[0])
-        elif event in {'os.rename', 'os.link', 'os.symlink'}:
-            allowed(args[0]); allowed(args[1])
+        elif event in {'os.rename', 'os.link'}:
+            allowed(args[0], args[2]); allowed(args[1], args[3])
+        elif event == 'os.symlink':
+            allowed(args[0]); allowed(args[1], args[2])
     sys.addaudithook(audit)
 
 
@@ -249,6 +303,62 @@ def guarded_command(command, sink):
     return command
 
 
+def qualify_pages(rows, by_symbol, pages, *, as_of, deadline):
+    """Unchanged production qualification, only called in the owned child."""
+    import alpha_radar as radar
+    import subprocess
+    accepted, quality = {}, {}
+    for row in rows:
+        symbol = row['symbol']; good = []; rejected = []
+        for url in by_symbol.get(symbol, []):
+            if url not in pages:
+                continue
+            if monotonic() >= deadline:
+                raise subprocess.TimeoutExpired('probe_qualification', 0)
+            failures = []
+            page = radar.validate_structured_page(url, {'version':1,'status':'ok','page':pages[url]},
+                                                  deadline=deadline, failed=failures.append)
+            kept, reasons = radar.filter_evidence([page],now=as_of) if page else ([],[])
+            if monotonic() >= deadline:
+                raise subprocess.TimeoutExpired('probe_qualification', 0)
+            if kept: good.append(url)
+            else: rejected.append({'url':url,'failures':failures,'quality':reasons})
+        accepted[symbol] = good; quality[symbol] = rejected
+    return {'accepted': accepted, 'quality': quality,
+            'accepted_publishers': {s:len({radar.publisher_domain(u) for u in urls}) for s,urls in accepted.items()}}
+
+
+def qualify_owned(rows, result, *, as_of, sink, deadline):
+    """One supervisor, remaining original budget, no parent resolver work."""
+    import focused_capture as capture
+    import subprocess
+    from unittest.mock import patch
+    if monotonic() >= deadline:
+        raise subprocess.TimeoutExpired('probe_qualification', 0)
+    payload = json.dumps({'rows':rows, 'by_symbol':result.allocation.by_symbol,
+                          'pages':result.pages, 'as_of':as_of.isoformat(), 'deadline':deadline})
+    original = capture.focused_command
+    def command(*args, **kwargs):
+        # Reuse the installed runtime bootstrap, not forked parent state.
+        argv = original(*args, **kwargs)
+        index = argv.index('-c') + 1
+        argv[index] = f'import sys; sys.path.insert(0, {str(ROOT)!r}); ' + argv[index]
+        return guarded_command(argv, sink)
+    with patch.object(capture, 'focused_command', side_effect=command):
+        done = capture.run_private_child(['hermes', '--qualify'], input=payload,
+            timeout=max(0, deadline-monotonic()), cwd=sink, wrapper=Path(__file__).resolve(),
+            input_limit=2_000_000, read_artifact=lambda fd, nonce: None)
+    if monotonic() >= deadline:
+        raise subprocess.TimeoutExpired('probe_qualification', 0)
+    if done.returncode:
+        raise RuntimeError('probe_qualification_child_failed')
+    from extraction_contract import strict_json_loads
+    value = strict_json_loads(done.stdout)
+    if not isinstance(value, dict) or set(value) != {'accepted','quality','accepted_publishers'}:
+        raise ValueError('probe_qualification_response')
+    return value
+
+
 def execute(rows, *, as_of, sink, baseline_root=None):
     from contextlib import ExitStack
     from unittest.mock import patch
@@ -277,7 +387,8 @@ def execute(rows, *, as_of, sink, baseline_root=None):
                'calls': [], 'network_attempted': None, 'network_request_count': None}
     original_focus, original_worker = capture.focused_command, workers.worker_command
     def focus(*args, **kwargs):
-        return guarded_command(original_focus(*args, **kwargs), sink)
+        argv = original_focus(*args, **kwargs)
+        return argv if kwargs.get('wrapper') == Path(__file__).resolve() else guarded_command(argv, sink)
     def worker():
         return guarded_command(original_worker(), sink)
     def observed(stage, fn):
@@ -333,23 +444,15 @@ def execute(rows, *, as_of, sink, baseline_root=None):
                 stack.enter_context(patch.object(pipeline,'search_alternatives',side_effect=observed('search',pipeline.search_alternatives)))
                 stack.enter_context(patch.object(pipeline,'run_validation_worker',side_effect=observed('validation',pipeline.run_validation_worker)))
                 stack.enter_context(patch.object(pipeline,'run_batch_worker',side_effect=observed('batch',pipeline.run_batch_worker)))
-                result = pipeline.run_focused_pipeline(rows,deadline=start+150,command=radar.focused_retrieval_command(),cwd=sink,unhealthy_domains=set())
-                accepted, quality = {}, {}
-                for row in rows:
-                    symbol = row['symbol']; good = []; rejected = []
-                    for url in result.allocation.by_symbol.get(symbol,[]):
-                        if url not in result.pages:
-                            continue
-                        failures = []
-                        page = radar.validate_structured_page(url, {'version':1,'status':'ok','page':result.pages[url]}, failed=failures.append)
-                        kept, reasons = radar.filter_evidence([page],now=as_of) if page else ([],[])
-                        if kept: good.append(url)
-                        else: rejected.append({'url':url,'failures':failures,'quality':reasons})
-                    accepted[symbol] = good; quality[symbol] = rejected
-                details.update(status='completed', counts=account(rows,result,accepted), quality=quality,
-                               outcomes=result.outcomes, selected=result.allocation.by_symbol,
-                               pages=result.pages, accepted=accepted,
-                               accepted_publishers={s:len({radar.publisher_domain(u) for u in urls}) for s,urls in accepted.items()})
+                deadline = start + 150
+                result = pipeline.run_focused_pipeline(rows,deadline=deadline,command=radar.focused_retrieval_command(),cwd=sink,unhealthy_domains=set())
+                # Preserve actual transport accounting even when qualification
+                # cannot start/finish. No fabricated acceptance after timeout.
+                accepted = {row['symbol']: [] for row in rows}
+                details.update(counts=account(rows,result,accepted), outcomes=result.outcomes,
+                               selected=result.allocation.by_symbol, pages=result.pages, accepted=accepted)
+                qualified = qualify_owned(rows,result,as_of=as_of,sink=sink,deadline=deadline)
+                details.update(status='completed', counts=account(rows,result,qualified['accepted']), **qualified)
     except Exception as exc:
         details.update(status='blocked', error={'type':type(exc).__name__,'message':str(exc)})
     details['elapsed_seconds'] = monotonic()-start
@@ -407,4 +510,11 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    if sys.argv[1:] == ['--qualify']:
+        sys.path.insert(0, str(ROOT))
+        request = json.loads(sys.stdin.buffer.read(2_000_001))
+        value = qualify_pages(request['rows'], request['by_symbol'], request['pages'],
+                              as_of=parse_as_of(request['as_of']), deadline=request['deadline'])
+        print(json.dumps(value))
+    else:
+        sys.exit(main())

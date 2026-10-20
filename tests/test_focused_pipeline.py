@@ -528,6 +528,183 @@ assert not Path(SINK, 'forbidden-ledger').exists()
             done = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
             self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_review_r1_metadata_symlink_repro(self):
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        for action in ("os.utime(link, ns=(1234567890000000000,)*2)",
+                       "fd=os.open(link, os.O_RDONLY); os.fchmod(fd, 0o640); os.close(fd)"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); sink = root/'sink'; sink.mkdir()
+                outside = root/'readonly-input'; outside.write_bytes(b'unchanged')
+                link = sink/'input'; link.symlink_to(outside)
+                before = (outside.read_bytes(), outside.stat().st_mode, outside.stat().st_mtime_ns)
+                code = f'''import os
+from scripts.probe_focused_coverage import install_safety
+install_safety({str(sink)!r})
+link={str(link)!r}
+try:
+    {action}
+except PermissionError:
+    pass
+'''
+                done = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=15)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual((outside.read_bytes(), outside.stat().st_mode, outside.stat().st_mtime_ns), before)
+
+    def test_review_r1_mutation_boundary_matrix(self):
+        import os, subprocess, sys, tempfile
+        from pathlib import Path
+        actions = [
+            "os.utime(target, ns=(1,1))", "os.chmod(target, 0o640)",
+            "os.chown(target, os.getuid(), os.getgid())", "os.truncate(target, 0)",
+            "os.utime(fd, ns=(1,1))", "os.fchmod(fd, 0o640)",
+            "os.fchown(fd, os.getuid(), os.getgid())", "os.ftruncate(fd, 0)",
+            "os.write(fd, b'x')", "os.pwrite(fd, b'x', 0)", "os.writev(fd, [b'x'])",
+            "os.pwritev(fd, [b'x'], 0)", "os.sendfile(fd, fd, 0, 1)",
+            "os.copy_file_range(fd, fd, 1)", "os.copy_file_range(src=fd, dst=fd, count=1)",
+            "__import__('mmap').mmap(fd, 1)",
+            "os.utime('input', ns=(1,1), dir_fd=dfd)",
+            "os.chmod('input', 0o640, dir_fd=dfd)",
+            "os.chown('input', os.getuid(), os.getgid(), dir_fd=dfd)",
+            "os.open('input', os.O_WRONLY|os.O_TRUNC, dir_fd=dfd)",
+            "os.rename('input', 'moved', src_dir_fd=dfd, dst_dir_fd=dfd)",
+            "os.link('input', str(sink/'hard'), src_dir_fd=dfd)",
+            "os.unlink('input', dir_fd=dfd)",
+            "os.setxattr(target, 'user.probe', b'x')",
+            "os.setxattr(fd, 'user.probe', b'x')",
+            "os.removexattr(target, 'user.probe')",
+            "os.removexattr(fd, 'user.probe')",
+        ]
+        code = '''import os, sys
+from pathlib import Path
+sys.path.insert(0, os.getcwd())
+from scripts.probe_focused_coverage import install_safety
+sink=Path(SINK); target=TARGET
+fd=os.open(target, os.O_RDWR); dfd=os.open(OUTSIDE, os.O_RDONLY|os.O_DIRECTORY)
+os.setxattr(target, 'user.probe', b'original')
+os.chdir(sink)
+install_safety(sink)
+try:
+    ACTION
+except PermissionError as exc:
+    assert str(exc)=='forbidden_probe_write'
+else:
+    raise AssertionError('outside mutation allowed')
+# Actual private path/FD/dirfd writes and metadata remain usable.
+p=sink/'owned'; p.write_bytes(b'ok')
+f=os.open(p, os.O_RDWR); os.fchmod(f,0o600); os.utime(f,ns=(2,2)); os.ftruncate(f,1)
+os.write(f,b'z'); os.pwrite(f,b'q',0); os.writev(f,[b'r']); os.pwritev(f,[b's'],0); os.close(f)
+assert p.read_bytes()==b'sr'
+assert p.stat().st_mode & 0o777 == 0o600
+d=os.open(sink,os.O_RDONLY|os.O_DIRECTORY)
+f=os.open('relative',os.O_CREAT|os.O_WRONLY,0o600,dir_fd=d); os.close(f)
+os.utime('relative',ns=(2,2),dir_fd=d); os.chmod('relative',0o600,dir_fd=d)
+os.rename('relative','renamed',src_dir_fd=d,dst_dir_fd=d)
+os.unlink('renamed',dir_fd=d); os.close(d)
+os.close(fd); os.close(dfd)
+'''
+        for symlink in (False, True):
+            for action in actions:
+                with self.subTest(symlink=symlink,action=action), tempfile.TemporaryDirectory() as tmp:
+                    root=Path(tmp); sink=root/'sink'; sink.mkdir(); outside=root/'outside'; outside.mkdir()
+                    target=outside/'input'; target.write_bytes(b'unchanged'); (sink/'input').symlink_to(target)
+                    before=(target.read_bytes(),target.stat().st_mode,target.stat().st_mtime_ns)
+                    via=str(sink/'input' if symlink else target)
+                    source=code.replace('SINK',repr(str(sink))).replace('TARGET',repr(via)).replace('OUTSIDE',repr(str(outside))).replace('ACTION',action)
+                    done=subprocess.run([sys.executable,'-c',source],capture_output=True,text=True,timeout=15)
+                    self.assertEqual(done.returncode,0,done.stderr)
+                    self.assertEqual((target.read_bytes(),target.stat().st_mode,target.stat().st_mtime_ns),before)
+
+    def test_review_r2_expired_pipeline_never_qualifies_in_parent(self):
+        import datetime as dt
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        import alpha_radar as radar, focused_pipeline as pipeline
+        import hermes_cli.config as config
+        p = self.probe(); rows = candidates(1, 1); url = rows[0]['urls'][0]
+        page = {'url': url + '/returned', 'text': 'x'*800, 'title': 'Article'}
+        result = SimpleNamespace(allocation=allocation(rows), submitted_urls=[url], pages={url:page}, outcomes={})
+        clock = [0.0]
+        def collected(*args, **kwargs):
+            self.assertEqual(kwargs['deadline'], 150)
+            clock[0] = 151.0
+            return result
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(p, 'monotonic', side_effect=lambda:clock[0]))
+            stack.enter_context(patch.object(config, 'load_config', return_value={}))
+            stack.enter_context(patch.object(radar, 'configured_default_model', return_value=('offline','offline')))
+            stack.enter_context(patch.object(radar, 'focused_retrieval_command', return_value=['offline']))
+            stack.enter_context(patch('subprocess.check_output', return_value='offline'))
+            stack.enter_context(patch.object(pipeline, 'run_focused_pipeline', side_effect=collected))
+            stack.enter_context(patch('focused_capture.run_private_child', side_effect=AssertionError('late spawn')))
+            dns = stack.enter_context(patch.object(radar, 'is_safe_public_url', return_value=True))
+            done = p.execute(rows, as_of=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc), sink=p.ARTIFACTS)
+        self.assertEqual(dns.call_count, 0, 'post-deadline parent DNS')
+        self.assertEqual(done['status'], 'blocked')
+        self.assertEqual(done['error']['type'], 'TimeoutExpired')
+        self.assertEqual(done['counts']['unique'], dict(selected=1,submitted=1,extracted=1,accepted=0))
+
+    def test_review_r2_blocked_dns_owned_process_is_reaped(self):
+        import datetime as dt, os, signal, subprocess, tempfile, time
+        from pathlib import Path
+        from types import SimpleNamespace
+        import focused_capture as capture
+        p=self.probe(); rows=candidates(1,1); url=rows[0]['urls'][0]
+        result=SimpleNamespace(allocation=allocation(rows), pages={url:{'url':url+'/returned','title':'Article','text':'x'*800}})
+        children=[]; original_popen=subprocess.Popen; original_guard=p.guarded_command
+        with tempfile.TemporaryDirectory() as tmp:
+            sink=Path(tmp); marker=sink/'dns-pid'; late=sink/'late'
+            def guarded(argv, directory):
+                argv=original_guard(argv,directory)
+                index=argv.index('-c')+1
+                prefix,tail=argv[index].rsplit('runpy.run_path(',1)
+                injection = f'''import socket, os, time
+from pathlib import Path
+def blocked(*args, **kwargs):
+    Path({str(marker)!r}).write_text(str(os.getpid()))
+    time.sleep(60)
+    Path({str(late)!r}).write_text('late DNS')
+    return []
+socket.getaddrinfo=blocked
+'''
+                argv[index]=prefix+f'exec({injection!r}); runpy.run_path('+tail
+                return argv
+            def spawned(*args,**kwargs):
+                child=original_popen(*args,**kwargs); children.append(child); return child
+            started=time.monotonic()
+            try:
+                with patch.object(p,'guarded_command',side_effect=guarded), patch('subprocess.Popen',side_effect=spawned), patch('socket.getaddrinfo',side_effect=AssertionError('parent DNS')):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        p.qualify_owned(rows,result,as_of=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc),sink=sink,deadline=started+4)
+                self.assertLess(time.monotonic()-started,6)
+                self.assertTrue(marker.exists(),'test must reach real child resolver')
+                self.assertEqual(len(children),1)
+                self.assertEqual(int(marker.read_text()),children[0].pid)
+                self.assertIsNotNone(children[0].poll())
+                for pipe in (children[0].stdin,children[0].stdout,children[0].stderr):
+                    self.assertTrue(pipe.closed)
+                with self.assertRaises(ProcessLookupError): os.kill(children[0].pid,0)
+                self.assertFalse(late.exists())
+                self.assertFalse(list(sink.glob('tradey-focused-*')),'supervisor channel leak')
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        os.killpg(child.pid,signal.SIGKILL); child.wait()
+                    for pipe in (child.stdin,child.stdout,child.stderr):
+                        if pipe is not None: pipe.close()
+
+    def test_review_r2_owned_qualification_preserves_rejections(self):
+        import datetime as dt, tempfile, time
+        from pathlib import Path
+        from types import SimpleNamespace
+        p=self.probe(); rows=candidates(1,1); url=rows[0]['urls'][0]
+        result=SimpleNamespace(allocation=allocation(rows), pages={url:{'url':url,'title':'Article','text':'x'*800}})
+        with tempfile.TemporaryDirectory() as tmp, patch('socket.getaddrinfo',side_effect=AssertionError('parent DNS')):
+            value=p.qualify_owned(rows,result,as_of=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc),sink=Path(tmp),deadline=time.monotonic()+10)
+        self.assertEqual(value['accepted'],{'S0':[]})
+        self.assertEqual(value['accepted_publishers'],{'S0':0})
+        self.assertEqual(value['quality']['S0'][0]['quality'][0]['reason'],'source_freshness_unknown')
+
     def test_probe_blocks_operational_modules_and_external_writes(self):
         import subprocess,sys,tempfile
         from pathlib import Path
