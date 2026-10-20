@@ -98,6 +98,50 @@ def run_worker(url: str, timeout_seconds: float = 30):
     return _run_process(request, timeout_seconds, start, failure)
 
 
+class SupervisorFailure(dict):
+    """Internal distinction: no valid worker envelope was received."""
+
+
+def _batch_supervisor_failure(reason):
+    from extraction_worker import batch_error
+    return SupervisorFailure(batch_error(reason))
+
+
+def run_validation_worker(urls: list[str], timeout_seconds: float = 30) -> dict:
+    from extraction_worker import batch_error, valid_batch_request
+    start = monotonic()
+    payload = {'version': 2, 'operation': 'validate_urls', 'urls': urls,
+               'timeout_seconds': timeout_seconds}
+    if not valid_batch_request(payload):
+        return batch_error('invalid_request')
+    payload['timeout_seconds'] = min(30, timeout_seconds)
+    out = _run_process(json.dumps(payload).encode('utf-8'), payload['timeout_seconds'],
+                       start, _batch_supervisor_failure)
+    return out if _valid_validation_response(out, urls) else _batch_supervisor_failure('malformed_response')
+
+
+def _valid_validation_response(out, urls):
+    if (not isinstance(out, dict) or type(out.get('version')) is not int or out['version'] != 2):
+        return False
+    if out.get('status') == 'error':
+        return _valid_batch_response(out, urls)
+    if set(out) != {'version', 'status', 'results'} or out.get('status') != 'ok':
+        return False
+    rows = out['results']
+    if not isinstance(rows, list) or len(rows) != len(urls):
+        return False
+    seen = set()
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'requested_url', 'eligible', 'reason'}
+                or not isinstance(row['requested_url'], str) or row['requested_url'] not in urls
+                or row['requested_url'] in seen or type(row['eligible']) is not bool
+                or not isinstance(row['reason'], str)
+                or (row['reason'] != 'success' if row['eligible'] else row['reason'] not in ERROR_REASONS)):
+            return False
+        seen.add(row['requested_url'])
+    return True
+
+
 def run_batch_worker(urls: list[str], timeout_seconds: float = 30) -> dict:
     """One owned worker and one startup/write/provider/read deadline per batch."""
     from extraction_worker import batch_error, valid_batch_request
@@ -108,8 +152,8 @@ def run_batch_worker(urls: list[str], timeout_seconds: float = 30) -> dict:
     timeout_seconds = min(30, timeout_seconds)
     payload['timeout_seconds'] = timeout_seconds
     request = json.dumps(payload).encode('utf-8')
-    out = _run_process(request, timeout_seconds, start, batch_error)
-    return out if _valid_batch_response(out, urls) else batch_error('malformed_response')
+    out = _run_process(request, timeout_seconds, start, _batch_supervisor_failure)
+    return out if _valid_batch_response(out, urls) else _batch_supervisor_failure('malformed_response')
 
 
 def _valid_batch_response(out, urls):
@@ -162,6 +206,8 @@ def _run_process(request, timeout_seconds, start, fail):
     process = None
     try:
         command = worker_command()
+        if timeout_seconds - (monotonic() - start) <= 0:
+            return fail('timeout')
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, start_new_session=True, bufsize=0,
                                    cwd=Path(__file__).resolve().parent)

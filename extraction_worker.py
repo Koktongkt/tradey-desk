@@ -135,7 +135,8 @@ def valid_batch_request(request):
     urls = request['urls']
     timeout = request.get('timeout_seconds', 30)
     if (len(set(urls)) != len(urls) or type(timeout) not in (int, float)
-            or not math.isfinite(timeout) or timeout <= 0):
+            or not 0 < timeout <= sys.float_info.max or not math.isfinite(timeout)
+            or request.get('operation', 'extract') not in ('extract', 'validate_urls')):
         return False
     try:
         if len(json.dumps(request, ensure_ascii=True, allow_nan=False).encode('utf-8')) > MAX_BATCH_INPUT:
@@ -216,6 +217,34 @@ async def extract_batch(request: dict, dispatch: Callable | None = None) -> dict
         return batch_error('provider_error')
 
 
+async def validate_batch_urls(request: dict) -> dict:
+    """Safety only: retain exact keys, never resolve a provider or fetch bodies.
+
+    Synchronous DNS/policy threads are contained by the owning supervisor.
+    """
+    if not valid_batch_request(request) or request.get('operation') != 'validate_urls':
+        return batch_error('invalid_request')
+    import extraction_compat as compat
+    from research_extraction import _compat_reason
+    deadline = monotonic() + min(request.get('timeout_seconds', 30), 30)
+    results = []
+    for url in request['urls']:
+        reason = 'success'
+        remaining = deadline - monotonic()
+        try:
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait_for(compat.check_url(url), remaining)
+        except TimeoutError:
+            reason = 'timeout'
+        except compat.CompatibilityError as exc:
+            reason = _compat_reason(exc.reason)
+        except Exception:
+            reason = 'provider_error'
+        results.append({'requested_url': url, 'eligible': reason == 'success', 'reason': reason})
+    return {'version': 2, 'status': 'ok', 'results': results}
+
+
 def main():
     out = error('invalid_request')
     fail = error
@@ -236,8 +265,9 @@ def main():
                 if (admitted and type(timeout) in (int, float) and math.isfinite(timeout)
                         and timeout > 0 and (batch or timeout <= 30)):
                     async def bounded():
-                        return await asyncio.wait_for(extract_batch(request) if batch else extract(request),
-                                                      timeout=min(timeout, 30))
+                        operation = (validate_batch_urls(request) if request.get('operation') == 'validate_urls'
+                                     else extract_batch(request)) if batch else extract(request)
+                        return await asyncio.wait_for(operation, timeout=min(timeout, 30))
                     # Provider chatter cannot become an envelope. Parent caps stderr.
                     with redirect_stdout(sys.stderr):
                         out = asyncio.run(bounded())

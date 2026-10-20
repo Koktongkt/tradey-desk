@@ -47,6 +47,7 @@
    "test_blocker_diagnostics",
    "test_bridge_and_reuse",
    "test_candidate_alternatives",
+   "test_focused_pipeline",
    "test_rescue_fairness",
    "test_order_notifications",
    "test_pending_capacity",
