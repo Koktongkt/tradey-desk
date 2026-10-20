@@ -653,32 +653,36 @@ print('complete')
         direct.assert_not_called()
 
     def test_focused_boundary_keeps_capture_map_separate_and_faults_fatal(self):
-        cap = capture_module()
-        choice = {'symbol':'AAA','urls':[URL]}
-        done = subprocess.CompletedProcess([], 0, json.dumps({'candidates':[choice], 'focused_pages':{'forged':'body'}}), '')
-        done.focused_pages = {URL: {'actual':'tool capture'}}
-        with patch.object(cap, 'run_focused', return_value=done) as launch, patch.object(
-            radar.subprocess, 'run', side_effect=AssertionError('unwrapped launch')
-        ), patch.object(radar, 'focused_retrieval_command', return_value=['offline']):
-            result = radar.focused_retrieval([{'symbol':'AAA'}])
-            self.assertEqual(result, {'AAA':[URL]})
-            self.assertEqual(result.focused_pages, done.focused_pages)
-            self.assertNotIn('focused_pages', result)
-            self.assertEqual(launch.call_args.kwargs['input'], radar.focused_retrieval_prompt([{'symbol':'AAA'}]))
-            for fault, expected in ((subprocess.CompletedProcess([],1,'',''), 'research_focused_retrieval_unavailable'),
-                                    (subprocess.TimeoutExpired('offline',1), 'research_focused_retrieval_timeout'),
-                                    (OSError('offline'), 'research_focused_retrieval_unavailable')):
-                launch.side_effect = fault if isinstance(fault, Exception) else None
-                launch.return_value = fault
-                with self.assertRaises(radar.ResearchFailure) as caught:
-                    radar.focused_retrieval([{'symbol':'AAA'}])
-                self.assertEqual(caught.exception.code, expected)
-            launch.side_effect = None
-            done.stdout = 'malformed final output'
-            launch.return_value = done
-            result = radar.focused_retrieval([{'symbol':'AAA'}])
-            self.assertEqual(result, {})
-            self.assertEqual(result.focused_pages, {})
+        from focused_fixture import search_done, validation_done
+        import focused_pipeline
+        worker=importlib.import_module('extraction_worker')
+        done=search_done({'candidates':[{'symbol':'AAA','urls':[URL]}]},attested=[URL])
+        def batch(urls, **kwargs):
+            return {'version':2,'status':'ok','results':[{'requested_url':u,
+                'result':worker.project_row({'url':u,'content':BODY})} for u in urls]}
+        with patch('focused_capture.run_private_child',return_value=done) as launch, patch.object(
+            focused_pipeline,'run_validation_worker',side_effect=validation_done
+        ), patch.object(focused_pipeline,'run_batch_worker',side_effect=batch), patch.object(
+            radar.subprocess,'run',side_effect=AssertionError('unwrapped launch')
+        ), patch.object(radar,'focused_retrieval_command',return_value=['offline']):
+            result=radar.focused_retrieval([{'symbol':'AAA'}])
+            self.assertEqual(result,{'AAA':[URL]})
+            self.assertEqual(result.focused_pages[URL]['page']['text'],BODY)
+            self.assertNotIn('focused_pages',result)
+            self.assertEqual(launch.call_args.kwargs['input'],radar.focused_retrieval_prompt([{'symbol':'AAA'}]))
+            for fault,expected in ((subprocess.CompletedProcess([],1,b'',b''),'research_focused_retrieval_unavailable'),
+                                   (subprocess.TimeoutExpired('offline',1),'research_focused_retrieval_timeout'),
+                                   (OSError('offline'),'research_focused_retrieval_unavailable')):
+                launch.side_effect=fault if isinstance(fault,Exception) else None
+                launch.return_value=fault
+                with self.assertRaises(radar.ResearchFailure) as caught:radar.focused_retrieval([{'symbol':'AAA'}])
+                self.assertEqual(caught.exception.code,expected)
+            launch.side_effect=None
+            for stdout in (b'malformed final output',json.dumps({'candidates':[], 'focused_pages':{'forged':'body'}}).encode()):
+                done.stdout=stdout
+                launch.return_value=done
+                with self.assertRaises(radar.ResearchFailure) as caught:radar.focused_retrieval([{'symbol':'AAA'}])
+                self.assertEqual(caught.exception.code,'research_focused_retrieval_unavailable')
 
     def test_live_merge_intersects_actual_selected_urls_before_reuse(self):
         cap = capture_module()

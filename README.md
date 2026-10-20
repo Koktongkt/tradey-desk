@@ -91,8 +91,13 @@ twenty-minute buckets: retries within a bucket agree, and the next bucket rotate
 It is a coverage instruction, never a candidate quota or an eligibility exception.
 
 Discovery still merges/deduplicates results and retains **at most five candidates
-and five URLs total**, with no per-lane quota. Focused extraction remains capped
-at fifteen attempted URLs with up to three useful URLs requested per candidate.
+and five URLs total**, with no per-lane quota. The focused parent allocates up to
+**five initial bindings per candidate / 25 unique extraction URLs**, in coverage
+rounds that preserve each first eligible scout seed. Extraction uses at most five
+batches of five URLs, with at most three batches concurrently in flight. These are
+admission caps, not claims of successful HTTP, article freshness or qualification.
+See [focused coverage and reuse](docs/focused-extraction-reuse.md) for ownership,
+mandatory search attestation, trusted page reuse and private observed diagnostics.
 Discovery's search-only toolset, two model turns, advisory `--run-budget 130`,
 165-second stage timeout, overall research cutoff, evidence gates and schedules
 are unchanged. More result capacity is not a demonstrated qualification gain;
@@ -106,13 +111,16 @@ capped at 165 seconds; the shared evidence fetch/rescue pipeline has 180 seconds
 The active budget, evidence cap and outer cutoff each increased by 60 seconds.
 Individual URL/helper timeouts, model turns and all other stage caps are unchanged.
 Focused retrieval allows **seven model turns**, an advisory `--run-budget 110`,
-and a **150-second hard subprocess cap**. With an active deadline, its timeout is
-`min(150, active_deadline - now - 260)`, calculated after command and prompt
-preparation immediately before launch; at zero or below it launches nothing and
-returns `research_focused_retrieval_timeout`. A standalone call without a supplied
-deadline retains the 150-second cap. Retrieval must perform parallel search,
-then parallel extraction, then final JSON: no further search/extraction after
-extraction, and return the usable subset instead of chasing all candidates.
+and a **150-second focused wall-clock cap**. One absolute focused deadline is
+`min(start + 150, active_deadline - 260)`, established before command preparation.
+Preparation, search, safety validation and extraction all consume that original
+deadline; every launch recomputes its remaining allowance. At zero or below it
+launches nothing and returns `research_focused_retrieval_timeout`. A standalone
+call retains the same 150-second cap. The model performs only the three parallel
+focused searches and returns an attested alternatives manifest; the parent owns
+selection and bounded extraction. Trusted pages are reused only after shared
+identity/body/publication/freshness validation, with no duplicate direct/fallback
+fetch for accepted pages. Invalid pages take ordinary bounded fetching.
 
 The explicit **260-second downstream reserve** is full evidence/rescue (180) +
 one viable synthesis launch (30) + cumulative enrichment (45) + **five seconds of

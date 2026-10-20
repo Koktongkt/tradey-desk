@@ -1,134 +1,130 @@
-# Focused extraction body reuse
+# Focused coverage and trusted evidence reuse
 
-Focused retrieval still uses the same public Hermes CLI, configured model/provider,
-web toolset, arguments, prompts, turn limits and stage/overall deadlines. Only its
-entrypoint is wrapped by `focused_wrapper.py`, through the installed isolated
-Python and `hermes_bootstrap`. Discovery, synthesis and rescue orchestration are
-unchanged.
+## Production radar route
 
-## Trust and lifecycle
+`alpha_radar.focused_retrieval(candidates, deadline=None)` remains the public
+boundary. With focused retrieval enabled it calls the real
+`focused_pipeline.run_focused_pipeline` through a local import (allocation shares
+radar's publisher/provenance ranking; there is no top-level circular import).
+Disabled focused retrieval retains the discovery/ordinary-fetch route.
 
-`focused_capture.run_focused` owns a new process group and an ephemeral regular
-file in a private directory beneath the configured Python scratch directory
-(`TMPDIR`). Directory/file permissions are explicitly 0700/0600. The parent opens
-the file exclusively with `O_NOFOLLOW` and passes only its descriptor plus a
-random 256-bit run nonce in the child environment. The wrapper consumes/removes
-those variables and makes the descriptor non-inheritable before CLI startup.
-Neither value is added to prompts, tool results, stdout or diagnostics.
+Discovery is unchanged: six search lanes, at most five candidates and five seed
+URLs total, two model turns and advisory `--run-budget 130`. Focused search retains
+its three primary/independent/wire objectives, configured provider/model and
+seven-turn/110 advisory model ceilings, but uses **search-only** tools. No model
+article body, publication date or extraction claim becomes evidence. The strict
+manifest allows up to five alternatives per symbol and 25 alternative bindings;
+only exact URL keys attested by the mandatory private version-2 search receipt
+survive. Invalid JSON/schema, unknown symbols, missing/invalid mandatory receipts,
+nonzero exits and supervisor faults are typed focused-stage failures, not a
+successful empty setup. An attested empty manifest is valid; scout seeds still
+receive allocation consideration. Search output does not select final bindings.
 
-The wrapper imports the public CLI before web tools, then replaces the actual
-stored async registry handler for `web_extract` with the project dispatcher
-`research_extraction.extract_tool`. It replaces the model-visible schema with a
-child-local deep copy as well, and restores both exact references in `finally`.
-Receipts wrap this controlled project path, not a provider or model assertion.
-This avoids the retired assumption that the registry dynamically resolves
-`tools.web_tools.web_extract_tool` after registration. Captures precede downstream
-Hermes result-transform hooks; they are not a claim about the final model-visible
-result after those hooks.
+The parent validates safety in owned isolated workers, loads recent source health
+once, and allocates in five candidate-coverage rounds. Each symbol keeps its first
+eligible scout seed first, even if that publisher is unhealthy. Other slots prefer
+distinct publishers, healthy publishers, provenance rank, then stable pool order.
+Unknown publishers remain eligible. Allocation retains **up to five initial URL
+bindings per candidate and 25 unique extraction URLs**. A scarce or unsafe pool
+need not fill every slot. Shared exact URLs are extracted once and bound only to
+symbols that supplied them. The radar does not re-sort into the retired three-URL
+merge or pass this route through the legacy global-15 parser/capture.
 
-All shared Hermes extraction-cache reads/writes, full-text spills and
-publication follow-up requests are absent on this path, for every publisher.
-Only the wrapper's guarded recorder can authorize `uncached_dispatch` provenance;
-a provider row or model-authored receipt cannot attest to it. This does not
-promise fresh publisher HTTP or bypass provider-internal caches.
+Extraction uses at most **five batches**, **five URLs per batch**, **three batches
+concurrently in flight**, and no executor backlog. Dispatch is admission, not
+proof of an HTTP request. Each supervisor recomputes its allowance immediately
+before dispatch, capped at 30 seconds and the original focused deadline. The
+project extraction request is 6,000 characters/page (the shared supported range
+is 2,000–6,000); response/stderr caps remain 100,000/16,384 bytes per call.
+Supervisors kill/reap their owned process group before returning; this is not a
+sandbox against same-UID processes or descendants escaping that group.
 
-Capture limits are optional reuse limits, **not** model/tool budget changes:
-15 invocations, 15 requested URLs overall, five requested/returned rows per call,
-4096 characters per URL, 24,000 UTF-8 request bytes, 100,000 raw UTF-8 response
-bytes per call, and 1,600,000 artifact bytes. A thread lock protects accounting and
-completion; it never spans the provider await. The complete strict-JSON artifact
-is written only on successful CLI return/exit. Any unrecordable invocation
-(invalid request, non-string response, or oversized response) discards the whole
-optional artifact, so dropped duplicate requests cannot leave earlier receipts
-reusable. Recording failure cannot alter the tool response or fail an otherwise
-successful focused run.
+One focused deadline is established **before command preparation**, and never
+refreshed: `min(start + 150, active_deadline - 260)`, or `start + 150` standalone.
+Search prompt construction, health loading, safety validation, scheduling and
+extraction consume that deadline. The active research limit stays 570 seconds,
+with the existing 260-second downstream reserve (180 evidence/rescue + 30 viable
+synthesis + 45 cumulative enrichment + five transition headroom). Full discovery
+leaves at most 145 focused seconds before local overhead. This is bounded
+headroom, not a hard-real-time promise about arbitrary local work or SEC trickle
+reads. The outer cycle's 600-second backstop is unchanged.
 
-The parent consumes only its preopened descriptor, after successful completion
-and process-group cleanup. It checks type/ownership/mode/size, exact schema,
-version, nonce, completion, timestamps and all capture bounds; duplicate JSON
-keys and nonstandard constants are rejected. Missing, partial or invalid artifacts
-mean ordinary fetch. Nonzero, launch error and timeout remain fatal focused-stage
-errors even if otherwise usable captures exist. The group is signalled on every
-exit, and the parent closes/removes its channel on all paths. This is process
-provenance, not a sandbox against same-UID processes or descendants escaping the
-owned process group.
+## Evidence boundary
 
-## Binding and evidence
+`FocusedURLs` carries selected bindings separately from trusted version-1
+`CapturedResult` page envelopes and their original parent receipt check times.
+Its private `focused_result` metadata permits diagnostic accounting without
+reconstructing allocation from model text. It is not serialized into a candidate
+or public stdout. Workers and legacy capture share `provider_rows`/`project_row`;
+reuse and fallback share `alpha_radar.validate_structured_page`. There is no new
+lenient body/date validator.
 
-### Focused tool character contract
+`gather_evidence` consults only the actual selected exact keys. A hit must pass
+requested/returned identity, publication provenance, substantive body, future-date
+and freshness checks before it suppresses **both** direct and fallback fetches.
+Results retain selected order, exact-key deduplication, original `checked_at` and
+persistent-cache precedence. Reused pages never seed the persistent cache.
+Undated/mismatched/error/stale pages are ordinary bounded misses. Undated SEC
+pages still take ordinary fetching and the existing official SEC date enrichment;
+no publication date is inferred from receipt/check time. Safe same-publisher
+redirect and Reuters date-conflict rules are unchanged.
 
-The focused child's tool schema and dispatcher share the extraction constants:
-2,000–6,000 characters per page, default 6,000, at most five URLs per call.
-The description accurately states that long pages return bounded head/tail text
-and full text is not stored. The stock Hermes schema is not changed globally.
+Two accepted fresh distinct-publisher sources remain mandatory. Synthesis bundles
+remain at most four sources / 18,000 characters. Successful intake skips rescue;
+otherwise at most three distinct candidates enter existing resumable rescue.
+Five initial bindings leave room for three new URLs under the existing eight-URL
+post-rescue binding cap. Already-selected keys cannot be recycled into alternate
+rescue. Synthesis attempt ceilings, earnings, receipts, consensus, broker and all
+execution gates remain unchanged.
 
-For compatibility with historical model requests, only this focused wrapper
-caps integer limits above 6,000 before dispatch and receipt capture. Omitted or
-null limits use the default; booleans, other types and values below 2,000 retain
-strict dispatcher rejection. The dispatcher itself still rejects oversized
-limits when called directly. A cap emits the sanitized private CLI log event
-`focused_extract_limit_capped effective_char_limit=6000`, never raw arguments,
-URLs, bodies or requested values. Receipts describe the effective request.
-URL safety, provenance, provider routing, total-envelope limits and deadlines
-are unchanged. Capping is not a source-quality or trading-gate exception.
+## Private diagnostics
 
-The model's symbol-to-URL dictionary and trusted captures are separate fields on
-`FocusedURLs`. No URLs are recovered from receipts or malformed final stdout.
-Batch rows bind only by exact requested URL string, independent of order;
-omissions are allowed. Duplicate requested keys (also across calls) or duplicate
-rows disqualify that key. Only a singleton request/singleton result may bind a
-redirect, subject to the existing safe same-publisher and Reuters date checks.
-There is no positional, publisher-only, fuzzy or normalized matching. A selected
-redirect URL never itself requested takes the normal fetch path.
+`record_focused_allocation(result, *, accepted_by_symbol, path)` writes only
+strict private projections correlated to the enclosing research `run_id`:
 
-The worker and capture reader share `extraction_worker.provider_rows` and
-`project_row`. Fallback and reuse share `alpha_radar.validate_structured_page`.
-`gather_evidence` consults captures only for its actual post-merge, health-selected
-exact URL list. Every reuse hit must additionally pass the unchanged substantive
-body, publication date, future-date and freshness filter before suppressing both
-direct fetch and fallback. Any miss/rejection uses normal fetching. Results stay
-in selected URL order and are exact-key deduplicated. Existing persistent-cache
-precedence and original `checked_at` remain unchanged. Reused pages retain their
-original capture check time and are never seeded into the persistent source cache.
-Undated SEC captures conservatively miss reuse; normal SEC enrichment stays intact.
-Rescue URLs continue on the existing path (no new rescue-selection input).
+- Per candidate: run-salted candidate token; available eligible pool bindings,
+  selected bindings, actually submitted bindings, successful focused worker
+  envelopes (`extracted`), and post-collection quality-accepted selected bindings.
+- Per unique selected source: run-salted `url_id`, allowlisted outcome and observed
+  submitted/extracted/accepted flags. Shared-URL binding counts and unique-source
+  counts are intentionally different.
+- `network_attempted=null`: focused supervisor admission does not establish
+  provider HTTP accounting. Unknown is not zero. Separate downstream attempt rows
+  may record `network_attempted=false` for a proven `focused_reuse_hit`; this says
+  nothing about the earlier provider's network/cache use.
 
-Private attempt telemetry records `direct_reason=focused_reuse_hit`,
-`focused_reuse=hit|miss`, enclosing run/source hashes and
-`network_attempted=false` on hits. It never records raw URLs, bodies, prompts,
-channel paths, raw provider errors or a new network verification claim. Final
-filtering, source receipts, ranking, two-publisher qualification, synthesis,
-consensus and trading/execution gates are unchanged.
+Accepted counts are measured before rescue and may include ordinary-fetch
+recovery, so they are not a focused-provider success or reuse-rate claim. Model
+counts and `candidate_counts` claims are not used. No raw symbols, URLs, bodies,
+prompts, stderr, private artifact paths or arbitrary error strings enter these
+rows. Rescue progress tokens are also run-salted. Required diagnostic persistence
+failure stops research before synthesis/intake; it cannot turn absent evidence
+into success. Candidate/public stdout contracts are unchanged.
 
-## Offline verification
+## Legacy capture compatibility
 
-`tests/test_focused_reuse.py` covers real installed-bootstrap async registry
-routing, controlled project dispatch and receipts, restoration/exit semantics,
-strict artifacts, binding, deadlines and reuse quality gates. Task 5 adds
-`tests/test_extraction_unpatched.py` for actual selected-root module assertions,
-private probe boundaries, duplicate refusal, exact row accounting and forbidden
-journal/execution guards. Two custom-provider publication fixtures now declare
-their own typed reports instead of depending on a stock Hermes local patch.
+`focused_capture.run_focused`, `focused_wrapper.py` and
+`parse_focused_retrieval` remain available to their existing non-production
+callers/probes. Legacy optional capture limits (15 invocations / 15 URLs,
+1,600,000 artifact bytes) have **not** been widened. Legacy capture owns a private
+0700 directory / 0600 preopened descriptor, nonce and strict completed artifact;
+missing/invalid optional artifacts mean normal fetch. Only its guarded project
+dispatch can attest `uncached_dispatch`; provider/model self-attestation cannot.
+The wrapper restores registry schema/handler references, never changes the shared
+Hermes installation, and caps historical integer extraction limits above 6,000.
+This legacy compatibility path is not the production focused coordinator.
 
-For bounded live verification use `scripts/probe_project_extraction.py --mode
-focused` with the same frozen cohort/time as worker mode. The driver replaces
-only CLI main with one deterministic registry invocation; it runs no model and
-trusts only the actual host recorder/parent receipt. This verifies the focused
-tool path, not an end-to-end agent handoff. See structured-extraction.md for
-runtime selection, limits, sinks and the observed release blockers. In the single
-corrected frozen-cohort comparison, both focused paths accepted 2/12 with 24 HTTP
-starts each and no lost baseline successes or timeouts. The required nonsecret
-Keenable app header and worker plugin registration are now covered by regressions;
-primary HTTP 401 and ten unknown-date rejections remain. This does not authorize
-handoff, cutover or scheduler restoration.
+## Verification and release status
 
-Run with the installed project environment:
+Offline tests exercise the real radar/coordinator/search-parser/allocation/shared
+quality/receipt handoff, replacing external model/search/network/broker boundaries.
+They cover all 25 initial bindings, zero duplicate fetches for accepted pages,
+receipt times, misses, rescue caps, strict diagnostic allowlists and actual counts.
+The installed-wrapper/worker suites retain runtime, process cleanup, schema and
+provenance regressions. Use the approved existing environment (no dependency
+installation) and compare `tests/run_tests.py full` with raw unittest discovery.
 
-```sh
-$HOME/.local/share/tradey/venv-linux/bin/python tests/run_tests.py full
-$HOME/.local/share/tradey/venv-linux/bin/python -m unittest discover -s tests -p 'test_*.py' -q
-```
-
-No live model/provider handoff is claimed by these offline tests. Release and
-scheduler restoration remain gated on the parent's handoff smoke and independent
-adversarial review.
+No live rollout, provider probe, broker call, scheduler change or improved
+qualification rate is authorized or demonstrated by this implementation. Live
+handoff smoke, independent adversarial review and any cutover remain separate
+release gates owned by the parent.

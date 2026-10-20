@@ -396,10 +396,12 @@ class CandidateAlternativesTests(unittest.TestCase):
             targets=json.loads(radar.focused_retrieval_prompt(parsed).split('TARGETS:\n')[1])
             self.assertEqual(len(targets),5)
             output={'candidates':[{'symbol':c['symbol'],'urls':[f'https://{d}.example/{c["symbol"]}' for d in ('one','two','three','four')]} for c in parsed]}
-            focused=radar.parse_focused_retrieval(json.dumps(output),{c['symbol'] for c in parsed})
-            self.assertEqual([len(focused[c['symbol']]) for c in parsed],[3]*5)
+            from focused_search import parse_search_manifest
+            focused=parse_search_manifest(json.dumps(output),allowed_symbols={c['symbol'] for c in parsed},
+                                          attested_urls={u for c in output['candidates'] for u in c['urls']})
+            self.assertEqual([len(focused[c['symbol']]) for c in parsed],[4]*5)
             self.assertIn('up to five',radar.discovery_prompt({'max_position_usd':500}))
-            self.assertIn('up to fifteen URLs total',radar.focused_retrieval_prompt(parsed))
+            self.assertIn('25 bindings total',radar.focused_retrieval_prompt(parsed))
 
     def test_focused_stage_faults_stop_before_rescue_or_fetch(self):
         faults=[('provider_exit_1',subprocess.CompletedProcess([],1,'','private provider error'),'research_focused_retrieval_unavailable'),
@@ -407,7 +409,7 @@ class CandidateAlternativesTests(unittest.TestCase):
                 ('io_error',OSError('private'),'research_focused_retrieval_unavailable'),
                 ('durable_append_error',radar.DurableAppendError('private'),'research_persistence_failure')]
         for label, fault, reason in faults:
-            with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval), patch('focused_capture.run_focused',side_effect=lambda *a,**kw:calls(*a,**kw)):
+            with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval), patch('focused_capture.run_private_child',side_effect=lambda *a,**kw:calls(*a,**kw)), patch.object(subprocess,'Popen',side_effect=AssertionError('unexpected process boundary')):
                 calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
                 self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()

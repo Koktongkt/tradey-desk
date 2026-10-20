@@ -228,6 +228,12 @@ class RescueFairnessTests(unittest.TestCase):
             except ValueError:self.fail('malformed progress must be ignored, not break diagnostics')
             self.assertFalse(target.exists())
 
+    def test_private_rescue_tokens_are_salted_per_run(self):
+        first=replay(); second=replay()
+        tokens=lambda r:{row['candidate_token'] for row in r['diagnostics'] if row.get('stage')=='evidence_rescue'}
+        self.assertTrue(tokens(first))
+        self.assertFalse(tokens(first) & tokens(second))
+
     def test_private_progress_is_bounded_and_opaque(self):
         r=replay()
         rows=[d for d in r['diagnostics'] if d.get('stage')=='evidence_rescue']

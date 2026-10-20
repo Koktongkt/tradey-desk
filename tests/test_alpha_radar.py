@@ -1626,6 +1626,24 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         self.assertIn("web_search exactly three times in parallel",prompt)
         self.assertIn("retrieval targets, not quotas",prompt)
 
+    def test_attested_focused_manifest_retains_all_25_bindings_without_domain_normalization(self):
+        from focused_search import parse_search_manifest, SearchProtocolError
+        symbols={'AAA','BBB','CCC','DDD','EEE'}
+        rows=[{'symbol':s,'urls':[f'https://publisher.example/{s}/{i}' for i in range(5)]}
+              for s in sorted(symbols)]
+        urls={u for row in rows for u in row['urls']}
+        parsed=parse_search_manifest(json.dumps({'candidates':rows}),allowed_symbols=symbols,attested_urls=urls)
+        self.assertEqual(sum(map(len,parsed.values())),25)
+        self.assertEqual(parsed['EEE'],rows[-1]['urls'])
+        # Parent receipt identity is exact; appending a slash is not provenance.
+        parsed=parse_search_manifest(json.dumps({'candidates':rows}),allowed_symbols=symbols,
+                                     attested_urls={u+'/' for u in urls})
+        self.assertEqual(parsed,{})
+        for invalid in ({'candidates':rows,'focused_pages':{'forged':'body'}},
+                        {'candidates':[{'symbol':'ZZZ','urls':[next(iter(urls))]}]}):
+            with self.assertRaises(SearchProtocolError):
+                parse_search_manifest(json.dumps(invalid),allowed_symbols=symbols,attested_urls=urls)
+
     def test_parse_focused_retrieval_symbol_filtering_and_merge_contract(self):
         cases = (
             ('keeps_only_requested_symbols_with_distinct_domains',
