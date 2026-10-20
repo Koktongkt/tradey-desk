@@ -710,7 +710,17 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     m=re.search(r"<title[^>]*>(.*?)</title>",body,re.IGNORECASE|re.DOTALL)
     if m:title=re.sub(r"\s+"," ",m.group(1)).strip()[:200]
     text=extract_page_text(body)
-    return {"url":url,"title":title,"text":text[:6000],"published_at":extract_published_at(body)}
+    from issuer_publication import issuer_publication_date
+    from publication_provenance import publication_conflicts
+    header_date=issuer_publication_date(final_url,body)
+    published=extract_published_at(body)
+    if header_date and publication_conflicts({'value':header_date},published,day_only=True):
+        published=None
+    else:
+        published=published or header_date
+    page={"url":url,"title":title,"text":text[:6000],"published_at":published}
+    if header_date and published==header_date:page['publication_precision']='day'
+    return page
 
 
 GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
@@ -856,6 +866,8 @@ def extract_gateway_publication_date(url:str,text:str,*,allow_url_year:bool=True
         if is_related_publication_heading(line):
             text="".join(lines[:index])
             break
+    from issuer_publication import issuer_publication_date
+    issuer_date=issuer_publication_date(url,text)
     published=None
     host=(urllib.parse.urlparse(url).hostname or "").lower()
     match=None
@@ -873,6 +885,8 @@ def extract_gateway_publication_date(url:str,text:str,*,allow_url_year:bool=True
             r"([A-Za-z]{3,9}\.? \d{1,2}, \d{4})\s*"+wire_marker+r"\s*(?:\*\*)?\s*(?:--|—)",text)
         if dateline:
             raw=dateline.group(1).replace(".","")
+            # Observed wire abbreviation, only after the domain/dateline anchor.
+            raw=re.sub(r'^Sept(?= )','Sep',raw)
             for fmt in ("%b %d, %Y","%B %d, %Y"):
                 try:return dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
                 except ValueError:pass
@@ -900,7 +914,10 @@ def extract_gateway_publication_date(url:str,text:str,*,allow_url_year:bool=True
                 published=dt.datetime.strptime(raw,fmt).replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00","Z")
                 break
             except ValueError:continue
-    return published
+    if issuer_date and published:
+        from publication_provenance import publication_conflicts
+        if publication_conflicts({'value':issuer_date},published,day_only=True):return None
+    return issuer_date or published
 
 
 def source_transport_reason(error:Exception)->tuple[str,int|None]:

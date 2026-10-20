@@ -657,7 +657,7 @@ os.close(fd); os.close(dfd)
             def guarded(argv, directory):
                 argv=original_guard(argv,directory)
                 index=argv.index('-c')+1
-                prefix,tail=argv[index].rsplit('runpy.run_path(',1)
+                prefix,tail=argv[index].split('runpy.run_path(',1)
                 injection = f'''import socket, os, time
 from pathlib import Path
 def blocked(*args, **kwargs):
@@ -667,6 +667,7 @@ def blocked(*args, **kwargs):
     return []
 socket.getaddrinfo=blocked
 '''
+                # The qualification helper runs inside the nested runpy entry.
                 argv[index]=prefix+f'exec({injection!r}); runpy.run_path('+tail
                 return argv
             def spawned(*args,**kwargs):
@@ -704,6 +705,19 @@ socket.getaddrinfo=blocked
         self.assertEqual(value['accepted'],{'S0':[]})
         self.assertEqual(value['accepted_publishers'],{'S0':0})
         self.assertEqual(value['quality']['S0'][0]['quality'][0]['reason'],'source_freshness_unknown')
+
+    def test_review_r1_private_guard_allows_owned_subprocess_pipes(self):
+        import subprocess,sys,tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            code=f'''import subprocess,sys
+from scripts.probe_focused_coverage import install_safety
+install_safety({tmp!r})
+p=subprocess.run([sys.executable,'-c',"import sys; print(sys.stdin.read())"],input='private pipe',capture_output=True,text=True,timeout=5)
+assert p.returncode==0,p.stderr
+assert p.stdout.strip()=='private pipe'
+'''
+            done=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=10)
+            self.assertEqual(done.returncode,0,done.stderr)
 
     def test_probe_blocks_operational_modules_and_external_writes(self):
         import subprocess,sys,tempfile

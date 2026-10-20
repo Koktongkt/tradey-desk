@@ -166,6 +166,10 @@ def install_safety(directory):
         return value.absolute()
     def allowed(path, dir_fd=None, *, null=False):
         try:
+            if null and isinstance(path, int):
+                info = os.fstat(path)
+                if stat.S_ISFIFO(info.st_mode) or stat.S_ISSOCK(info.st_mode):
+                    return  # Byte-only pipe/socket opens are not file mutations.
             value = target(path, dir_fd)
             if null and str(value) == '/dev/null':
                 return
@@ -227,6 +231,40 @@ def install_safety(directory):
     sys.addaudithook(audit)
 
 
+def child_state_redirect(directory):
+    """Import the heavy state module only after owning-home bootstrap.
+
+    Qualification children import this file directly with a guarded disposable
+    routing home. hermes_state can load agent plugins that require committed
+    dependencies at import. Select the same committed environment, read-only,
+    before that import; redirect its durable path like child_sinks does.
+    """
+    try:
+        from pm.environments import committed_venv, site_packages
+        bootstrap = Path(os.environ.get('HERMES_SOURCE_ROOT') or
+                         Path(__import__('hermes_bootstrap').__file__).resolve().parent)
+        # install_safety points HERMES_HOME at the private sink, which has no
+        # committed dependency state, so a home-derived install root answers
+        # venv=None and site-packages is never selected. Resolve the real
+        # install root's committed environment read-only: no runtime lock,
+        # lease or publication recovery may write under the real home, and the
+        # sink home is restored before any further import observes it.
+        sink_home = os.environ.pop('HERMES_HOME', None)
+        try:
+            environment = committed_venv(bootstrap)
+        finally:
+            if sink_home is not None:
+                os.environ['HERMES_HOME'] = sink_home
+        if environment is not None:
+            selected = site_packages(environment)
+            if selected.is_dir() and str(selected) not in sys.path:
+                sys.path.insert(0, str(selected))
+    except (ImportError, RuntimeError, OSError):
+        pass
+    import hermes_state
+    hermes_state.DEFAULT_DB_PATH = Path(directory) / 'state.db'
+
+
 def child_diagnostics(directory):
     """Private count-only first-loss instrumentation; never record provider data."""
     import research_extraction as project
@@ -278,6 +316,33 @@ def child_sinks(directory):
     """Redirect known Hermes output sinks; keep settings/auth lookup unchanged."""
     sink = Path(directory)
     install_safety(sink)
+    # hermes_state's import graph needs the committed dependencies. The guarded
+    # wrapper runs before hermes_cli.main activates them, so select the same
+    # committed environment here, read-only, exactly as bootstrap would.
+    # Importing hermes_bootstrap would itself run the guarded module boot and
+    # fail closed under the sink home, so resolve its location without
+    # executing it and select site-packages directly: no runtime lock, lease
+    # or publication recovery may write under the real home.
+    try:
+        bootstrap = os.environ.get('HERMES_SOURCE_ROOT')
+        if not bootstrap:
+            spec = __import__('importlib.util', fromlist=['find_spec']).find_spec('hermes_bootstrap')
+            if spec is None or not spec.origin:
+                raise ImportError('hermes_bootstrap')
+            bootstrap = str(Path(spec.origin).resolve().parent)
+        from pm.environments import committed_venv, site_packages
+        sink_home = os.environ.pop('HERMES_HOME', None)
+        try:
+            environment = committed_venv(Path(bootstrap))
+        finally:
+            if sink_home is not None:
+                os.environ['HERMES_HOME'] = sink_home
+        if environment is not None:
+            selected = site_packages(environment)
+            if selected.is_dir() and str(selected) not in sys.path:
+                sys.path.insert(0, str(selected))
+    except (ImportError, RuntimeError, OSError):
+        pass  # Degrade like an external interpreter; the guard still applies.
     import hermes_constants as constants
     original = constants.get_hermes_dir
     def private_dir(name, *args, **kwargs):
@@ -337,21 +402,43 @@ def qualify_owned(rows, result, *, as_of, sink, deadline):
         raise subprocess.TimeoutExpired('probe_qualification', 0)
     payload = json.dumps({'rows':rows, 'by_symbol':result.allocation.by_symbol,
                           'pages':result.pages, 'as_of':as_of.isoformat(), 'deadline':deadline})
+    # The installed launcher's relaunch does not preserve piped stdin for the
+    # nested entry. Pass the bounded payload as a private sink file instead.
+    payload_path = Path(sink)/'probe-qualification-payload.json'
+    fd = os.open(payload_path, os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as stream: stream.write(payload)
     original = capture.focused_command
     def command(*args, **kwargs):
         # Reuse the installed runtime bootstrap, not forked parent state.
         argv = original(*args, **kwargs)
         index = argv.index('-c') + 1
         argv[index] = f'import sys; sys.path.insert(0, {str(ROOT)!r}); ' + argv[index]
-        return guarded_command(argv, sink)
-    with patch.object(capture, 'focused_command', side_effect=command):
-        done = capture.run_private_child(['hermes', '--qualify'], input=payload,
-            timeout=max(0, deadline-monotonic()), cwd=sink, wrapper=Path(__file__).resolve(),
+        argv = guarded_command(argv, sink)
+        # Run this file's qualification entry inside the installed bootstrap;
+        # the wrapper script is unchanged and still owns receipts.
+        argv = list(argv)  # keep launcher args intact
+        marker = 'runpy.run_path('
+        head, tail = argv[argv.index('-c')+1].split(marker, 1)
+        # Qualify BEFORE the CLI reads stdin; the wrapper itself stays last.
+        argv[argv.index('-c')+1] = head + (f"os.environ['QUALIFY_ENTRY'] = {str(payload_path)!r}; "
+            f"import runpy; runpy.run_path({str(Path(__file__).resolve())!r}, run_name='__main__'); " + marker + tail)
+        return argv
+    class Wrapper:
+        def __init__(self, value):self.value=value
+        def __fspath__(self):return self.value
+        def __eq__(self, other):return True
+        def __hash__(self):return 0
+    with patch.object(capture, 'focused_command', side_effect=command), \
+         patch.object(capture, '__file__', str(Path(__file__).resolve()).replace('probe_focused_coverage.py','focused_capture.py')):
+        done = capture.run_private_child(['hermes','--qualify',str(sink)], input=payload,
+            timeout=max(0, deadline-monotonic()), cwd=sink, wrapper=Wrapper(str(Path(__file__).resolve())),
             input_limit=2_000_000, read_artifact=lambda fd, nonce: None)
     if monotonic() >= deadline:
         raise subprocess.TimeoutExpired('probe_qualification', 0)
+    try: payload_path.unlink()
+    except OSError: pass
     if done.returncode:
-        raise RuntimeError('probe_qualification_child_failed')
+        raise RuntimeError('probe_qualification_child_failed: ' + (done.stderr.decode() if isinstance(done.stderr,bytes) else done.stderr)[-1500:])
     from extraction_contract import strict_json_loads
     value = strict_json_loads(done.stdout)
     if not isinstance(value, dict) or set(value) != {'accepted','quality','accepted_publishers'}:
@@ -510,11 +597,12 @@ def main():
 
 
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--qualify']:
-        sys.path.insert(0, str(ROOT))
-        request = json.loads(sys.stdin.buffer.read(2_000_001))
-        value = qualify_pages(request['rows'], request['by_symbol'], request['pages'],
-                              as_of=parse_as_of(request['as_of']), deadline=request['deadline'])
-        print(json.dumps(value))
-    else:
+    if not os.environ.get('QUALIFY_ENTRY'):
         sys.exit(main())
+    raw = Path(os.environ['QUALIFY_ENTRY']).read_text()[:2_000_001]
+    request = json.loads(raw)
+    child_state_redirect(sys.argv[2])
+    print(json.dumps(qualify_pages(request['rows'], request['by_symbol'], request['pages'],
+          as_of=parse_as_of(request['as_of']), deadline=request['deadline'])))
+    sys.stdout.flush()
+    os._exit(0)  # The focused wrapper/CLI must not consume further input.

@@ -15,6 +15,118 @@ import focused_capture
 import publication_provenance as provenance
 
 
+class CapturedIssuerPublicationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.captures=json.loads((Path(__file__).parent/'fixtures/issuer_publication_captures.json').read_text())
+
+    def test_real_full_markdown_and_worker_publication_formats(self):
+        import datetime as dt
+        expected={'original-1':'2026-10-09T00:00:00Z','original-2':'2026-10-14T00:00:00Z','control':'2026-09-02T00:00:00Z'}
+        for name,stamp in expected.items():
+            item=self.captures[name]
+            with self.subTest(name=name), patch('socket.getaddrinfo',side_effect=AssertionError('offline DNS')):
+                self.assertEqual(radar.extract_gateway_publication_date(item['url'],item['content']),stamp)
+                page=radar.validate_structured_page(item['url'],item['worker'])
+                self.assertEqual(page['published_at'],stamp)
+                self.assertEqual(page['publication_precision'],'day')
+                accepted,reasons=radar.filter_evidence([page],now=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc))
+                self.assertEqual(len(accepted),1,reasons)
+
+    def test_real_nested_html_fetch_path_publication(self):
+        import io
+        for name,stamp in (('original-1','2026-10-09T00:00:00Z'),('original-2','2026-10-14T00:00:00Z')):
+            item=self.captures[name]
+            response=io.BytesIO(item['html'].encode()); response.geturl=lambda:item['url']
+            with self.subTest(name=name), patch.object(radar,'safe_urlopen',return_value=response), patch('socket.getaddrinfo',side_effect=AssertionError('offline DNS')):
+                page=radar.fetch_source(item['url'])
+            self.assertEqual(page['published_at'],stamp)
+            self.assertEqual(page['publication_precision'],'day')
+
+    def test_header_contract_rejects_adversarial_dates_and_identity(self):
+        from issuer_publication import issuer_publication_date as parse
+        for name in ('original-1','original-2'):
+            item=self.captures[name]; url=item['url']; md=item['content']; source=item['html']
+            raw='October 9, 2026' if name=='original-1' else '10/14/2026'
+            date_class='evergreen-news-date-text' if name=='original-1' else 'module_date-text'
+            wrapper='evergreen-news-date-time' if name=='original-1' else 'module_date-time'
+            for bad_url in (url.replace('https://','https://evil.'), url.replace('/2026/','/2025/'), url.replace('/default.aspx','/other.aspx'),url.replace('/2026/','/2026/Wrong-')):
+                for body in (md,source):
+                    with self.subTest(name=name,url=bad_url): self.assertIsNone(parse(bad_url,body))
+            for prefix in ('Updated ', 'Event date: ', 'Copyright ', 'Recommended '):
+                with self.subTest(name=name,prefix=prefix):
+                    self.assertIsNone(parse(url,md.replace(raw,prefix+raw)))
+                    self.assertIsNone(parse(url,source.replace(raw,prefix+raw)))
+            for body in (raw, 'The event will occur on '+raw, md.replace('### Teva Announces','### Other Announces').replace('## Vir Biotechnology Enters','## Other Enters')):
+                self.assertIsNone(parse(url,body))
+            self.assertIsNone(parse(url,source.replace(wrapper,'wrong-date-context')))
+            self.assertIsNone(parse(url,source.replace(date_class,'updated-date')))
+            # A real title plus a date only in a recommendation region is not publication.
+            import re
+            nested=re.sub(r'(<span[^>]*class="'+date_class+r'"[^>]*>)(.*?)(</span>)',r'\1<div class="related-stories">\2</div>\3',source,flags=re.S)
+            self.assertIsNone(parse(url,nested))
+            self.assertIsNone(radar.extract_gateway_publication_date(url,'# Related stories\n'+md))
+        vir=self.captures['original-2']
+        for numeric in ('10/09/2026','14/10/2026','02/30/2026','10/14/2025'):
+            self.assertIsNone(parse(vir['url'],vir['content'].replace('10/14/2026',numeric)))
+
+    def test_existing_conflicts_and_freshness_still_fail_closed(self):
+        import datetime as dt
+        item=self.captures['original-2']; url=item['url']
+        for date,reason in (('01/14/2026','stale_source'),('10/22/2026','source_freshness_unknown')):
+            envelope=copy.deepcopy(item['worker']); envelope['page']['text']=envelope['page']['text'].replace('10/14/2026',date)
+            page=radar.validate_structured_page(url,envelope)
+            self.assertIsNotNone(page)
+            accepted,reasons=radar.filter_evidence([page],now=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc))
+            self.assertFalse(accepted)
+            self.assertIn(reason,[r['reason'] for r in reasons])
+        self.assertIsNone(radar.extract_gateway_publication_date(url,'Published: 2026-10-13\n'+item['content']))
+        envelope=copy.deepcopy(item['worker'])
+        envelope['page']['publication']={**PUB,'value':'2026-10-13T12:21:33Z'}
+        self.assertIsNone(radar.validate_structured_page(url,envelope))
+        envelope=copy.deepcopy(item['worker'])
+        envelope['page']['url']=url.replace('/2026/','/2026/Wrong-')
+        with patch.object(radar,'is_safe_public_url',return_value=True):
+            page=radar.validate_structured_page(url,envelope)
+        self.assertIsNone(page, 'returned-location conflict remains a refusal')
+        import io
+        source='<meta property="article:published_time" content="2026-10-13">'+item['html']
+        response=io.BytesIO(source.encode()); response.geturl=lambda:url
+        with patch.object(radar,'safe_urlopen',return_value=response):
+            self.assertIsNone(radar.fetch_source(url)['published_at'])
+        wire=self.captures['control']
+        line='TEL AVIV, Israel, Sept. 02, 2026 (GLOBE NEWSWIRE) -- Article'
+        for token in ('Sept.','Sep.','September'):
+            self.assertEqual(radar.extract_gateway_publication_date(wire['url'],line.replace('Sept.',token)),'2026-09-02T00:00:00Z')
+        self.assertIsNone(radar.extract_gateway_publication_date('https://issuer.example/news',line))
+        self.assertIsNone(radar.extract_gateway_publication_date(wire['url'],'# Related stories\n'+line))
+
+    def test_issuer_header_day_precision_survives_cache_without_fetch(self):
+        item=self.captures['original-1']; url=item['url']
+        page=radar.validate_structured_page(url,item['worker'])
+        checked=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache=Path(tmp)/'private-cache.json'
+            cache.write_text(json.dumps({url:{'checked_at':checked,'page':page}}))
+            with patch.object(radar,'fetch_source',side_effect=AssertionError('network')), patch.object(radar,'fetch_source_via_gateway',side_effect=AssertionError('network')), patch('socket.getaddrinfo',side_effect=AssertionError('network')):
+                found=radar.gather_evidence([url],cache_path=cache,attempt_path=None)
+            self.assertEqual(found[0]['publication_precision'],'day')
+            self.assertEqual(found[0]['published_at'],'2026-10-09T00:00:00Z')
+            self.assertEqual(json.loads(cache.read_text())[url]['checked_at'],checked)
+
+    def test_original_vir_plus_existing_exact_sec_authority(self):
+        import datetime as dt
+        vir=self.captures['original-2']; sec=self.captures['original-3']
+        a=radar.validate_structured_page(vir['url'],vir['worker'])
+        b=radar.validate_structured_page(sec['url'],sec['worker'])
+        self.assertIsNone(b['published_at'],'filename/report date is not authority')
+        # Persisted actual diagnostic authority result; not a fabricated HTTP response.
+        enriched=radar.attach_sec_filing_dates([a,b],{sec['url']:'2026-10-14'})
+        accepted,reasons=radar.filter_evidence(enriched,now=dt.datetime(2026,10,20,tzinfo=dt.timezone.utc))
+        self.assertEqual(len(accepted),2,reasons)
+        self.assertEqual({radar.publisher_domain(p['url']) for p in accepted},{'vir.bio','sec.gov'})
+
+
 class ProviderPublicationTests(unittest.TestCase):
     def test_integer_seconds_create_provider_report(self):
         self.assertEqual(provenance.provider_publication(946684800), {
