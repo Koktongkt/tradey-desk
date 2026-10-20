@@ -25,6 +25,7 @@
    "test_publication_provenance",
    "test_structured_extraction",
    "test_focused_reuse",
+   "test_focused_allocation",
    "test_safety",
    "test_shadow",
    "test_sqlite_ledger",
