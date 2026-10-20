@@ -348,11 +348,37 @@ print('wrapper-exit-semantics-ok')
             sentinel.write_text('{"paper":true}')
             for mode in ('provider', 'dns'):
                 pidfile = Path(td)/mode
-                probe = command[:3]+[prefix+blocked_probe(pidfile, mode, focused=True)]
-                with patch.object(cap, 'focused_command', return_value=probe):
-                    with self.assertRaises(subprocess.TimeoutExpired):
-                        cap.run_focused(['hermes','chat'], input='', capture_output=True, text=True, timeout=2, cwd=td)
-                assert_dead(self, pidfile)
+                # Slow real bootstrap is outside the measured worker phase.
+                # Popen below transfers this exact owned group to the supervisor;
+                # it still performs the hard timeout, kill, wait and pipe cleanup.
+                import time, signal
+                ready, go = Path(td)/(mode+'-ready'), Path(td)/(mode+'-go')
+                body = blocked_probe(pidfile, mode, focused=True)
+                handshake = (f"    Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+                             f"    while not Path({str(go)!r}).exists(): time.sleep(.01)\n")
+                body = body.replace('    wrapper.main()\n', handshake+'    wrapper.main()\n')
+                probe = command[:3]+[prefix+'import time; time.sleep(2.2)\n'+body]
+                process = subprocess.Popen(probe, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, bufsize=0, start_new_session=True, cwd=td)
+                try:
+                    until = time.monotonic()+20
+                    while not ready.exists() and process.poll() is None and time.monotonic()<until:
+                        time.sleep(.01)
+                    self.assertTrue(ready.exists(), 'real bootstrap did not become ready')
+                    self.assertEqual(int(ready.read_text()), process.pid)
+                    def adopt(*args, **kwargs):
+                        go.write_text('start')
+                        return process
+                    with patch.object(cap, 'focused_command', return_value=probe), \
+                         patch.object(subprocess, 'Popen', side_effect=adopt):
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            cap.run_focused(['hermes','chat'], input='', capture_output=True, text=True, timeout=2, cwd=td)
+                    assert_dead(self, pidfile)
+                finally:
+                    try: os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    process.wait()
+                    for stream in (process.stdin, process.stdout, process.stderr): stream.close()
                 self.assertEqual(sentinel.read_text(), '{"paper":true}')
 
     def test_parent_reaps_owned_group_after_success_and_timeout(self):

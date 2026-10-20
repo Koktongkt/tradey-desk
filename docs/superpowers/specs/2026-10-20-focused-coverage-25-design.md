@@ -59,7 +59,26 @@ If an exact URL legitimately belongs to multiple candidate manifests, request it
 
 ### C. Parent-owned bounded extraction
 
-The parent packs the round-ordered unique URL list into at most five batches, each with at most five URLs. Admit batches in order with at most three concurrently in flight, matching the former intended three-call concurrency rather than launching five unconstrained requests. With five candidates, the first batch contains one URL per candidate. Smaller shortlists are packed without empty calls.
+**User-approved transport amendment (2026-10-20):** logical coverage groups
+remain at most five groups of five, but no longer define provider request units.
+The parent flattens their deterministic round order into at most 25 singleton
+extraction jobs, each selected unique URL admitted once, without retry or a second
+hidden 25-call allowance. Exactly three global coordinator threads own at most
+one active supervised singleton each; there is no nested extraction executor.
+`provider.extract` receives one URL through the existing dispatcher. Existing
+configured rescue/ring behavior is unchanged, not expanded by this amendment.
+Each complete raw singleton response (including extensions) must pass the unchanged
+100,000-byte validation **before** binding/projection. One oversized page receives
+`output_limit` without erasing independent sibling jobs. The projected version-2
+worker envelope remains capped at 100,000 bytes and each page at 6,000 characters;
+the parent retains at most 25 such bounded pages, not an unbounded aggregate raw
+response. Request identity, mandatory model-search attestation, safety, provenance,
+qualification, downstream trusted reuse, original shared deadline, minimum reserve
+and owned-group kill/reap gates remain unchanged. No late launch or cap increase.
+The following original multi-URL protocol remains supported for other callers;
+its multi-row transport packing is superseded for the focused coordinator only.
+
+The allocator packs the round-ordered unique URL list into at most five logical groups of at most five URLs. The focused coordinator admits one singleton per unique URL in that order, at most three concurrently, with no empty calls. With five candidates, the first five singleton admissions cover all five seeds before extras.
 
 Execute the existing project dispatcher in owned isolated worker process groups, extending the worker/supervisor contract for bounded multi-URL requests rather than importing network code into an uncontained parent. Preserve runtime/bootstrap/provider routing, URL safety, per-hop identity checks, five-row and 100,000-byte per-call response limits, 6,000-character page limit, private error projections and process cleanup. Every operation is clamped to the remaining focused deadline. Do not start a queued batch after expiry. No unbounded retry or extra focused search is added.
 

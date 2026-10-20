@@ -210,7 +210,13 @@ import sys, os, json, asyncio, socket
 from pathlib import Path
 source, project = map(Path, sys.argv[1:3])
 sys.path.insert(0, str(source))
+# Bootstrap dependencies under the owning default home, then switch routing
+# to the disposable test home, exactly as guarded production-worker probes do.
+# The launcher pin does not override an explicit private HERMES_HOME.
+os.environ.pop('HERMES_HOME', None)
+sys._hermes_pin_default_home = True
 import hermes_bootstrap
+os.environ['HERMES_HOME'] = sys.argv[3]
 sys.path.insert(0, str(project))
 import extraction_worker
 from agent import web_search_registry as registry
@@ -245,8 +251,9 @@ print(json.dumps({'status': result['status'], 'requests': network.call_count}))
         with tempfile.TemporaryDirectory(dir=self.probe().ARTIFACTS) as home:
             Path(home, 'config.yaml').write_text('web:\n  extract_backend: firecrawl\n  keyless_fallback: false\n')
             env = {**os.environ, 'HERMES_HOME': home,
-                   'FIRECRAWL_API_URL': 'https://fixture.example', 'FIRECRAWL_API_KEY': ''}
-            completed = subprocess.run([python, '-I', '-c', code, str(source), str(ROOT)],
+                   'FIRECRAWL_API_URL': 'https://fixture.example', 'FIRECRAWL_API_KEY': '',
+                   'HERMES_DISABLE_LAZY_INSTALLS': '1'}
+            completed = subprocess.run([python, '-I', '-c', code, str(source), str(ROOT), home],
                 env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout), {'status': 'ok', 'requests': 1})

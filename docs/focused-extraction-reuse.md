@@ -30,12 +30,19 @@ need not fill every slot. Shared exact URLs are extracted once and bound only to
 symbols that supplied them. The radar does not re-sort into the retired three-URL
 merge or pass this route through the legacy global-15 parser/capture.
 
-Extraction uses at most **five batches**, **five URLs per batch**, **three batches
-concurrently in flight**, and no executor backlog. Dispatch is admission, not
+Extraction retains at most **five logical groups of five**, but the user-approved
+transport amendment admits at most **25 singleton calls**, exactly once per selected
+unique URL, through **three global supervisors concurrently** and no executor
+backlog or nested concurrency. No failed URL is resubmitted by the coordinator. Dispatch is admission, not
 proof of an HTTP request. Each supervisor recomputes its allowance immediately
 before dispatch, capped at 30 seconds and the original focused deadline. The
 project extraction request is 6,000 characters/page (the shared supported range
-is 2,000–6,000); response/stderr caps remain 100,000/16,384 bytes per call.
+is 2,000–6,000); raw response/stderr caps remain 100,000/16,384 bytes per call.
+Complete raw responses, including extensions, are validated before binding and
+projection; an individually oversized response fails typed without erasing sibling
+pages. Projected worker envelopes retain the 100,000-byte limit, and the parent
+retains at most 25 pages of at most 6,000 characters each. Existing configured
+provider/rescue routing is unchanged; this is not a second call allowance.
 Supervisors kill/reap their owned process group before returning; this is not a
 sandbox against same-UID processes or descendants escaping that group.
 

@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Retain up to five candidates; at most 25 unique focused extraction URLs and five selected URL bindings per candidate.
-- At most five URLs per extraction call; at most three extraction batches concurrently in flight; at most five batches.
+- User-approved 2026-10-20 amendment: at most 25 focused singleton extraction calls, one per selected unique URL, no duplicates/retries or hidden second allowance. At most three active extraction supervisors globally, each owning one provider request; logical allocation remains at most five groups of five. The general multi-URL worker protocol remains compatible. Raw 100,000-byte admission is per complete singleton response before binding/projection; projected worker envelopes stay bounded. All original deadline/reserve, search-attestation, qualification, SSRF/provenance and supervision gates remain unchanged.
 - Keep the three existing primary/independent/wire focused-search objectives. Do not alter discovery's six deployed search lanes.
 - Focused wall-clock cap: 150 seconds. Overall active research cap: 570 seconds. Preserve the existing downstream reservation, model turn ceilings and model effort ceiling.
 - Keep 2,000–6,000 characters per page, effective focused extraction request 6,000; preserve 100,000-byte per-call response and 16,384-byte stderr limits.
@@ -126,7 +126,7 @@ The wrapper is a baseline candidate, not a claim that it already passes on this 
 - `validate_pool_urls(urls: list[str], *, deadline: float) -> set[str]` uses current project safety through an owned isolated worker, not unbounded parent DNS. Define `validate_batch_urls(request: dict) -> dict` in extraction_worker with request `{'version':2,'operation':'validate_urls','urls':[...],'timeout_seconds':...}` and response `{'version':2,'status':'ok','results':[{'requested_url':exact_key,'eligible':bool,'reason':typed_reason},...]}`. Admit at most five URLs per validation batch, use the same owned-process/byte/deadline limits as extraction and pack these safety operations under the original focused deadline. No safety operation fetches page bodies. Extraction still repeats its existing DNS/URL/redirect safety checks to avoid time-of-check/time-of-use bypasses.
 
 - [ ] Write `test_search_and_extract_share_absolute_deadline`: fake clock consumes search time; assert every worker allowance is `<= min(30, deadline-now)`, admission stops at expiry and no budget is reset.
-- [ ] Write `test_at_most_three_batches_in_flight_with_first_round_first` using controlled events: assert launch order, max active three, all five initial candidate seeds in the first batch, five total batches for 25 URLs and no empty submissions for smaller pools.
+- [ ] As amended in Task 6, `test_at_most_three_singletons_in_flight_with_first_round_first` uses controlled events to assert FIFO admission, max active three, the five initial seeds before extras, at most 25 singleton calls and no empty submissions for smaller pools. Logical allocation still retains five groups.
 - [ ] Write `test_selected_but_unsubmitted_is_not_transport_failure`: expiry with queued batches retains exact selected/submitted counts, successful earlier pages and explicit `focused_deadline_exhausted` outcomes. Batch typed errors remain local; supervisor/protocol corruption raises focused failure.
 - [ ] Add a safety-worker deadline/DNS failure test, no network call in the allocator, no late launch and no surviving owned children. Cover successful empty search alternatives with all valid seeds still extracted.
 - [ ] Observe RED with `tpy -m unittest discover -s tests -p test_focused_pipeline.py -v`.
@@ -152,6 +152,22 @@ The wrapper is a baseline candidate, not a claim that it already passes on this 
 - [ ] Run new modules, radar/budget/rescue/reuse modules, all tiers and raw discovery with equal counts and no operational state mutation. Update shipped docs with exact limits, ownership and qualified guarantees; commit: `feat: retain five focused sources per candidate end to end`.
 
 ### Task 6: Real handoff, independent review and controlled release
+
+**Approved transport repair within this task:** flatten logical coverage groups
+into FIFO singleton jobs in the existing three-worker coordinator; retain the
+existing singleton dispatcher/worker validation rather than projecting away raw
+extensions or adding nested concurrency. Observe RED/GREEN on five individually
+valid raw responses whose combined size exceeds 100,000 bytes, oversized-page
+sibling retention, exact binding, no retries, at most 25 calls, global concurrency
+three and original-deadline process cancellation. Diagnose the real startup test
+without increasing its timeout or editing shared runtime/plugin code. Match the
+production worker's committed-dependency bootstrap in the fixture. Preserve
+Task 4's process fixture and the repaired focused-reuse readiness handshake.
+Run final equal-count full/raw suites and at most one paired live comparison plus
+one targeted real diagnosis; report actual quality acceptance, not just transport.
+Zero acceptance requires exact typed reasons and remains a release blocker. Parent
+owns independent Task 6/whole-branch review and any deployment; this repair grants
+no production, schedule, broker or operational-ledger mutation authority.
 
 **Files:** Create `scripts/probe_focused_coverage.py` and tests in `tests/test_focused_pipeline.py`; write private evidence only beneath ignored `test_artifacts/focused-coverage-25/`. Modify release documentation only after actual verification.
 

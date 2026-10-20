@@ -72,7 +72,7 @@ def _validate_pool(urls, *, deadline):
 
 def extract_allocated(allocation: Allocation, *, deadline: float,
                       run_batch: Callable = run_batch_worker) -> FocusedResult:
-    """FIFO dispatcher admission, at most three owned batch supervisors.
+    """FIFO singleton admission, at most three owned extraction supervisors.
 
     No executor backlog is admitted: refill only after a supervised call returns.
     The call wrapper recomputes allowance on its own thread immediately before
@@ -89,6 +89,9 @@ def extract_allocated(allocation: Allocation, *, deadline: float,
             or any(not 1 <= len(b) <= 5 for b in allocation.batches)
             or any(len(urls) > 5 or not set(urls) <= set(flat) for urls in allocation.by_symbol.values())):
         raise FocusedFailure('focused_allocation_failure')
+    # Logical batches retain allocator order; transport owns one URL per job.
+    # Exactly three supervisors globally, with no nested provider concurrency.
+    jobs = [[url] for url in flat]
     condition = threading.Condition()
     next_admission = 0
 
@@ -110,9 +113,9 @@ def extract_allocated(allocation: Allocation, *, deadline: float,
     # Supervised operations kill/reap their owned group before returning. Waiting
     # here is intentional: returning with running supervisors leaks ownership.
     with ThreadPoolExecutor(max_workers=3) as executor:
-        while pending or index < len(allocation.batches):
-            while len(pending) < 3 and index < len(allocation.batches) and monotonic() < deadline:
-                batch = allocation.batches[index]
+        while pending or index < len(jobs):
+            while len(pending) < 3 and index < len(jobs) and monotonic() < deadline:
+                batch = jobs[index]
                 pending[executor.submit(dispatch, index, batch)] = batch
                 index += 1
             if not pending:
