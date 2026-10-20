@@ -18,7 +18,8 @@ Neither value is added to prompts, tool results, stdout or diagnostics.
 
 The wrapper imports the public CLI before web tools, then replaces the actual
 stored async registry handler for `web_extract` with the project dispatcher
-`research_extraction.extract_tool`. It restores that handler in `finally`.
+`research_extraction.extract_tool`. It replaces the model-visible schema with a
+child-local deep copy as well, and restores both exact references in `finally`.
 Receipts wrap this controlled project path, not a provider or model assertion.
 This avoids the retired assumption that the registry dynamically resolves
 `tools.web_tools.web_extract_tool` after registration. Captures precede downstream
@@ -53,6 +54,23 @@ provenance, not a sandbox against same-UID processes or descendants escaping the
 owned process group.
 
 ## Binding and evidence
+
+### Focused tool character contract
+
+The focused child's tool schema and dispatcher share the extraction constants:
+2,000–6,000 characters per page, default 6,000, at most five URLs per call.
+The description accurately states that long pages return bounded head/tail text
+and full text is not stored. The stock Hermes schema is not changed globally.
+
+For compatibility with historical model requests, only this focused wrapper
+caps integer limits above 6,000 before dispatch and receipt capture. Omitted or
+null limits use the default; booleans, other types and values below 2,000 retain
+strict dispatcher rejection. The dispatcher itself still rejects oversized
+limits when called directly. A cap emits the sanitized private CLI log event
+`focused_extract_limit_capped effective_char_limit=6000`, never raw arguments,
+URLs, bodies or requested values. Receipts describe the effective request.
+URL safety, provenance, provider routing, total-envelope limits and deadlines
+are unchanged. Capping is not a source-quality or trading-gate exception.
 
 The model's symbol-to-URL dictionary and trusted captures are separate fields on
 `FocusedURLs`. No URLs are recovered from receipts or malformed final stdout.

@@ -437,7 +437,18 @@ with ExitStack() as stack:
         source = Path(os.environ.get('TRADEY_UNPATCHED_ROOT',
             '/home/hermes/.hermes/cache/scratch/project-extraction-unpatched'))
         self.assertTrue(source.is_dir(), 'explicit unpatched checkout required')
-        with __import__('unittest.mock', fromlist=['patch']).patch.dict(os.environ, {'HERMES_SOURCE_ROOT': str(source)}):
+        # A disposable source snapshot need not own a PM dependency selection.
+        # Borrow the installed venv only for this comparison; a global override
+        # changes sys.executable in unrelated short-deadline process fixtures.
+        from pm.environments import committed_venv
+        _, installed_source = runtime_paths.hermes_runtime()
+        environment = committed_venv(installed_source)
+        self.assertIsNotNone(environment, 'installed dependency environment required')
+        assert environment is not None
+        python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        with __import__('unittest.mock', fromlist=['patch']).patch.dict(os.environ, {
+            'HERMES_SOURCE_ROOT': str(source), 'HERMES_PYTHON': str(python),
+        }):
             python, selected = runtime_paths.hermes_runtime()
             self.assertEqual(selected.resolve(), source.resolve())
             for mode in ('worker', 'focused'):

@@ -19,6 +19,10 @@ from extraction_contract import is_error_document, strip_tool_footer
 from publication_provenance import extraction_extensions, publication_conflicts
 
 MAX_ENVELOPE_BYTES = 100_000
+MIN_EXTRACT_CHARS = 2000
+MAX_EXTRACT_CHARS = 6000
+DEFAULT_EXTRACT_CHARS = MAX_EXTRACT_CHARS
+MAX_EXTRACT_URLS = 5
 
 
 class _Failure(Exception):
@@ -200,8 +204,8 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
                        *, deadline: float | None = None) -> str:
     """Return a bounded JSON tool envelope, without shared caches or nested rescue."""
     format = 'markdown' if format is None else format
-    char_limit = 6000 if char_limit is None else char_limit
-    originals = urls if isinstance(urls, list) and 1 <= len(urls) <= 5 else ['']
+    char_limit = DEFAULT_EXTRACT_CHARS if char_limit is None else char_limit
+    originals = urls if isinstance(urls, list) and 1 <= len(urls) <= MAX_EXTRACT_URLS else ['']
     admitted = False
 
     def fail(reason, *, redact_urls=False):
@@ -219,10 +223,10 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
                 reason = exc.reason
             rows = [_error('', reason) for _ in originals]
         return _envelope(rows)
-    if (not isinstance(urls, list) or not 1 <= len(urls) <= 5
+    if (not isinstance(urls, list) or not 1 <= len(urls) <= MAX_EXTRACT_URLS
             or any(not isinstance(u, str) or not 1 <= len(u) <= 4096 for u in urls)
             or not isinstance(format, str) or format not in ('markdown', 'html')
-            or type(char_limit) is not int or not 2000 <= char_limit <= 6000
+            or type(char_limit) is not int or not MIN_EXTRACT_CHARS <= char_limit <= MAX_EXTRACT_CHARS
             or (deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)))):
         return fail('invalid_request')
     deadline = monotonic() + 30 if deadline is None else deadline

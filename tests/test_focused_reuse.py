@@ -28,6 +28,90 @@ def raw(rows=None, **declarations):
 
 
 class FocusedReuseTests(unittest.TestCase):
+    def test_focused_contract_bounds_historical_limits_and_restores_schema(self):
+        # Catch retained stock schemas and pre-network refusals of historical
+        # 10k-18k requests. Keep real registry, dispatcher, projection and receipts;
+        # replace only CLI/model startup and provider/network boundaries.
+        cap = capture_module()
+        command = cap.focused_command(['hermes', 'chat'])
+        prefix = command[3].split('runpy.run_path(')[0]
+        probe = r'''
+import asyncio, json, logging, os
+from contextlib import ExitStack
+from unittest.mock import patch, AsyncMock
+import hermes_cli.main as cli
+import tools.web_tools as web
+from tools.registry import registry
+import focused_wrapper as wrapper
+import extraction_compat as compat
+import focused_capture as cap
+entry = registry.get_entry('web_extract')
+stock_schema, stock_handler = entry.schema, entry.handler
+stock_copy = json.loads(json.dumps(stock_schema))
+class Provider:
+    name = 'fixture'
+seen, events = [], []
+class Events(logging.Handler):
+    def emit(self, record): events.append(record.getMessage())
+handler = Events()
+logging.getLogger('focused_wrapper').addHandler(handler)
+async def primary(provider, urls, **kwargs):
+    seen.extend(urls)
+    return [{'url': u, 'title': 'Bounded release', 'content': 'Company revenue increased. ' * 600} for u in urls]
+def main():
+    schema = registry.get_schema('web_extract')
+    limits = schema['parameters']['properties']['char_limit']
+    assert limits.get('minimum') == 2000, limits
+    assert limits.get('maximum') == 6000, limits
+    assert limits.get('default') == 6000, limits
+    assert schema['parameters']['properties']['urls']['maxItems'] == 5
+    assert '15000' not in json.dumps(schema) and '15,000' not in json.dumps(schema)
+    assert 'not stored' in schema['description'].lower(), schema
+    for value, want in [(None, 6000), (2000, 2000), (6000, 6000),
+                        (10000, 6000), (12000, 6000), (14000, 6000),
+                        (15000, 6000), (16000, 6000), (18000, 6000)]:
+        url = 'https://news.example/limit-' + str(value)
+        args = {'urls': [url]}
+        if value is not None: args['char_limit'] = value
+        row = json.loads(registry.dispatch('web_extract', args))['results'][0]
+        assert row['error'] is None, (value, row)
+        assert row['url'] == url and len(row['content']) <= want, (value, row)
+        assert row['content'].startswith('Company revenue increased.'), row
+    assert len(seen) == 9, seen
+    assert len(events) == 6, events
+    assert all('focused_extract_limit_capped' in e and 'https://' not in e for e in events), events
+    # Wrong types and lower bounds are not silently repaired. Dispatcher remains
+    # strict even for upper limits when bypassing this wrapper.
+    for value in [True, False, '6000', 6000.0, 1999, 0, -1]:
+        row = json.loads(registry.dispatch('web_extract', {'urls':['https://news.example/bad'], 'char_limit':value}))['results'][0]
+        assert row['reason'] == 'invalid_request', (value, row)
+    import research_extraction as project
+    row = json.loads(asyncio.run(project.extract_tool(['https://news.example/strict'], char_limit=18000)))['results'][0]
+    assert row['reason'] == 'invalid_request', row
+    assert len(seen) == 9, seen
+    # Exercise real URL admission: a cap cannot authorize an unsafe URL.
+    with patch.object(compat, 'check_url', AsyncMock(side_effect=compat.CompatibilityError('unsafe_url'))):
+        row = json.loads(registry.dispatch('web_extract', {'urls':['http://127.0.0.1/private'], 'char_limit':18000}))['results'][0]
+        assert row['reason'] == 'unsafe_url' and row['url'] == '', row
+    assert len(seen) == 9, seen
+    print('focused-contract-ok')
+with ExitStack() as stack:
+    stack.enter_context(patch.object(cli, 'main', main))
+    stack.enter_context(patch.object(compat, 'check_url', AsyncMock(side_effect=lambda u:u)))
+    stack.enter_context(patch.object(compat, 'resolve', return_value=Provider()))
+    stack.enter_context(patch.object(compat, 'uses_keyless', return_value=False))
+    stack.enter_context(patch.object(compat, 'primary', primary))
+    try: wrapper.main()
+    finally:
+        assert entry.schema is stock_schema and entry.schema == stock_copy
+        assert entry.handler is stock_handler
+logging.getLogger('focused_wrapper').removeHandler(handler)
+'''
+        done = subprocess.run(command[:3]+[prefix+probe]+command[4:], text=True,
+                              capture_output=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr[-6000:])
+        self.assertEqual(done.stdout.strip(), 'focused-contract-ok')
+
     def test_registered_extract_uses_project_and_records_receipt(self):
         cap = capture_module()
         command = cap.focused_command(['hermes', 'chat'])
@@ -56,7 +140,7 @@ def main():
     assert cap.FD_ENV not in os.environ and cap.NONCE_ENV not in os.environ
     child = subprocess.check_output([sys.executable, '-c', 'import os; print(dict(os.environ))'], text=True)
     assert 'TRADEY_FOCUSED_CAPTURE' not in child
-    got = registry.dispatch('web_extract', {'urls':['https://news.example/story'], 'char_limit':6000})
+    got = registry.dispatch('web_extract', {'urls':['https://news.example/story'], 'char_limit':18000})
     assert __import__('json').loads(got)['results'][0]['title'] == 'Project receipt', got
     print('registry-project-ok')
 with ExitStack() as stack:
@@ -79,6 +163,8 @@ registry.get_entry('web_extract').handler = original
             self.assertEqual(done.returncode, 0, done.stderr[-4000:])
             self.assertEqual(done.stdout, 'registry-project-ok\n')
             self.assertNotIn('b'*64, done.stdout + done.stderr)
+            receipt = json.loads(os.pread(channel.fileno(), 100000, 0))
+            self.assertEqual(receipt['calls'][0]['request']['char_limit'], 6000)
             pages = cap.read_capture(channel.fileno(), 'b'*64)
             self.assertEqual(pages[URL]['page']['title'], 'Project receipt')
             self.assertEqual(pages[URL]['page']['location_provenance'], 'uncached_dispatch')
@@ -234,13 +320,16 @@ for fault, wanted in [(None,True),(SystemExit(0),True),(SystemExit(7),False),(Ru
         os.environ[cap.NONCE_ENV]='a'*64
         old_cache=cache.extract_cache_get
         old_handler=registry.get_entry('web_extract').handler
+        old_schema=registry.get_entry('web_extract').schema
         def main():
+            assert registry.get_schema('web_extract')['parameters']['properties']['char_limit']['maximum']==6000
             registry.dispatch('web_extract', {'urls':['https://news.example/story']})
             if fault is not None:raise fault
         with patch.object(project,'extract_tool',original), patch.object(cli,'main',main):
             try:wrapper.main()
             except (RuntimeError,SystemExit) as got:assert got is fault
             assert registry.get_entry('web_extract').handler is old_handler
+            assert registry.get_entry('web_extract').schema is old_schema
             assert cache.extract_cache_get is old_cache
             assert bool(cap.read_capture(channel.fileno(),'a'*64)) is wanted
 print('wrapper-exit-semantics-ok')
