@@ -619,6 +619,11 @@ def validate_order_with_details(
         try:
             meta = entry_expiry.validate_metadata(order.get("entry_expiry"), order, snap.get("trading_calendar"))
             now = dt.datetime.now(dt.timezone.utc)
+            # Placement metadata can predate a long review. Swing expiry is the
+            # next session's close, not permission to submit after today's close.
+            if not any(day == meta["placement_session"] and opened <= now < closed
+                       for day, opened, closed in entry_expiry.sessions(snap.get("trading_calendar"))):
+                e.append("entry_placement_outside_session")
             if now >= managed_reconciliation.timestamp(meta["expires_at"]) or now.astimezone(ZoneInfo("America/New_York")).date().isoformat() != meta["placement_session"]:
                 e.append("entry_deadline_passed")
         except RuntimeError as error:

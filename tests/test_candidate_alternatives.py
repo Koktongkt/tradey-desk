@@ -82,7 +82,9 @@ class CandidateAlternativesTests(unittest.TestCase):
             fetch.assert_called_once()
 
     def test_oct2_replay_borrows_for_second_synthesis_without_burning_enrichment(self):
-        for upstream,expected_timeouts in ((0,[60,52]),(400,[60,35])):
+        # Retain the historical 400-second replay, plus its shifted near-global
+        # equivalent under the larger active envelope (570 rather than 510).
+        for upstream,expected_timeouts in ((0,[60,52]),(400,[60,52]),(460,[60,35])):
             clock=[0.0]
             with self.subTest(upstream=upstream), self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,fetch,market):
                 original=calls.side_effect
@@ -138,7 +140,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         with self.research_fixture([none],symbols=('AAA',)) as (cfg,_,calls,fetch,_):
             pages=fetch.return_value
             def delayed_fetch(*args,**kwargs):
-                clock[0]=435.0
+                clock[0]=495.0
                 return pages
             fetch.side_effect=delayed_fetch
             with patch.object(radar,'monotonic',side_effect=lambda:clock[0]):
@@ -148,7 +150,7 @@ class CandidateAlternativesTests(unittest.TestCase):
 
     def test_subminimum_window_never_launches_initial_or_alternative(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        for initial,first in ((436,None),(0,none),(0,self.candidate('AAA'))):
+        for initial,first in ((496,None),(0,none),(0,self.candidate('AAA'))):
             with self.subTest(initial=initial,first=first), self.research_fixture([first or none,none],symbols=('AAA','BBB')) as (cfg,root,calls,fetch,_):
                 clock=[0.0]
                 pages=fetch.return_value
@@ -175,7 +177,7 @@ class CandidateAlternativesTests(unittest.TestCase):
             pages=fetch.return_value
             fetch.return_value=pages[:3]
             def late_focused(*args,**kwargs):
-                clock[0]=400
+                clock[0]=460
                 return {s:[f'https://two.example/{s}'] for s in ('AAA','BBB')}
             deadlines=[]
             def synth(cfg,selected,evidence,deadline,**kwargs):
@@ -183,12 +185,12 @@ class CandidateAlternativesTests(unittest.TestCase):
                 clock[0]+=15
                 return none
             def rescue(selected,accepted,**kwargs):
-                self.assertEqual(kwargs['deadline'],435)
-                clock[0]=435
+                self.assertEqual(kwargs['deadline'],495)
+                clock[0]=495
                 return accepted+[pages[3]]
             with patch.object(radar,'focused_retrieval',side_effect=late_focused), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue) as rescued:
                 self.assertEqual(radar.live_research(cfg)['status'],'none')
-            self.assertEqual(deadlines,[490,490])
+            self.assertEqual(deadlines,[550,550])
             rescued.assert_called_once()
             self.assertEqual(calls.call_count,1)
 

@@ -144,6 +144,42 @@ class ThreeRuntimeTests(unittest.TestCase):
             self.assertEqual(run_cycle.parse_failure_event(line),line,token)
             self.assertIsNone(run_cycle.parse_failure_event(line+':legacy-uber'))
 
+    def test_swing_review_crossing_regular_close_cannot_submit(self):
+        # A :55 cycle may still be reviewing near the close. A one-second clock
+        # advance keeps quotes fresh, isolating session membership from staleness
+        # and the swing order's next-session expiry.
+        cases = [
+            ('normal', ['2026-11-30','2026-12-01','2026-12-02','2026-12-03','2026-12-04','2026-12-07','2026-12-08'], '16:00', '2026-11-30T20:59:59+00:00', '2026-11-30T21:00:00+00:00'),
+            ('early', ['2026-11-27','2026-11-30','2026-12-01','2026-12-02','2026-12-03','2026-12-04','2026-12-07'], '13:00', '2026-11-27T17:59:59+00:00', '2026-11-27T18:00:00+00:00'),
+        ]
+        cases=[(*row,phase) for row in cases for phase in ('reviewers','broker_review','before_close')]
+        for label, dates, close, start, end, phase in cases:
+            with self.subTest(case=label,phase=phase), patch.object(Clock,'instant',dt.datetime.fromisoformat(start)):
+                f=ThreeRuntimeTests(); f.setUp(); self.addCleanup(f.doCleanups)
+                f.calendar=[dict(date=d,open='09:30',close=close if i==0 else '16:00') for i,d in enumerate(dates)]
+                candidate=dict(symbol='DELL',sources_verified_at=start,researched_at=start,
+                    sources=[{'url':'https://a.example/1'},{'url':'https://b.example/2'}],
+                    setup_type='strategic_rerating',planned_exit_at=dates[-1]+'T21:00:00Z',
+                    earnings_event_at='2026-11-20',thesis='supported')
+                candidate['dossier_hash']=hashlib.sha256(json.dumps(candidate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                a.append_jsonl(f.root/'candidates.jsonl',candidate)
+                def cross_close(bundle,cfg):
+                    result=f.reviewers(bundle,cfg)
+                    self.assertEqual(bundle['proposal']['assigned_rubric'],'swing_6_30')
+                    if phase=='reviewers':Clock.instant=dt.datetime.fromisoformat(end)
+                    return result
+                def broker_call(op,payload=None):
+                    result=f.broker(op,payload)
+                    if phase=='broker_review' and op=='review':Clock.instant=dt.datetime.fromisoformat(end)
+                    return result
+                out=io.StringIO()
+                with patch.object(a,'ROOT',f.root),patch.object(a,'PRIVATE_DIR',f.root/'private'),patch.object(a.dt,'datetime',Clock),patch.object(bridge,'datetime',Clock),patch.object(bridge,'consolidated_daily_bars',return_value=technical_bars()),patch.object(a,'_broker_bridge',side_effect=broker_call),patch.object(a,'independent_reviews',side_effect=cross_close),contextlib.redirect_stdout(out):
+                    code=a.run(a.argparse.Namespace(dry_run_fixture=False,live_dry_run=False))
+                self.assertEqual(code,0 if phase=='before_close' else 2,out.getvalue())
+                if phase!='before_close':self.assertIn('entry_placement_outside_session',out.getvalue())
+                self.assertEqual(any(name=='place_stock_order' for name,_ in f.calls),phase=='before_close')
+                self.assertEqual(len(a.read_jsonl(f.root/'private/order_intents.jsonl')),3 if phase=='before_close' else 2)
+
     def test_all_three_validation_stages_receive_exact_snapshot_bound_proofs(self):
         stages=[]
         patches=[]

@@ -50,34 +50,51 @@ If a successful reviewer process returns no parseable JSON, the same isolated mo
 ## Scheduled execution cadence
 
 `cron/autotrader.schedule` records the intended UTC scheduler expression:
-`10,30,40,50 13-20 * * 1-5`. The live scheduler must be explicitly updated and
+`15,35,40,55 13-20 * * 1-5`. The live scheduler must be explicitly updated and
 read back against this contract; the file alone does not deploy a schedule.
-The broad DST-safe grid intersects the unchanged New York predicates to run
-once at **09:40 ET**, then **:10/:30/:50 from 10:00 through 15:59 ET**.
+The broad DST-safe grid intersects the New York predicates to run
+once at **09:40 ET**, then **:15/:35/:55 from 10:00 through 15:59 ET**.
 The additional :40 triggers at other hours silently no-op before research,
-broker calls or audit writes. No new intraday execution slots are authorized.
+broker calls or audit writes. This shifts the regular slots by five minutes;
+the number of accepted weekday starts remains unchanged. The last is 15:55 ET,
+with no 16:00-or-later starts. These cheap weekday launch fences do not infer
+exchange holidays or early closes: entry validation uses the broker's regular
+calendar and rechecks the current clock at every validation stage. A swing
+order's next-session expiry never authorizes submission after today's close.
 The opening consumer follows 09:00 ET premarket research; later consumers
-follow radar's :00/:20/:40 starts by ten minutes. Each cycle still requires
+follow radar's :00/:20/:40 starts by fifteen minutes, leaving five nominal
+minutes after the ten-minute research cutoff. This is not a scheduling-latency
+guarantee. Each cycle still requires
 fresh evidence and every unchanged review, reconciliation and risk gate.
 The regression intersects the versioned grid with the real slot/window code
 for EDT, EST and both DST-transition Mondays; deployment verification separately
 checks the installed job's expression, script, workdir, delivery and enabled state.
 
+`cron/reconcile.schedule` records `2,12,22,32,42,52 * * * 1-5` for reconciliation
+maintenance, shifted three minutes earlier with the same frequency and unchanged
+New York 09:35–16:15 maintenance fence. The shifted grid's first/last accepted
+weekday passes are 09:42/16:12; 09:32 remains an off-window no-op. This avoids simultaneous scheduled starts with
+both the 09:40 opening consumer and regular :15/:35/:55 consumers. It does not
+guarantee non-overlap of long-running jobs; the existing shared nonblocking lock
+continues to fail closed on contention. Other job schedules remain unchanged.
+
 ## Adaptive research budgets
 
-Premarket/radar retains its **540-second outer timeout**, with an active deadline
-of **510 seconds** and **30 seconds reserved for final overhead**. Discovery stays
-capped at 165 seconds and the shared evidence fetch/rescue pipeline at 120 seconds.
+Premarket/radar has a **600-second outer timeout**, with an active deadline
+of **570 seconds** and **30 seconds reserved for final overhead**. Discovery stays
+capped at 165 seconds; the shared evidence fetch/rescue pipeline has 180 seconds.
+The active budget, evidence cap and outer cutoff each increased by 60 seconds.
+Individual URL/helper timeouts, model turns and all other stage caps are unchanged.
 Focused retrieval allows **seven model turns**, an advisory `--run-budget 110`,
 and a **150-second hard subprocess cap**. With an active deadline, its timeout is
-`min(150, active_deadline - now - 200)`, calculated after command and prompt
+`min(150, active_deadline - now - 260)`, calculated after command and prompt
 preparation immediately before launch; at zero or below it launches nothing and
 returns `research_focused_retrieval_timeout`. A standalone call without a supplied
 deadline retains the 150-second cap. Retrieval must perform parallel search,
 then parallel extraction, then final JSON: no further search/extraction after
 extraction, and return the usable subset instead of chasing all candidates.
 
-The explicit **200-second downstream reserve** is full evidence/rescue (120) +
+The explicit **260-second downstream reserve** is full evidence/rescue (180) +
 one viable synthesis launch (30) + cumulative enrichment (45) + **five seconds of
 transition headroom**. This is a bounded local-overhead margin, not a guaranteed
 hard-real-time path: slower preparation, persistence, scheduling, or other local
@@ -107,8 +124,8 @@ and deducts elapsed time even on exceptions. Later synthesis does not consume th
 enrichment allotment; final enrichment remains bounded by the active deadline.
 These adaptive caps are **not additive**: the extra synthesis opportunity borrows
 unused earlier-stage headroom. Launch and enrichment deadline clipping retain the
-510-second active envelope and the 30-second final overhead reservation; the outer
-540-second process timeout remains the hard backstop. A pre-existing limitation
+570-second active envelope and the 30-second final overhead reservation; the outer
+600-second process timeout remains the hard backstop. A pre-existing limitation
 remains in SEC metadata helpers: socket timeouts do not impose an absolute deadline
 on trickling HTTP body reads, so the overhead reserve is not an unconditional
 whole-pipeline guarantee. This change does not alter those source adapters.

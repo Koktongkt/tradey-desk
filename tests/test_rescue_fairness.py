@@ -113,19 +113,28 @@ def replay(spec=None, ar=radar) -> dict:
     return dict(spec=spec,events=events,ready=ready,elapsed=clock[0],outcome=outcome,diagnostics=diagnostics)
 
 class RescueFairnessTests(unittest.TestCase):
+    def test_extra_evidence_minute_can_complete_bundle_after_old_deadline(self):
+        # Real orchestration must consume >120 seconds and still reach synthesis,
+        # not merely expose a larger constant that is clipped by an old deadline.
+        r=replay({'initial_cost':130,'slow':False})
+        self.assertEqual(r['events'][0]['end'],130)
+        self.assertIn('BBB',[x['symbol'] for x in r['ready']])
+        self.assertTrue(all(e['deadline']==180 for e in r['events'] if e['kind'] in ('initial','lookup','fetch')))
+        self.assertTrue(all(e['start']<e['deadline'] and e['end']<=e['deadline'] for e in r['events']))
+
     def test_starved_later_bundle_recovers_without_slicing_first(self):
         r=replay()
         self.assertIn('BBB',[x['symbol'] for x in r['ready']])
         operations=[(e['kind'],e['symbol']) for e in r['events'] if e['kind'] not in ('initial','synthesis')]
         self.assertEqual(operations[:4],[('lookup','AAA'),('lookup','BBB'),('search','AAA'),('search','BBB')])
-        self.assertTrue(all(e['deadline']==120 for e in r['events'] if e['kind'] in ('lookup','fetch')))
+        self.assertTrue(all(e['deadline']==180 for e in r['events'] if e['kind'] in ('lookup','fetch')))
 
     def test_slow_sourceable_first_is_not_lost_to_equal_share(self):
         for count in (2,3):
             with self.subTest(count=count):
                 r=replay({'a_sourceable':True,'b_missing':True,'count':count})
                 self.assertEqual([x['symbol'] for x in r['ready']],['AAA'])
-                self.assertLess(r['elapsed'],120)
+                self.assertLess(r['elapsed'],180)
                 self.assertEqual(sum(e['kind']=='search' and e['symbol']=='AAA' for e in r['events']),1)
                 self.assertEqual(sum(e['kind']=='fetch' and e['symbol']=='AAA' for e in r['events']),1)
 
@@ -148,11 +157,11 @@ class RescueFairnessTests(unittest.TestCase):
             self.assertNotIn('DDD',admitted)
 
     def test_expired_and_short_windows_never_launch_after_deadline(self):
-        for initial in (120,119,118,90):
+        for initial in (180,179,178,150):
             r=replay({'initial_cost':initial})
             for e in r['events']:
                 self.assertLess(e['start'],e['deadline'])
-            if initial==120:self.assertEqual([e['kind'] for e in r['events']],['initial'])
+            if initial==180:self.assertEqual([e['kind'] for e in r['events']],['initial'])
             self.assertFalse(r['ready'])
 
     def test_failure_controls_and_no_candidate(self):

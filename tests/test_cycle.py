@@ -287,9 +287,9 @@ class CycleTests(unittest.TestCase):
             self.assertTrue(run_cycle.scheduled_slot("radar",at(h,m)))
         for h,m in [(9,30),(9,40),(16,0),(10,10),(10,30),(10,50)]:
             self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
-        for h,m in [(9,40),(10,10),(10,30),(15,10),(15,30)]:
+        for h,m in [(9,40),(10,15),(10,35),(10,55),(15,15),(15,35),(15,55)]:
             self.assertTrue(run_cycle.scheduled_slot("autotrader",at(h,m)))
-        for h,m in [(9,30),(9,45),(10,0),(10,20),(10,40),(16,20)]:
+        for h,m in [(9,15),(9,30),(9,35),(9,45),(9,55),(10,0),(10,10),(10,20),(10,30),(10,40),(10,50),(16,15),(16,35),(16,55)]:
             self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
 
     def test_market_open_and_close_fire_windows_exclude_edge_slots(self):
@@ -309,7 +309,7 @@ class CycleTests(unittest.TestCase):
         first_hour,last_hour=(int(value) for value in hour_field.split("-"))
         self.assertEqual((first_hour,last_hour),(13,20))
         ny=ZoneInfo("America/New_York")
-        expected=[(9,40)]+[(hour,minute) for hour in range(10,16) for minute in (10,30,50)]
+        expected=[(9,40)]+[(hour,minute) for hour in range(10,16) for minute in (15,35,55)]
         # EDT, EST, and the Mondays following both DST transitions.
         for day in (dt.date(2026,10,12),dt.date(2026,12,15),dt.date(2026,3,9),dt.date(2026,11,2),dt.date(2026,10,17),dt.date(2026,12,19)):
             accepted=[]
@@ -328,6 +328,44 @@ class CycleTests(unittest.TestCase):
         self.assertTrue(run_cycle.scheduled_slot("premarket",summer))
         self.assertTrue(run_cycle.scheduled_slot("premarket",winter))
 
+    def test_intraday_consumer_leaves_five_minutes_after_research_cutoff(self):
+        ny=ZoneInfo('America/New_York')
+        for day in (dt.date(2026,3,9),dt.date(2026,10,12),dt.date(2026,11,2),dt.date(2026,12,15)):
+            for hour in range(10,16):
+                for minute in (0,20,40):
+                    producer=dt.datetime.combine(day,dt.time(hour,minute),tzinfo=ny)
+                    consumer=producer+dt.timedelta(minutes=15)
+                    with self.subTest(day=day,hour=hour,minute=minute):
+                        self.assertTrue(run_cycle.scheduled_slot('radar',producer))
+                        self.assertTrue(run_cycle.scheduled_slot('autotrader',consumer))
+                        self.assertTrue(run_cycle.in_window('market',consumer))
+                        self.assertEqual(consumer-(producer+dt.timedelta(seconds=600)),dt.timedelta(minutes=5))
+
+    def test_reconciliation_grid_avoids_simultaneous_autotrader_starts(self):
+        import managed_reconciliation as reconciliation
+        root=Path(run_cycle.__file__).parent
+        contract=root/'cron/reconcile.schedule'
+        self.assertTrue(contract.is_file(),'versioned reconciliation cadence contract missing')
+        minute_field,hour_field,dom,month,dow=contract.read_text().split()
+        self.assertEqual((hour_field,dom,month,dow),('*','*','*','1-5'))
+        minutes={int(x) for x in minute_field.split(',')}
+        auto_minutes={int(x) for x in (root/'cron/autotrader.schedule').read_text().split()[0].split(',')}
+        ny=ZoneInfo('America/New_York')
+        # Preserve reconciliation's existing 09:35–16:15 fence. The shifted
+        # 09:32 fire is a no-op; the first/last accepted fires are 09:42/16:12.
+        expected=[(9,42),(9,52)]+[(h,m) for h in range(10,16) for m in (2,12,22,32,42,52)]+[(16,2),(16,12)]
+        for day in (dt.date(2026,3,9),dt.date(2026,10,12),dt.date(2026,11,2),dt.date(2026,12,15),dt.date(2026,10,17)):
+            accepted=[]; auto=[]
+            for hour in range(24):
+                for minute in range(60):
+                    fire=dt.datetime.combine(day,dt.time(hour,minute),tzinfo=dt.timezone.utc)
+                    local=fire.astimezone(ny)
+                    if minute in minutes and reconciliation.market_window_open(fire):accepted.append((local.hour,local.minute))
+                    if 13<=hour<=20 and minute in auto_minutes and run_cycle.scheduled_slot('autotrader',fire) and run_cycle.in_window('market',fire):auto.append((local.hour,local.minute))
+            with self.subTest(day=day):
+                self.assertEqual(accepted,expected if day.weekday()<5 else [])
+                self.assertFalse(set(accepted)&set(auto))
+
     def test_main_silently_skips_broad_cron_fire_outside_exact_slot(self):
         with patch.object(sys,"argv",["run_cycle.py","radar"]), patch(
             "run_cycle.scheduled_slot",return_value=False
@@ -337,13 +375,17 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(run_cycle.main(),0)
         window.assert_not_called();execute.assert_not_called();audit.assert_not_called()
 
-    def test_radar_research_runs_under_a_540_second_budget(self):
-        with patch.object(sys,"argv",["run_cycle.py","radar"]), \
-             patch("run_cycle.scheduled_slot",return_value=True), \
-             patch("run_cycle.in_window",return_value=True), \
-             patch.object(run_cycle,"execute",return_value=0) as call:
-            run_cycle.main()
-        self.assertEqual(call.call_args.kwargs["timeout_seconds"],540)
+    def test_research_uses_600_seconds_without_changing_execution_budget(self):
+        for mode in ("radar","premarket","autotrader"):
+            with self.subTest(mode=mode), patch.object(sys,"argv",["run_cycle.py",mode]), \
+                 patch("run_cycle.scheduled_slot",return_value=True), \
+                 patch("run_cycle.in_window",return_value=True), \
+                 patch("run_cycle.completed_today",return_value=False), \
+                 patch("run_cycle.mark_completed"), \
+                 patch.object(run_cycle,"execute",return_value=0) as call:
+                run_cycle.main()
+                self.assertEqual(call.call_args.kwargs["timeout_seconds"],600)
+                self.assertEqual(call.call_args.kwargs["attempts"],1)
 class PortableCronEntrypointTests(unittest.TestCase):
     def test_wrappers_resolve_their_project_and_preserve_arguments(self):
         import os

@@ -226,7 +226,7 @@ def scheduled_slot(mode:str,now:dt.datetime|None=None)->bool:
     if mode=="premarket":return n.hour==9 and n.minute==0
     if mode=="radar":return 10<=n.hour<=15 and n.minute in {0,20,40}
     if mode=="autotrader":
-        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {10,30,50})
+        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {15,35,55})
     return True
 
 
@@ -237,7 +237,7 @@ def main()->int:
     if not in_window(window):audit_result(a.mode,"schedule",0,"DECISION skipped outside_window");return 0
     daily=a.mode in {"premarket","postclose"}
     if daily and completed_today(a.mode):audit_result(a.mode,"schedule",0,"DECISION skipped already_completed");return 0
-    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=540,attempts=1,audit_mode=a.mode,audit_stage="research")
+    if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="research")
     elif a.mode=="autotrader":rc=execute([sys.executable,str(ROOT/"autotrader.py")],timeout_seconds=600,attempts=1,audit_mode=a.mode,audit_stage="execution")
     elif a.mode=="postclose":
         rc=execute([sys.executable,str(ROOT/"candidate_outcomes.py")],timeout_seconds=300,attempts=2,audit_mode=a.mode,audit_stage="outcome_measurement")
