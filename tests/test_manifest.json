@@ -26,6 +26,7 @@
    "test_structured_extraction",
    "test_focused_reuse",
    "test_focused_allocation",
+   "test_focused_batch",
    "test_focused_search",
    "test_safety",
    "test_shadow",

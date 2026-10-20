@@ -6,9 +6,11 @@ from time import monotonic
 import math
 import json
 import sys
+from typing import Callable
 from extraction_contract import is_error_document, strict_json_loads, strip_tool_footer
 
 MAX_INPUT = 8192
+MAX_BATCH_INPUT = 131_072
 MAX_PROVIDER_RESPONSE = 100_000
 
 
@@ -119,25 +121,128 @@ async def extract(request, dispatch=None):
         return error('provider_error')
 
 
+def batch_error(reason):
+    return {'version': 2, 'status': 'error', 'reason': reason}
+
+
+def valid_batch_request(request):
+    """Shared admission, including serialized byte size (not character count)."""
+    if (not isinstance(request, dict) or type(request.get('version')) is not int
+            or request['version'] != 2 or not isinstance(request.get('urls'), list)
+            or not 1 <= len(request['urls']) <= 5
+            or any(not isinstance(u, str) or not 1 <= len(u) <= 4096 for u in request['urls'])):
+        return False
+    urls = request['urls']
+    timeout = request.get('timeout_seconds', 30)
+    if (len(set(urls)) != len(urls) or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
+        return False
+    try:
+        if len(json.dumps(request, ensure_ascii=True, allow_nan=False).encode('utf-8')) > MAX_BATCH_INPUT:
+            return False
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        return False
+    return True
+
+
+async def extract_batch(request: dict, dispatch: Callable | None = None) -> dict:
+    """Bind the entire set before projecting individual page/error envelopes.
+
+    Only our dispatcher performs uncached location checks. Injected transports
+    can supply content, never trusted provenance.
+    """
+    if not valid_batch_request(request):
+        return batch_error('invalid_request')
+    urls = request['urls']
+    controlled = dispatch is None
+    try:
+        if controlled:
+            from research_extraction import extract_tool
+            raw = await extract_tool(urls, format='markdown', char_limit=6000,
+                                     deadline=monotonic() + min(request.get('timeout_seconds', 30), 30))
+        else:
+            raw = await dispatch(urls, format='markdown', char_limit=6000)
+        rows, reason = provider_rows(raw)
+        if reason:
+            return batch_error(reason)
+        if rows is None or len(rows) != len(urls):
+            return batch_error('malformed_response')
+        if controlled and all(r.get('url') == '' and r.get('error') for r in rows):
+            # Dispatcher admission errors deliberately redact unchecked identities.
+            from structured_extraction import ERROR_REASONS
+            reasons = [r.get('reason') for r in rows]
+            if isinstance(reasons[0], str) and reasons[0] in ERROR_REASONS and all(r == reasons[0] for r in reasons):
+                return batch_error(reasons[0])
+        bound = {}
+        for row in rows:
+            loc = row.get('extraction_location')
+            key = loc.get('requested_url') if isinstance(loc, dict) else row.get('url')
+            if not isinstance(key, str) or key not in urls or key in bound:
+                return batch_error('url_mismatch')
+            if 'extraction_location' in row:
+                from publication_provenance import extraction_extensions
+                # Validate just transport identity here; bad page metadata stays
+                # a row error and cannot erase independently successful siblings.
+                if extraction_extensions({'extraction_location': loc}, row.get('url'), key) is None:
+                    return batch_error('url_mismatch')
+            if row.get('url') in urls and row['url'] != key:
+                return batch_error('url_mismatch')
+            bound[key] = row
+        results = []
+        for key in urls:
+            row = bound[key]
+            if controlled and row.get('error'):
+                from structured_extraction import ERROR_REASONS
+                reason = row.get('reason')
+                result = error(reason if isinstance(reason, str) and reason in ERROR_REASONS else 'provider_error')
+            else:
+                result = project_row(row, controlled)
+            results.append({'requested_url': key, 'result': result})
+        # The dispatcher encodes fatal protocol refusals as one error per key.
+        # Collapse only an all-error protocol refusal, never a mixed batch or
+        # ordinary per-page provider failures.
+        if controlled:
+            reason = results[0]['result'].get('reason')
+            if (reason in ('invalid_request', 'malformed_response', 'url_mismatch', 'output_limit')
+                    and all(r['result'].get('reason') == reason for r in results)):
+                return batch_error(reason)
+        out = {'version': 2, 'status': 'ok', 'results': results}
+        if len(json.dumps(out, ensure_ascii=True, allow_nan=False, separators=(',', ':')).encode('utf-8')) > MAX_PROVIDER_RESPONSE:
+            return batch_error('output_limit')
+        return out
+    except asyncio.TimeoutError:
+        return batch_error('timeout')
+    except Exception:
+        return batch_error('provider_error')
+
+
 def main():
     out = error('invalid_request')
+    fail = error
     try:
-        raw = sys.stdin.buffer.read(MAX_INPUT + 1)
-        if len(raw) <= MAX_INPUT:
+        raw = sys.stdin.buffer.read(MAX_BATCH_INPUT + 1)
+        if len(raw) <= MAX_BATCH_INPUT:
             try:
                 request = strict_json_loads(raw)
             except (ValueError, UnicodeError, RecursionError):
-                sys.stdout.write(json.dumps(error('malformed_response')) + '\n')
-                return
-            timeout = request.get('timeout_seconds', 30) if isinstance(request, dict) else 30
-            if type(timeout) in (int, float) and 0 < timeout <= 30:
-                async def bounded():
-                    return await asyncio.wait_for(extract(request), timeout=timeout)
-                # Provider chatter cannot become an envelope. Parent separately caps stderr.
-                with redirect_stdout(sys.stderr):
-                    out = asyncio.run(bounded())
+                # Preserve v1's byte admission, even for unparseable input.
+                out = error('invalid_request' if len(raw) > MAX_INPUT else 'malformed_response')
+            else:
+                batch = isinstance(request, dict) and type(request.get('version')) is int and request['version'] == 2
+                fail = batch_error if batch else error
+                out = fail('invalid_request')
+                timeout = request.get('timeout_seconds', 30) if isinstance(request, dict) else 30
+                admitted = valid_batch_request(request) if batch else len(raw) <= MAX_INPUT
+                if (admitted and type(timeout) in (int, float) and math.isfinite(timeout)
+                        and timeout > 0 and (batch or timeout <= 30)):
+                    async def bounded():
+                        return await asyncio.wait_for(extract_batch(request) if batch else extract(request),
+                                                      timeout=min(timeout, 30))
+                    # Provider chatter cannot become an envelope. Parent caps stderr.
+                    with redirect_stdout(sys.stderr):
+                        out = asyncio.run(bounded())
     except asyncio.TimeoutError:
-        out = error('timeout')
+        out = fail('timeout')
     except Exception:
         pass
     sys.stdout.write(json.dumps(out, ensure_ascii=True, separators=(',', ':')) + '\n')

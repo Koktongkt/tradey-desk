@@ -95,6 +95,70 @@ def run_worker(url: str, timeout_seconds: float = 30):
     request = json.dumps({'version': 1, 'url': url, 'timeout_seconds': timeout_seconds}).encode('utf-8')
     if len(request) > MAX_REQUEST_BYTES:
         return failure('invalid_request')
+    return _run_process(request, timeout_seconds, start, failure)
+
+
+def run_batch_worker(urls: list[str], timeout_seconds: float = 30) -> dict:
+    """One owned worker and one startup/write/provider/read deadline per batch."""
+    from extraction_worker import batch_error, valid_batch_request
+    start = monotonic()
+    payload = {'version': 2, 'urls': urls, 'timeout_seconds': timeout_seconds}
+    if not valid_batch_request(payload):
+        return batch_error('invalid_request')
+    timeout_seconds = min(30, timeout_seconds)
+    payload['timeout_seconds'] = timeout_seconds
+    request = json.dumps(payload).encode('utf-8')
+    out = _run_process(request, timeout_seconds, start, batch_error)
+    return out if _valid_batch_response(out, urls) else batch_error('malformed_response')
+
+
+def _valid_batch_response(out, urls):
+    """Validate the v2 boundary without changing v1's compatibility contract."""
+    if not isinstance(out, dict) or type(out.get('version')) is not int or out['version'] != 2:
+        return False
+    if out.get('status') == 'error':
+        return (set(out) == {'version', 'status', 'reason'} and isinstance(out.get('reason'), str)
+                and out['reason'] in ERROR_REASONS)
+    if out.get('status') != 'ok' or set(out) != {'version', 'status', 'results'}:
+        return False
+    rows = out['results']
+    if not isinstance(rows, list) or len(rows) != len(urls):
+        return False
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {'requested_url', 'result'}:
+            return False
+        key, result = row['requested_url'], row['result']
+        if not isinstance(key, str) or key not in urls or key in seen:
+            return False
+        seen.add(key)
+        if not isinstance(result, dict) or type(result.get('version')) is not int or result['version'] != 1:
+            return False
+        if result.get('status') == 'error':
+            if (set(result) != {'version', 'status', 'reason'} or not isinstance(result.get('reason'), str)
+                    or result['reason'] not in ERROR_REASONS):
+                return False
+        elif result.get('status') == 'ok' and set(result) == {'version', 'status', 'page'}:
+            page = result['page']
+            if (not isinstance(page, dict)
+                    or not all(isinstance(page.get(k), str) and 1 <= len(page[k]) <= cap
+                               for k, cap in (('url', 4096), ('text', 6000)))
+                    or not isinstance(page.get('title'), str) or len(page['title']) > 200):
+                return False
+            from publication_provenance import extraction_extensions
+            if extraction_extensions(page, page['url'], key) is None:
+                return False
+            if page['url'] != key and 'extraction_location' not in page:
+                return False
+            if 'location_provenance' in page and page['location_provenance'] != 'uncached_dispatch':
+                return False
+        else:
+            return False
+    return True
+
+
+def _run_process(request, timeout_seconds, start, fail):
+    """Shared stdlib pipe/deadline/group containment; no protocol projection."""
     process = None
     try:
         command = worker_command()
@@ -114,7 +178,7 @@ def run_worker(url: str, timeout_seconds: float = 30):
             while selector.get_map():
                 remaining = timeout_seconds - (monotonic() - start)
                 if remaining <= 0:
-                    return failure('timeout')
+                    return fail('timeout')
                 for key, _ in selector.select(remaining):
                     if key.data == 'stdin':
                         try:
@@ -137,25 +201,25 @@ def run_worker(url: str, timeout_seconds: float = 30):
                     elif key.data == 'stdout':
                         stdout.extend(chunk)
                         if len(stdout) > MAX_RESPONSE_BYTES:
-                            return failure('output_limit')
+                            return fail('output_limit')
                     else:
                         stderr_size += len(chunk)
                         if stderr_size > MAX_STDERR_BYTES:
-                            return failure('output_limit')
+                            return fail('output_limit')
         remaining = timeout_seconds - (monotonic() - start)
         if remaining <= 0:
-            return failure('timeout')
+            return fail('timeout')
         if process.wait(timeout=remaining):
-            return failure('worker_exit')
+            return fail('worker_exit')
         try:
             out = strict_json_loads(stdout)
         except (ValueError, UnicodeError, RecursionError):
-            return failure('malformed_response')
-        return out if isinstance(out, dict) else failure('malformed_response')
+            return fail('malformed_response')
+        return out if isinstance(out, dict) else fail('malformed_response')
     except subprocess.TimeoutExpired:
-        return failure('timeout')
+        return fail('timeout')
     except (OSError, ValueError):
-        return failure('worker_unavailable')
+        return fail('worker_unavailable')
     finally:
         if process is not None:
             # Signal remaining group members even if the leader already exited.
