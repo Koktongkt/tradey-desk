@@ -78,6 +78,26 @@ both the 09:40 opening consumer and regular :15/:35/:55 consumers. It does not
 guarantee non-overlap of long-running jobs; the existing shared nonblocking lock
 continues to fail closed on contention. Other job schedules remain unchanged.
 
+## Discovery coverage
+
+Premarket and Radar discovery are instructed to make **six parallel web searches**,
+requesting ten results each in one tool-using turn: broad company catalysts, SEC
+filings, issuer IR disclosures, independent financial reporting, smaller liquid
+companies/undercovered industries, and one rotating sector-specific search.
+SEC and issuer IR are separate lanes. Search results may overlap or return fewer
+entries; this is not an exhaustive exchange-wide scan or proof of model obedience.
+The sector focus is chosen statelessly from eleven equity sectors using UTC
+twenty-minute buckets: retries within a bucket agree, and the next bucket rotates.
+It is a coverage instruction, never a candidate quota or an eligibility exception.
+
+Discovery still merges/deduplicates results and retains **at most five candidates
+and five URLs total**, with no per-lane quota. Focused extraction remains capped
+at fifteen attempted URLs with up to three useful URLs requested per candidate.
+Discovery's search-only toolset, two model turns, advisory `--run-budget 130`,
+165-second stage timeout, overall research cutoff, evidence gates and schedules
+are unchanged. More result capacity is not a demonstrated qualification gain;
+compare actual tool-call counts, sourceable candidates and stage latency after release.
+
 ## Adaptive research budgets
 
 Premarket/radar has a **600-second outer timeout**, with an active deadline

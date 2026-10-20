@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import copy
+import datetime as dt
 import io
 import json
 import subprocess
@@ -180,22 +181,23 @@ class AlphaRadarTests(unittest.TestCase):
     def test_scout_prompt_discovery_contract(self):
         cases = (
             ('configured_price_range', {'min_price_usd':1,'max_position_usd':500},
-             ('$1-$500','at least one confirmed','web_search exactly four times in parallel with limit 10 each','focused retrieval stage'),
+             ('$1-$500','at least one confirmed','web_search exactly six times in parallel with limit 10 each','focused retrieval stage'),
              ('web_extract','at least two successfully extracted')),
             ('bounded_structured_prompt', None,
              ('"candidates"','"symbol"','"catalyst"','at most 500 characters','"urls"','no commentary',
-              'landing, index, search, symbol, or homepage URLs','web_search exactly four times in parallel with limit 10 each',
+              'landing, index, search, symbol, or homepage URLs','web_search exactly six times in parallel with limit 10 each',
               'Use exactly one tool-using turn','focused retrieval stage','catalyst materiality','at least one confirmed article URL'),
              ('web_extract',)),
             ('distinct_discovery_lanes', None,
-             ('broad US-equity catalysts','SEC and issuer disclosures','independent financial reporting',
-              'undercovered sectors or smaller liquid companies','one to five candidates','at most five URLs total'), ()),
+             ('broad US-equity catalysts','SEC filings','issuer IR disclosures','independent financial reporting',
+              'undercovered sectors or smaller liquid companies','rotating sector-specific search',
+              'one to five candidates','at most five URLs total','not a candidate quota'), ()),
             ('scout_reliability_guard_fragments', None,
              ('confirmed article URL copied exactly from the web_search results',
               'Never construct or guess','"candidates"','one to five candidates in ranked order',
               'at least one confirmed article URL','focused retrieval stage',
               'apply the final two-domain evidence gate',
-              'call web_search exactly four times in parallel with limit 10 each',
+              'call web_search exactly six times in parallel with limit 10 each',
               'Use exactly one tool-using turn','Do not extract pages'),
              ('web_extract',)),
         )
@@ -208,6 +210,30 @@ class AlphaRadarTests(unittest.TestCase):
                 for fragment in forbidden:
                     with self.subTest(forbidden=fragment):
                         self.assertNotIn(fragment,prompt)
+
+    def test_discovery_sector_rotation_covers_all_sectors_without_state(self):
+        import re
+        start=dt.datetime(2026,10,20,14,0,tzinfo=dt.timezone.utc)
+        expected={'Energy','Materials','Industrials','Consumer Discretionary','Consumer Staples',
+                  'Health Care','Financials','Information Technology','Communication Services',
+                  'Utilities','Real Estate'}
+        focuses=[]
+        for slot in range(22):
+            now=start+dt.timedelta(minutes=20*slot)
+            prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now)
+            match=re.search(r'^Rotating sector focus: (.+)$',prompt,re.M)
+            if match is None:self.fail('discovery prompt omitted its rotating sector')
+            focus=match.group(1)
+            focuses.append(focus)
+            self.assertEqual(prompt,alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now+dt.timedelta(seconds=1199)))
+            self.assertEqual(prompt,alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now.astimezone(dt.timezone(dt.timedelta(hours=-4)))))
+        self.assertEqual(set(focuses[:11]),expected)
+        self.assertEqual(focuses[:11],focuses[11:])
+        for left,right in zip(focuses,focuses[1:]):self.assertNotEqual(left,right)
+
+    def test_discovery_sector_rotation_rejects_naive_clock(self):
+        with self.assertRaises(ValueError):
+            alpha_radar.discovery_prompt({},now=dt.datetime(2026,10,20,14,0))
 
     def test_scout_parse_result_validation_funneling_and_diagnostics(self):
         ranked = [json.loads(structured_scout(symbol,[f'https://{symbol.lower()}.example/1']))['candidates'][0]
