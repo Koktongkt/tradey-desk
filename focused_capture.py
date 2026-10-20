@@ -6,6 +6,9 @@ import json
 import os
 import stat
 import threading
+from pathlib import Path
+from subprocess import CompletedProcess
+from typing import Callable
 
 from extraction_contract import strict_json_loads
 
@@ -34,7 +37,24 @@ class FocusedURLs(dict):
 
 
 def run_focused(command, *, input, capture_output, text, timeout, cwd):
-    """Own one focused process group and an optional preopened private channel."""
+    """Legacy optional extraction capture, with unchanged admission and pages."""
+    result = run_private_child(command, input=input, timeout=timeout, cwd=cwd,
+                               wrapper=Path(__file__).with_name('focused_wrapper.py'),
+                               input_limit=8192, read_artifact=read_capture)
+    if text:
+        result.stdout = result.stdout.decode('utf-8')
+        result.stderr = result.stderr.decode('utf-8')
+    result.focused_pages = result.private_artifact if result.returncode == 0 else {}
+    return result
+
+
+def run_private_child(command: list[str], *, input: str, timeout: float, cwd: Path,
+                      wrapper: Path, input_limit: int, read_artifact: Callable) -> CompletedProcess:
+    """Own one bounded process group and preopened private artifact channel.
+
+    The receipt reader owns optional-vs-mandatory policy. A successful child
+    always invokes it, including with None if channel creation was unavailable.
+    """
     from contextlib import ExitStack
     import secrets
     import signal
@@ -43,7 +63,7 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
     from time import monotonic
     started = monotonic()
     payload = input.encode('utf-8') if isinstance(input, str) else input
-    if len(payload) > 8192:
+    if len(payload) > input_limit:
         raise OSError('focused input limit')
     with ExitStack() as cleanup:
         fd = None
@@ -59,9 +79,12 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
             os.fchmod(fd, 0o600)
             env.update({FD_ENV: str(fd), NONCE_ENV: nonce})
         except OSError:
-            fd = None  # Optional recording unavailability is an ordinary miss.
+            fd = None  # The selected reader decides whether capture is mandatory.
         try:
-            argv = focused_command(command)
+            if Path(wrapper) == Path(__file__).with_name('focused_wrapper.py'):
+                argv = focused_command(command)
+            else:
+                argv = focused_command(command, wrapper=wrapper)
         except ValueError as error:
             raise OSError('focused runtime unavailable') from error
         remaining = timeout - (monotonic() - started)
@@ -122,8 +145,6 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
                 raise subprocess.TimeoutExpired(command, timeout)
             process.wait(timeout=remaining)
             stdout, stderr = (bytes(buffers[name]) for name in ('stdout', 'stderr'))
-            if text:
-                stdout, stderr = stdout.decode('utf-8'), stderr.decode('utf-8')
             result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         finally:
             if process is not None:
@@ -135,16 +156,15 @@ def run_focused(command, *, input, capture_output, text, timeout, cwd):
                 for pipe in (process.stdin, process.stdout, process.stderr):
                     if pipe is not None:
                         pipe.close()
-        result.focused_pages = read_capture(fd, nonce) if result.returncode == 0 and fd is not None else {}
+        result.private_artifact = read_artifact(fd, nonce) if result.returncode == 0 else None
         return result
 
 
-def focused_command(command):
+def focused_command(command, *, wrapper=None):
     """Installed isolated runtime + dependency bootstrap + unchanged CLI tail."""
-    from pathlib import Path
     from runtime_paths import hermes_runtime
     python, source = hermes_runtime()
-    wrapper = Path(__file__).with_name('focused_wrapper.py')
+    wrapper = Path(wrapper) if wrapper is not None else Path(__file__).with_name('focused_wrapper.py')
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
