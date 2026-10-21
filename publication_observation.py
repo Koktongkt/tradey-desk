@@ -34,6 +34,36 @@ _DATE = re.compile(
 _ROLE = re.compile(r'^(?:published(?:\s+on)?|publication date|released(?:\s+on)?|issued(?:\s+on)?|posted(?:\s+on)?)\s*[:|\-–—]?\s*', re.I)
 _UNSAFE_QUOTE = re.compile(r'\b(?:copyright|crawled?|retrieved|accessed|event|meeting|conference|webcast|ignore|instructions?|system|assistant|prompt|override)\b|©', re.I)
 _UPDATE = re.compile(r'\b(?:updated?|modified)\b', re.I)
+# Time-of-day (optionally meridiem) that may extend a date-only match.
+_TOD = re.compile(
+    r'[ \t]+(?P<h>\d{1,2}):(?P<mi>\d{2})(?::(?P<s>\d{2})(?:\.(?P<us>\d{1,6}))?)?'
+    r'(?:[ \t]*(?P<ap>[AP])\.?M\.?)?', re.I)
+# An explicit numeric offset or Z after a named zone contradicts the name.
+_OFFSET_TAIL = re.compile(r'[ \t]*[+-]\d{2}:?\d{2}|[ \t]*Z\b', re.I)
+# Recognized zone names/abbreviations with a single worldwide offset. The
+# table is deliberately closed: ambiguous abbreviations (CST, IST, BST, AST,
+# PST, EST, ...) and bare zone words ('Central Time') are excluded because
+# they map to more than one real zone. A zone is never inferred or defaulted;
+# without an explicit time plus a listed zone the date stays day-precision.
+_TZ_OFFSETS = {
+    'eastern daylight time': -4 * 3600, 'eastern standard time': -5 * 3600,
+    'central european summer time': 2 * 3600, 'central european time': 3600,
+    'mountain daylight time': -6 * 3600, 'mountain standard time': -7 * 3600,
+    'atlantic daylight time': -3 * 3600, 'atlantic standard time': -4 * 3600,
+    'pacific daylight time': -7 * 3600, 'pacific standard time': -8 * 3600,
+    'alaska daylight time': -8 * 3600, 'alaska standard time': -9 * 3600,
+    'hawaii aleutian standard time': -10 * 3600, 'hawaii standard time': -10 * 3600,
+    'newfoundland daylight time': -(2 * 3600 + 1800),
+    'newfoundland standard time': -(3 * 3600 + 1800),
+    'coordinated universal time': 0, 'universal coordinated time': 0,
+    'greenwich mean time': 0, 'british summer time': 3600,
+    'irish standard time': 3600, 'western european time': 0,
+    'eastern european summer time': 3 * 3600, 'eastern european time': 2 * 3600,
+    'utc': 0, 'gmt': 0, 'edt': -4 * 3600, 'pdt': -7 * 3600, 'mdt': -6 * 3600,
+    'akst': -9 * 3600, 'akdt': -8 * 3600, 'hst': -10 * 3600,
+    'cet': 3600, 'cest': 2 * 3600, 'eet': 2 * 3600, 'eest': 3 * 3600,
+}
+_TZ_NAMES_SORTED = sorted(_TZ_OFFSETS.items(), key=lambda kv: -len(kv[0]))
 
 
 def normalize_support(text: str) -> str:
@@ -86,12 +116,64 @@ def _parse(value, precision):
     return None
 
 
+def _zone_at(text, pos):
+    """Return (offset_seconds, end) for a recognized zone name at pos, else (None, pos)."""
+    rest = text[pos:pos + 48].casefold()
+    for name, offset in _TZ_NAMES_SORTED:
+        candidate = ' ' + name
+        if rest.startswith(candidate):
+            after = text[pos + len(candidate):pos + len(candidate) + 1]
+            if after and (after.isalnum() or after in '_-'):
+                continue
+            if not _OFFSET_TAIL.match(text, pos + len(candidate)):
+                return offset, pos + len(candidate)
+    return None, pos
+
+
+def _instant_after(text, pos, value):
+    """Extend a date-only match with an explicit time-of-day plus a named zone.
+
+    Returns (hour, minute, second, microsecond, tzinfo, end) or (None, pos).
+    Midnight/UTC are never invented: without an explicit time-of-day and a
+    recognized, unambiguous zone name the date keeps day precision and its
+    original span.
+    """
+    match = _TOD.match(text, pos)
+    if match is None:
+        # An ISO-shaped value may already carry its own time-of-day.
+        clock = re.search(r'(?P<h>\d{1,2}):(?P<mi>\d{2})(?::(?P<s>\d{2})(?:\.(?P<us>\d{1,6}))?)?', value)
+        if clock is None:
+            return None, pos
+        start = pos
+    else:
+        clock, start = match, match.end()
+    offset, end = _zone_at(text, start)
+    if offset is None:
+        return None, pos
+    hour = int(clock.group('h'))
+    minute = int(clock.group('mi'))
+    second = int(clock.group('s') or 0)
+    micro = int((clock.group('us') or '').ljust(6, '0') or 0)
+    meridiem = (clock.groupdict().get('ap') or '').lower()
+    if meridiem == 'a' and hour == 12:
+        hour = 0
+    elif meridiem == 'p' and hour != 12:
+        hour += 12
+    try:
+        tzinfo = dt.timezone(dt.timedelta(seconds=offset))
+        dt.datetime(2000, 1, 1, hour, minute, second, micro, tzinfo)
+    except ValueError:
+        return None, pos
+    return hour, minute, second, micro, tzinfo, end
+
+
 def _dates(text):
     """Return retained spelling, parsed date/instant, and span; no inferred year/zone."""
     if not isinstance(text, str):
         return
     for match in _DATE.finditer(html.unescape(text)):
         value = match.group()
+        end = match.end()
         parsed = _parse(value, 'instant') or _parse(value[:10], 'day')
         if parsed is None:
             words = re.sub(r'(\d)(?:st|nd|rd|th)\b', r'\1', value.lower())
@@ -104,7 +186,20 @@ def _dates(text):
                 parsed = dt.date(year, month, day)
             except (ValueError, KeyError, IndexError):
                 continue
-        yield value, parsed, match.span()
+        # A date-only claim keeps day precision unless the retained text
+        # itself states an explicit time-of-day plus a recognizable zone;
+        # then the whole stated instant (and its span) is retained.
+        if isinstance(parsed, dt.date) and not isinstance(parsed, dt.datetime):
+            clock = _instant_after(text, end, value)
+            if clock[0] is not None:
+                hour, minute, second, micro, tzinfo, end = clock
+                try:
+                    parsed = dt.datetime(parsed.year, parsed.month, parsed.day,
+                                         hour, minute, second, micro, tzinfo)
+                    value = text[match.start():end]
+                except ValueError:
+                    end = match.end()
+        yield value, parsed, (match.start(), end)
 
 
 class _RetainedHTML(HTMLParser):

@@ -1,11 +1,23 @@
 """Offline publication grounding and precision contracts."""
 import datetime as dt
 import unittest
+from pathlib import Path
 
 from publication_observation import (build_observation, evaluate_publication,
                                      normalize_support, validate_observation)
 
 NOW = dt.datetime(2026, 10, 21, 16, 30, tzinfo=dt.timezone.utc)
+
+# Frozen r07 wire capture (private artifact, read-only; hash-verified at use).
+R07_URL = ('https://www.businesswire.com/news/home/20250730166961/en/'
+           'Western-Digital-Reports-Fiscal-Fourth-Quarter-and-Fiscal-Year-2025-Financial-Results')
+R07_TITLE = ('Western Digital Reports Fiscal Fourth Quarter and '
+             'Fiscal Year 2025 Financial Results')
+R07_SUPPORT = 'Jul 30, 2025 4:05 PM Eastern Daylight Time'
+R07_VALUE = '2025-07-30T16:05:00-04:00'
+R07_CAPTURE = (Path(__file__).resolve().parents[1]
+               / 'test_artifacts/publication-hybrid-validation/captures/r07.original.txt')
+R07_SHA256 = '884ffeefcc990c8fc9d498bc07cd3f647139d900c6fdcfed9e1c2a66046c2bae'
 
 
 def page_for(value):
@@ -359,6 +371,94 @@ class PublicationObservationTests(unittest.TestCase):
                 self.assertEqual(observation['precision'], 'day')
                 page['publication_observation'] = observation
                 self.assertEqual(evaluate_publication(page, now=NOW), expected)
+
+
+    # --- Round 2 fix: wire datelines with time-of-day + zone name ---
+
+    @unittest.skipUnless(R07_CAPTURE.exists(), 'private frozen r07 capture not present')
+    def test_frozen_r07_wire_dateline_retains_instant_context(self):
+        """Regression: the actual r07 live proposal must validate after the fix."""
+        import hashlib
+        from publication_observation import _dates, _contexts
+        raw = R07_CAPTURE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), R07_SHA256)
+        page = {'url': R07_URL, 'title': R07_TITLE, 'text': raw.decode('utf-8')}
+        entries = list(_dates(R07_SUPPORT))
+        self.assertEqual(len(entries), 1)
+        spelling, parsed, span = entries[0]
+        self.assertIsInstance(parsed, dt.datetime)
+        self.assertEqual(parsed, dt.datetime(2025, 7, 30, 16, 5,
+                                             tzinfo=dt.timezone(dt.timedelta(hours=-4))))
+        self.assertEqual(spelling, R07_SUPPORT)
+        self.assertEqual(page['text'][span[0]:span[1]], R07_SUPPORT)
+        contexts = _contexts(page)
+        self.assertTrue(any(basis == 'visible_context'
+                            and isinstance(candidate, dt.datetime) and candidate == parsed
+                            for basis, _, candidate in contexts))
+        proposal = build_observation(page, value=R07_VALUE, precision='instant',
+                                     basis='llm_grounded', support=R07_SUPPORT,
+                                     location='Top of page, dateline before headline')
+        self.assertIsNotNone(proposal)
+        self.assertTrue(validate_observation(page, proposal))
+        self.assertEqual(evaluate_publication(
+            {**page, 'publication_observation': proposal},
+            now=dt.datetime(2025, 7, 31, tzinfo=dt.timezone.utc)), (True, None))
+
+    def test_wire_dateline_with_zone_name_retains_instant_context(self):
+        from publication_observation import _dates, _contexts
+        support = 'Mar 3, 2026 9:15 AM Pacific Standard Time'
+        text = f'{support}\n\n# Quarterly results\n\nBody text.'
+        page = {'url': 'https://example.test/article', 'title': 'Quarterly results',
+                'text': text}
+        entries = list(_dates(support))
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][0], support)
+        self.assertEqual(entries[0][2], (0, len(support)))
+        self.assertEqual(entries[0][1],
+                         dt.datetime(2026, 3, 3, 9, 15,
+                                     tzinfo=dt.timezone(dt.timedelta(hours=-8))))
+        self.assertTrue(any(basis == 'visible_context'
+                            and isinstance(candidate, dt.datetime)
+                            and candidate == entries[0][1]
+                            for basis, _, candidate in _contexts(page)))
+        proposal = build_observation(page, value='2026-03-03T09:15:00-08:00',
+                                     precision='instant', basis='llm_grounded',
+                                     support=support, location='dateline')
+        self.assertIsNotNone(proposal)
+        self.assertTrue(validate_observation(page, proposal))
+
+    def test_zone_abbreviation_and_timestamp_with_named_zone_retain_instant(self):
+        from publication_observation import _dates
+        for support, expected in [
+                ('Jul 30, 2025 4:05 PM EDT',
+                 dt.datetime(2025, 7, 30, 16, 5, tzinfo=dt.timezone(dt.timedelta(hours=-4)))),
+                ('2026-10-21 10:15 UTC',
+                 dt.datetime(2026, 10, 21, 10, 15, tzinfo=dt.timezone.utc))]:
+            with self.subTest(support=support):
+                entries = list(_dates(support))
+                self.assertEqual(len(entries), 1)
+                self.assertIsInstance(entries[0][1], dt.datetime)
+                self.assertEqual(entries[0][1], expected)
+                self.assertEqual(entries[0][2], (0, len(support)))
+
+    def test_ambiguous_invalid_or_absent_zone_stays_day_only(self):
+        from publication_observation import _dates
+        day = dt.date(2025, 7, 30)
+        for dateline in [
+                'Jul 30, 2025 4:05 PM CST',                      # ambiguous abbreviation
+                'Jul 30, 2025 4:05 PM IST',                      # ambiguous abbreviation
+                'Jul 30, 2025 4:05 PM BST',                      # ambiguous abbreviation
+                'Jul 30, 2025 4:05 PM Central Time',             # bare zone word, no authority
+                'Jul 30, 2025 4:05 PM Eastern Standard Sprint',  # invalid zone name
+                'Jul 30, 2025 4:05 PM EST -04:00',               # mixed offset vs name
+                'Jul 30, 2025 4:05 PM',                          # no zone at all: no invented UTC
+                'Jul 30, 2025']:                                 # plain day, byte-compatible
+            with self.subTest(dateline=dateline):
+                entries = list(_dates(dateline))
+                self.assertEqual(len(entries), 1, dateline)
+                self.assertNotIsInstance(entries[0][1], dt.datetime, dateline)
+                self.assertEqual(entries[0][1], day, dateline)
+                self.assertEqual(entries[0][2], (0, len('Jul 30, 2025')), dateline)
 
 
 if __name__ == '__main__':
