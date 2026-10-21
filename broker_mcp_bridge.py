@@ -165,11 +165,12 @@ def earnings_state(event_at:Any,calendar:Any,now:datetime|None=None)->tuple[str,
         rows=listish(calendar)
         session_dates=set()
         for row in rows:
-            if not isinstance(row,dict):continue
+            if not isinstance(row,dict):raise ValueError
             raw=row.get("date") or row.get("session")
-            try:session_dates.add(datetime.fromisoformat(str(raw)[:10]).date())
-            except Exception:continue
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}",str(raw)):raise ValueError
+            session_dates.add(datetime.fromisoformat(str(raw)).date())
         if not session_dates:return "unknown",None
+        if event_date>max(session_dates):return "outside_window",None
         return "upcoming",sum(current_date<d<=event_date for d in session_dates)
     except Exception:
         return "unknown",None
@@ -243,24 +244,30 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         planned_exit_at=p.get("planned_exit_at")
         # Fetch an authoritative bounded window even for a same-day exit: expiry
         # metadata needs the next actual session (holidays are never inferred).
-        calendar_start=now.astimezone(ZoneInfo("America/New_York")).date()
+        ny=ZoneInfo("America/New_York")
+        calendar_start=now.astimezone(ny).date()
+        bound=calendar_start+timedelta(days=90)
         calendar_end=calendar_start+timedelta(days=7)
-        for raw in (event_at,planned_exit_at):
+        exit_date=None
+        if planned_exit_at is not None:
             try:
-                value=str(raw)
-                parsed=datetime.fromisoformat(value.replace("Z","+00:00"))
-                parsed_date=parsed.date()
-                if (parsed.tzinfo is not None or re.fullmatch(r"\d{4}-\d{2}-\d{2}",value)) and parsed_date>=now.date():
-                    calendar_end=max(calendar_end,parsed_date) if calendar_end else parsed_date
-            except Exception:
-                pass
-        if calendar_end>calendar_start+timedelta(days=90):
-            raise RuntimeError("entry_calendar_unavailable")
+                parsed=datetime.fromisoformat(str(planned_exit_at).replace("Z","+00:00"))
+                if parsed.tzinfo is None or parsed<now:raise ValueError
+                exit_date=parsed.astimezone(ny).date()
+                if exit_date>bound:raise ValueError
+            except (ValueError,TypeError,OverflowError) as error:
+                raise RuntimeError("entry_calendar_unavailable") from error
+            # Padding requests candidates only; actual sessions below prove coverage.
+            calendar_end=min(bound,max(calendar_end,exit_date+timedelta(days=14)))
+        # Earnings never defines required coverage: the holding period and
+        # actual-session blackout proof below do. Distance may be non-exact.
         calendar=await a.call("get_calendar",{"start":calendar_start.isoformat(),"end":calendar_end.isoformat(),"date_type":"TRADING"})
         # Only broker regular open/close fields can authorize entry deadlines.
         # Never substitute extended-session fields or guessed weekday hours.
         import entry_expiry
         rows=listish(calendar)
+        if not isinstance(calendar,list) and not (isinstance(calendar,dict) and set(calendar)=={"data"} and isinstance(calendar["data"],list)):
+            raise RuntimeError("entry_calendar_invalid")
         try:
             parsed_calendar=entry_expiry.sessions(rows)
         except (ValueError,TypeError,OverflowError,RuntimeError) as error:
@@ -268,7 +275,18 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             raise RuntimeError(token) from error
         if any(not calendar_start.isoformat()<=row[0]<=calendar_end.isoformat() for row in parsed_calendar):
             raise RuntimeError("entry_calendar_invalid")
+        if exit_date is not None:
+            blackout=p.get("earnings_blackout_sessions",2)
+            if type(blackout) is not int or not 0<=blackout<=90:
+                raise RuntimeError("entry_calendar_invalid")
+            # Require the entry anchor and actual post-exit sessions, not guessed
+            # calendar-day padding. This also proves next-session entry expiry.
+            if (parsed_calendar[0][0]!=calendar_start.isoformat()
+                    or sum(row[0]>exit_date.isoformat() for row in parsed_calendar)<max(blackout,1)):
+                raise RuntimeError("entry_calendar_unavailable")
         earnings_status,earnings_sessions_away=earnings_state(event_at,calendar,now)
+        earnings_sessions_lower_bound=(sum(row[0]>calendar_start.isoformat() for row in parsed_calendar)
+                                       if earnings_status=="outside_window" else None)
         trading_sessions=[]
         for row in listish(calendar):
             value=row.get("date") or row.get("session") if isinstance(row,dict) else row
@@ -299,6 +317,7 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             "technical_bars_feed":"massive_consolidated_completed_daily",
             "earnings_status":earnings_status,
             "earnings_sessions_away":earnings_sessions_away,
+            "earnings_sessions_lower_bound":earnings_sessions_lower_bound,
             "trading_sessions":trading_sessions,
             "trading_calendar":[{key:row.get(key) for key in ("date","open","close")} for row in listish(calendar) if isinstance(row,dict)],
         }
@@ -371,4 +390,5 @@ async def main()->int:
 if __name__=="__main__":
     try:raise SystemExit(asyncio.run(main()))
     except Exception as e:
-        print(json.dumps({"error":type(e).__name__}),file=sys.stderr);raise SystemExit(3)
+        from broker_errors import error_envelope
+        print(json.dumps(error_envelope(e)),file=sys.stderr);raise SystemExit(3)

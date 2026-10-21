@@ -18,6 +18,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+from broker_errors import BrokerSnapshotError, snapshot_failure, transported_reason
 from broker_process import bridge_command as broker_command, broker_executable, run_bridge
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,10 +37,10 @@ PRIVATE_DIR = ROOT / "private"
 BROKER_FIELDS = (
     "buying_power", "cash", "positions", "open_orders", "asset", "quote",
     "quote_feed", "average_volume", "volume_feed", "technical_bars", "technical_bars_feed",
-    "earnings_status", "earnings_sessions_away", "trading_sessions",
+    "earnings_status", "earnings_sessions_away", "earnings_sessions_lower_bound", "trading_sessions",
     "trading_calendar", "cash_semantics", "buying_power_semantics",
 )
-CANDIDATE_BROKER_OWNED_MARKET_FIELDS = {"average_volume", "volume_feed", "quote", "quote_feed", "technical_bars", "technical_bars_feed", "earnings_status", "earnings_sessions_away"}
+CANDIDATE_BROKER_OWNED_MARKET_FIELDS = {"average_volume", "volume_feed", "quote", "quote_feed", "technical_bars", "technical_bars_feed", "earnings_status", "earnings_sessions_away", "earnings_sessions_lower_bound"}
 REQUIRED_PLAN_FIELDS = ("action", "symbol", "stop", "target", "horizon", "confidence", "thesis", "risk_reward")
 RUBRIC_WEIGHTS = {
     "short_1_5": {
@@ -586,6 +587,14 @@ def validate_order_with_details(
         if earnings <= holding_sessions + cfg["earnings_blackout_sessions"]:
             e.append("near_term_earnings")
             d["near_term_earnings"] = {"earnings_status": earnings_status, "earnings_sessions_away": earnings, "earnings_blackout_sessions": cfg["earnings_blackout_sessions"]}
+    elif earnings_status=="outside_window":
+        lower=snap.get("earnings_sessions_lower_bound")
+        holding=order.get("holding_sessions")
+        # A lower bound is not an exact earnings distance. Only a strict proof
+        # beyond the unchanged holding + blackout predicate may authorize entry.
+        if (earnings is not None or type(lower) is not int or type(holding) is not int
+                or not 1<=holding<=30 or lower<=holding-1+cfg["earnings_blackout_sessions"]):
+            e.append("earnings_unknown")
     else:e.append("earnings_unknown")
     if pending_proof is not None:
         import pending_policy
@@ -1008,7 +1017,9 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
             except json.JSONDecodeError:
                 duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
                 _record_bridge_diagnostics(operation, attempt, duration_ms, result, "unparseable_output")
-                raise RuntimeError("broker_mcp_failure")
+                raise BrokerSnapshotError("response_validation")
+            if operation in {"snapshot","review"} and not isinstance(decoded,dict):
+                raise BrokerSnapshotError("response_validation")
             if _contains_provider_error(decoded):
                 if attempt < attempts:
                     continue
@@ -1020,7 +1031,7 @@ def _broker_bridge(operation: str, payload: dict[str, Any] | None = None) -> dic
             continue
     duration_ms = int((dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
     _record_bridge_diagnostics(operation, attempts, duration_ms, result, "nonzero_exit")
-    raise RuntimeError("broker_mcp_failure")
+    raise BrokerSnapshotError(transported_reason(result.stderr))
 
 
 def managed_entry_intents(ledger: list[dict[str, Any]], intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1462,9 +1473,10 @@ def _run_locked(args: argparse.Namespace) -> int:
         if not args.live_dry_run and dossier_already_reviewed(candidate,reviews_path):
             print("DECISION skipped already_reviewed"); return 0
         try:
-            snapshot=_broker_bridge("snapshot", {"symbol":candidate["symbol"], "earnings_event_at":candidate.get("earnings_event_at"), "planned_exit_at":candidate.get("planned_exit_at")})
-        except Exception:
-            print("AUTH_FAILURE broker_mcp_unavailable"); return 3
+            snapshot=_broker_bridge("snapshot", {"symbol":candidate["symbol"], "earnings_event_at":candidate.get("earnings_event_at"), "planned_exit_at":candidate.get("planned_exit_at"), "earnings_blackout_sessions":cfg.get("earnings_blackout_sessions",2)})
+        except Exception as error:
+            message,code=snapshot_failure(error)
+            print(message); return code
         immutable=authoritative_bundle(candidate,snapshot,utcnow())
         snapshot=immutable["broker_snapshot"]
         try:
@@ -1528,7 +1540,7 @@ def _run_locked(args: argparse.Namespace) -> int:
         print("BLOCKER " + ",".join(reason)); return 2
     submission_started=False
     try:
-        fresh=_broker_bridge("review",{"order":plan,"earnings_event_at":candidate.get("earnings_event_at"),"planned_exit_at":candidate.get("planned_exit_at")})
+        fresh=_broker_bridge("review",{"order":plan,"earnings_event_at":candidate.get("earnings_event_at"),"planned_exit_at":candidate.get("planned_exit_at"),"earnings_blackout_sessions":cfg.get("earnings_blackout_sessions",2)})
         fresh_exposure,fresh_scope_errors=managed_exposure(fresh.get("positions") or [],read_jsonl(ROOT/"trade_journal.jsonl"))
         cfg=load_json(ROOT/"autonomy_config.json")
         daily=_daily_order_count(ledger)
@@ -1571,10 +1583,12 @@ def _run_locked(args: argparse.Namespace) -> int:
         return 0
     except SpendingPersistenceError:
         raise  # Never relabel a lost spending write as a broker failure.
-    except Exception:
+    except Exception as error:
         failure_status="submission_unknown" if submission_started else "rejected"
-        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":failure_status,"reason":"broker_mcp_failure"})
-        print("SYSTEM_FAILURE broker_mcp_failure"); return 4
+        message,code=snapshot_failure(error) if not submission_started else ("SYSTEM_FAILURE broker_mcp_failure",4)
+        reason=error.reason if isinstance(error,BrokerSnapshotError) and error.reason and not submission_started else "broker_mcp_failure"
+        append_jsonl(ledger,{**proposed,"timestamp":utcnow(),"status":failure_status,"reason":reason})
+        print(message); return code
 
 
 def main() -> int:

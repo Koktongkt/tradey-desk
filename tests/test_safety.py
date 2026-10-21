@@ -548,6 +548,40 @@ class TradeySafetyTests(unittest.TestCase):
                     should_block = sessions.index(event_date) <= sessions.index(exit_date) + 2
                     self.assertEqual("near_term_earnings" in gate_errors, should_block)
 
+    def test_outside_window_lower_bound_is_strict_and_broker_owned_at_all_gates(self):
+        # Catches accepting an insufficient lower bound or candidate/model proof.
+        for lower, safe in ((None, False), (True, False), (-1, False), (4, False), (5, True)):
+            snap = dict(self.snapshot, earnings_status='outside_window', earnings_sessions_away=None,
+                        earnings_sessions_lower_bound=lower)
+            order = dict(self.decision, holding_sessions=3, earnings_sessions_lower_bound=999)
+            gates = (autotrader.pre_review_validation(order, snap, self.cfg, 0, 0, set()),
+                     autotrader.post_review_validation(order, snap, self.cfg, 0, 0, set(), []),
+                     autotrader.broker_review_validation(order, snap, self.cfg, 0, 0, set(), []))
+            for errors, _ in gates:
+                self.assertEqual('earnings_unknown' not in errors, safe)
+            bundle = autotrader.authoritative_bundle(order, snap, '2026-09-01T14:00:00Z')
+            self.assertNotIn('earnings_sessions_lower_bound', bundle['candidate'])
+            self.assertEqual(bundle['broker_snapshot'].get('earnings_sessions_lower_bound'), lower)
+            self.assertEqual(autotrader.replace_broker_fields(order, snap)['earnings_sessions_lower_bound'], lower)
+        missing = autotrader.replace_broker_fields({'earnings_sessions_lower_bound': 999}, {})
+        self.assertIsNone(missing['earnings_sessions_lower_bound'])
+
+    def test_snapshot_failure_classification_does_not_invent_authentication(self):
+        # Catches the original unconditional AUTH_FAILURE classification.
+        from test_blocker_diagnostics import _setup_root, _snapshot
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        with tempfile.TemporaryDirectory(dir=artifact_root) as td:
+            root = Path(td) / 'test_artifacts'
+            root.mkdir(mode=0o700)
+            _setup_root(root, _snapshot())
+            with patch.object(autotrader, 'ROOT', root), patch.object(autotrader, '_broker_bridge', side_effect=RuntimeError('private token /secret/account')), patch.object(autotrader, 'reconcile_managed_protection', return_value=[]):
+                import contextlib, io
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = autotrader.run(autotrader.argparse.Namespace(dry_run_fixture=False, live_dry_run=False))
+            self.assertEqual(output.getvalue(), 'SYSTEM_FAILURE broker_mcp_failure\n')
+            self.assertEqual(code, 4)
+
     def test_broker_nulls_replace_model_values(self):
         model_claim = {"buying_power":999999,"positions":[{"symbol":"FAKE"}],"asset":{"tradable":True}}
         snap = {"buying_power":None,"positions":[],"asset":None}

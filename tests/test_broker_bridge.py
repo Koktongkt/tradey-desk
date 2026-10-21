@@ -19,7 +19,7 @@ class _FakeAlpaca:
             "get_orders": [],
             "get_asset": {"symbol": "AAPL", "tradable": True, "asset_class": "us_equity", "exchange": "NASDAQ", "name": "Apple Inc.", "fractionable": True},
             "get_stock_latest_quote": {"AAPL": {"bp": 100.0, "ap": 100.1, "t": "2026-09-01T14:00:00Z"}},
-            "get_calendar": [dict(date=date,open="09:30",close="16:00") for date in ("2026-09-01","2026-09-02","2026-09-03")],
+            "get_calendar": [dict(date=date,open="09:30",close="16:00") for date in ("2026-09-01","2026-09-02","2026-09-03","2026-09-04","2026-09-08")],
             "get_stock_bars": {
                 "AAPL": [{"t": f"2026-09-{index:02d}", "c": 100 + index} for index in range(1, 31)],
                 "SPY": [{"t": f"2026-09-{index:02d}", "c": 500 + index} for index in range(1, 31)],
@@ -113,7 +113,7 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
             ("test_snapshot_returns_completed_consolidated_technical_bars", {"symbol": "AAPL"}, technical, False,
              {"technical_bars": technical, "average_volume": 1_000_000.0, "technical_bars_feed": "massive_consolidated_completed_daily"}),
             ("test_snapshot_returns_exchange_sessions_through_planned_exit", {"symbol": "AAPL", "planned_exit_at": "2026-09-03T20:00:00Z", "earnings_event_at": "2026-09-01T20:05:00Z"}, [{"volume": 12_000_000}], True,
-             {"trading_sessions": ["2026-09-01", "2026-09-02", "2026-09-03"]}),
+             {"trading_sessions": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-08"]}),
             ("test_snapshot_accepts_date_only_earnings_and_counts_exchange_sessions", {"symbol": "AAPL", "earnings_event_at": "2026-09-03"}, [{"volume": 12_000_000}], True,
              {"earnings_status": "upcoming", "earnings_sessions_away": 2}),
         )
@@ -140,6 +140,89 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
                 now = datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
                 calendar = [{"date": date} for date in dates]
                 self.assertEqual(broker_mcp_bridge.earnings_state(event, calendar, now), expected)
+
+    async def test_distant_earnings_keeps_bounded_calendar_and_nonexact_proof(self):
+        # Catches extending the calendar to earnings, and publishing a partial
+        # calendar count as an exact distance. Labor Day is deliberately absent.
+        dates = ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04',
+                 '2026-09-08', '2026-09-09', '2026-09-10']
+        requests = []
+        class Calendar(_FakeAlpaca):
+            async def call(self, name, values=None):
+                if name == 'get_calendar':
+                    requests.append(values)
+                    return [dict(date=d, open='09:30', close='16:00') for d in dates]
+                return await super().call(name, values)
+        with patch('broker_mcp_bridge.datetime', _FixedDateTime), patch('broker_mcp_bridge.consolidated_daily_bars', return_value=[]):
+            for op, event in (('snapshot','2027-01-24'), ('review','2026-11-15')):
+                snap = await broker_mcp_bridge.operation(Calendar(), op, {
+                    'symbol': 'AAPL', 'planned_exit_at': '2026-09-03T20:00:00Z',
+                    'earnings_event_at': event, 'earnings_blackout_sessions': 2})
+                self.assertEqual(snap['earnings_status'], 'outside_window')
+                self.assertIsNone(snap['earnings_sessions_away'])
+                self.assertEqual(snap['earnings_sessions_lower_bound'], 6)
+        self.assertEqual(len(requests), 2)
+        for request in requests:
+            self.assertEqual(request['start'], '2026-09-01')
+            self.assertEqual(request['end'], '2026-09-17')
+            self.assertLessEqual(request['end'], '2026-11-30')
+
+    async def test_actual_snapshot_blackout_matrix_reaches_every_validation_gate(self):
+        import autotrader
+        from test_safety import TradeySafetyTests
+        fixture = TradeySafetyTests()
+        fixture.setUp()
+        # Literal exchange sessions spanning Labor Day; exit is Sept 3.
+        dates = ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04',
+                 '2026-09-08', '2026-09-09', '2026-09-10']
+        class Calendar(_FakeAlpaca):
+            async def call(self, name, values=None):
+                if name == 'get_calendar':
+                    return [dict(date=d, open='09:30', close='16:00') for d in dates]
+                return await super().call(name, values)
+        cases = [('2026-09-01', 'near_term_earnings'), ('2026-09-04', 'near_term_earnings'),
+                 ('2026-09-08', 'near_term_earnings'), ('2026-09-09', None),
+                 ('2027-01-24', None), (None, 'earnings_unknown'),
+                 ('bad', 'earnings_unknown'), ('2027-01-24T10:00:00', 'earnings_unknown')]
+        for event, expected in cases:
+            with self.subTest(event=event), patch('broker_mcp_bridge.datetime', _FixedDateTime), patch('broker_mcp_bridge.consolidated_daily_bars', return_value=[]):
+                snap = await broker_mcp_bridge.operation(Calendar(), 'snapshot', {
+                    'symbol': 'AAPL', 'planned_exit_at': '2026-09-03T20:00:00Z', 'earnings_event_at': event})
+            horizon, errors = autotrader.classify_horizon({'planned_exit_at': '2026-09-03T20:00:00Z'}, snap)
+            self.assertEqual(horizon, {'holding_sessions': 3, 'assigned_rubric': 'short_1_5'})
+            self.assertEqual(errors, [])
+            order = dict(fixture.decision, **horizon)
+            # Malicious model distance/proof cannot override the broker fields.
+            order.update(earnings_sessions_away=999, earnings_sessions_lower_bound=999)
+            for gate_errors, _ in (
+                autotrader.pre_review_validation(order, snap, fixture.cfg, 0, 0, set()),
+                autotrader.post_review_validation(order, snap, fixture.cfg, 0, 0, set(), []),
+                autotrader.broker_review_validation(order, snap, fixture.cfg, 0, 0, set(), [])):
+                actual = set(gate_errors) & {'near_term_earnings', 'earnings_unknown'}
+                self.assertEqual(actual, {expected} if expected else set())
+
+    async def test_calendar_requires_actual_sessions_after_exit_not_day_padding(self):
+        # Catches a valid-looking truncated response, including a holiday gap.
+        for dates in (['2026-09-01', '2026-09-02'],
+                      ['2026-09-02', '2026-09-03', '2026-09-04', '2026-09-08'],
+                      ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04']):
+            class Calendar(_FakeAlpaca):
+                async def call(self, name, values=None):
+                    if name == 'get_calendar':
+                        return [dict(date=d, open='09:30', close='16:00') for d in dates]
+                    return await super().call(name, values)
+            with self.subTest(dates=dates), patch('broker_mcp_bridge.datetime', _FixedDateTime), patch('broker_mcp_bridge.consolidated_daily_bars', return_value=[]):
+                with self.assertRaisesRegex(RuntimeError, 'entry_calendar_unavailable'):
+                    await broker_mcp_bridge.operation(Calendar(), 'snapshot', {
+                        'symbol': 'AAPL', 'planned_exit_at': '2026-09-03T20:00:00Z',
+                        'earnings_event_at': '2026-09-10', 'earnings_blackout_sessions': 2})
+
+    def test_earnings_state_never_claims_exact_distance_outside_calendar(self):
+        now = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        rows = [{'date': '2026-09-01'}, {'date': '2026-09-02'}]
+        self.assertEqual(broker_mcp_bridge.earnings_state('2027-01-24', rows, now), ('outside_window', None))
+        for event in (None, 'bad', '2027-01-24T10:00:00'):
+            self.assertEqual(broker_mcp_bridge.earnings_state(event, rows, now), ('unknown', None))
 
     async def test_reconcile_many_fetches_all_parent_brackets_in_one_session(self):
         class OrdersAlpaca:
@@ -171,7 +254,8 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
                 calls.append((name,values))
                 if name=='get_calendar':
                     return [dict(date='2026-09-01',open='09:30',close='16:00',session_close='2000'),
-                            dict(date='2026-09-02',open='09:30',close='16:00',session_close='2000')]
+                            dict(date='2026-09-02',open='09:30',close='16:00'),
+                            dict(date='2026-09-03',open='09:30',close='16:00')]
                 if name=='get_account_info':return dict(cash='1000',buying_power='3200',multiplier='4')
                 return await super().call(name,values)
         with patch('broker_mcp_bridge.datetime',_FixedDateTime),patch('broker_mcp_bridge.consolidated_daily_bars',return_value=[]):
@@ -179,7 +263,8 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.get('cash_semantics'),'gross')
         self.assertEqual(snap.get('buying_power_semantics'),'available_net')
         self.assertEqual(snap.get('trading_calendar'),[
-            dict(date='2026-09-01',open='09:30',close='16:00'),dict(date='2026-09-02',open='09:30',close='16:00')])
+            dict(date='2026-09-01',open='09:30',close='16:00'),dict(date='2026-09-02',open='09:30',close='16:00'),
+            dict(date='2026-09-03',open='09:30',close='16:00')])
         self.assertIn(('get_orders',{'status':'open','nested':True,'limit':500}),calls)
         request=next(values for name,values in calls if name=='get_calendar')
         self.assertGreaterEqual(request['end'],'2026-09-08')
@@ -197,7 +282,7 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_calendar_missing_malformed_or_unbounded_fails_closed(self):
         good=[dict(date='2026-09-01',open='09:30',close='16:00'),dict(date='2026-09-02',open='09:30',close='16:00')]
-        for rows in ([],good[:1],[dict(good[0],close=None),good[1]],
+        for rows in ([],good[:1],{'data': good, 'has_more': True},[dict(good[0],close=None),good[1]],
                      [dict(good[0],close='2000'),good[1]],list(reversed(good)),[good[0],good[0]],
                      [dict(good[0],date='2026-09-99'),good[1]]):
             class BadCalendar(_FakeAlpaca):

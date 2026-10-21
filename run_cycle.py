@@ -36,7 +36,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "account_cap_exceeded","active_broker_order","alpha_radar","asset_name_unknown",
     "asset_not_fractionable","audit_persistence_failure","autonomy_disabled",
     "broker_baseline_invalid","broker_baseline_missing","broker_mcp_failure",
-    "broker_mcp_unavailable","broker_reconciliation_invalid","broker_review",
+    "broker_mcp_unavailable","broker_response_validation","broker_reconciliation_invalid","broker_review",
     "broker_tradability_unverified","candidate_failed_qualification","candidate_outcomes",
     "consolidated_volume_unavailable","consensus_hold","daily_order_limit",
     "dry_run_no_execution","earnings_blackout","earnings_timestamp_unverified",

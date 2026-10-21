@@ -20,6 +20,58 @@ import alpha_radar
 import autotrader
 
 
+class SnapshotErrorContractTests(unittest.TestCase):
+    def test_typed_transport_is_fixed_allowlist_and_preserves_retry_policy(self):
+        # Catches raw prose or legacy class names being promoted to auth.
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        cases = (
+            ('entry_calendar_unavailable', 'BLOCKER entry_calendar_unavailable', 2),
+            ('entry_calendar_invalid', 'BLOCKER entry_calendar_invalid', 2),
+            ('response_validation', 'SYSTEM_FAILURE broker_response_validation', 4),
+            ('authentication', 'AUTH_FAILURE broker_mcp_unavailable', 3),
+            ('private token /account', 'SYSTEM_FAILURE broker_mcp_failure', 4),
+        )
+        for reason, public, code in cases:
+            for operation, attempts in (('snapshot', 2), ('review', 2), ('place', 1)):
+                with self.subTest(reason=reason, operation=operation), tempfile.TemporaryDirectory(dir=artifact_root) as td:
+                    response = _fail_process('warning private\n' + json.dumps({'error': 'RuntimeError', 'reason': reason}))
+                    diagnostics = Path(td) / 'test_artifacts'
+                    diagnostics.mkdir(mode=0o700)
+                    with patch.object(autotrader, 'PRIVATE_DIR', diagnostics), patch.object(autotrader.subprocess, 'run', return_value=response) as run:
+                        with self.assertRaises(RuntimeError) as caught:
+                            autotrader._broker_bridge(operation)
+                    self.assertEqual(run.call_count, attempts)
+                    self.assertNotIn('private', str(caught.exception))
+                    self.assertEqual(autotrader.snapshot_failure(caught.exception), (public, code))
+        for stderr in ('{"error":"RuntimeError"}', '{"error":"AuthenticationError"}',
+                       '{"error":"RuntimeError","reason":"authentication","extra":"secret"}'):
+            with tempfile.TemporaryDirectory(dir=artifact_root) as td:
+                diagnostics = Path(td) / 'test_artifacts'
+                diagnostics.mkdir(mode=0o700)
+                with patch.object(autotrader, 'PRIVATE_DIR', diagnostics), patch.object(autotrader.subprocess, 'run', return_value=_fail_process(stderr)):
+                    with self.assertRaises(RuntimeError) as caught:
+                        autotrader._broker_bridge('snapshot')
+                    self.assertEqual(autotrader.snapshot_failure(caught.exception), ('SYSTEM_FAILURE broker_mcp_failure', 4))
+
+    def test_public_cycle_accepts_only_fixed_snapshot_error_vocabulary(self):
+        import run_cycle
+        self.assertEqual(run_cycle.parse_failure_event('SYSTEM_FAILURE broker_response_validation'),
+                         'SYSTEM_FAILURE broker_response_validation')
+        self.assertIsNone(run_cycle.parse_failure_event('SYSTEM_FAILURE broker_response_validation:private_account'))
+
+    def test_child_error_envelope_requires_proven_auth_not_prose(self):
+        from broker_errors import error_envelope
+        import httpx
+        request = httpx.Request('GET', 'https://broker.example/private')
+        for status, expected in ((401, 'authentication'), (403, None), (500, None)):
+            error = httpx.HTTPStatusError('secret account', request=request, response=httpx.Response(status, request=request))
+            envelope = error_envelope(error)
+            self.assertEqual(envelope.get('reason'), expected)
+            self.assertNotIn('secret', json.dumps(envelope))
+        self.assertEqual(error_envelope(RuntimeError('entry_calendar_invalid')).get('reason'), 'entry_calendar_invalid')
+        self.assertNotIn('reason', error_envelope(RuntimeError('401 unauthorized private')))
+
+
 def _ok_process(stdout="{}"):
     return subprocess.CompletedProcess([], 0, stdout, "")
 

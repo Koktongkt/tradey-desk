@@ -156,7 +156,10 @@ class ThreeRuntimeTests(unittest.TestCase):
         for label, dates, close, start, end, phase in cases:
             with self.subTest(case=label,phase=phase), patch.object(Clock,'instant',dt.datetime.fromisoformat(start)):
                 f=ThreeRuntimeTests(); f.setUp(); self.addCleanup(f.doCleanups)
-                f.calendar=[dict(date=d,open='09:30',close=close if i==0 else '16:00') for i,d in enumerate(dates)]
+                # The exit stays the seventh session; bridge coverage additionally
+                # proves the unchanged two-session blackout after that exit.
+                buffer_dates = ['2026-12-09','2026-12-10'] if label=='normal' else ['2026-12-08','2026-12-09']
+                f.calendar=[dict(date=d,open='09:30',close=close if i==0 else '16:00') for i,d in enumerate(dates+buffer_dates)]
                 candidate=dict(symbol='DELL',sources_verified_at=start,researched_at=start,
                     sources=[{'url':'https://a.example/1'},{'url':'https://b.example/2'}],
                     setup_type='strategic_rerating',planned_exit_at=dates[-1]+'T21:00:00Z',
