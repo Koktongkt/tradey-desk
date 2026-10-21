@@ -293,7 +293,7 @@ class AlphaRadarTests(unittest.TestCase):
     def test_discovery_prompt_states_current_dates_and_freshness_window(self):
         now=dt.datetime(2026,10,21,3,0,tzinfo=dt.timezone.utc)  # 23:00 previous day in New York (EDT)
         prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now)
-        for fragment in ('2026-10-21','2026-10-20','5 calendar days','2026-10-16','October 2026',
+        for fragment in ('2026-10-21','2026-10-20','7 calendar days','2026-10-14','October 2026',
                          'title or description shows an older date',
                          'recency term derived from the current date'):
             with self.subTest(fragment=fragment):
@@ -304,7 +304,7 @@ class AlphaRadarTests(unittest.TestCase):
         prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500,'discovery_max_event_age_days':2},now=now)
         self.assertIn('2 calendar days',prompt)
         self.assertIn('2026-10-19',prompt)
-        self.assertNotIn('5 calendar days',prompt)
+        self.assertNotIn('7 calendar days',prompt)
 
     def test_discovery_prompt_handles_utc_new_york_date_rollover(self):
         # Just after midnight UTC: New York is still on the previous date.
@@ -324,12 +324,12 @@ class AlphaRadarTests(unittest.TestCase):
         def raw(symbol,date):
             return {'symbol':symbol,'catalyst':'dated event','event_date':date,'urls':[f'https://{symbol.lower()}.example/1']}
         payload=json.dumps({'candidates':[raw('AAA','2026-10-20'),raw('BBB','2026-10-16'),
-                                          raw('CCC','2026-10-15'),raw('DDD','2025-10-21')]})
+                                          raw('CCC','2026-10-10'),raw('DDD','2025-10-21')]})
         candidates=alpha_radar.extract_scout_candidates(payload,now=now)
         self.assertEqual([c['symbol'] for c in candidates],['AAA','BBB'])
 
     def test_extract_scout_candidates_rejects_stale_after_utc_midnight_rollover(self):
-        candidate={'candidates':[{'symbol':'AAA','catalyst':'dated event','event_date':'2026-10-16',
+        candidate={'candidates':[{'symbol':'AAA','catalyst':'dated event','event_date':'2026-10-14',
                                   'urls':['https://a.example/1']}]}
         late=dt.datetime(2026,10,21,23,59,tzinfo=dt.timezone.utc)
         early=dt.datetime(2026,10,22,0,1,tzinfo=dt.timezone.utc)

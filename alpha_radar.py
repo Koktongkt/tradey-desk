@@ -573,15 +573,15 @@ RESEARCHED_AT_TOLERANCE_MINUTES = 15
 
 
 def discovery_max_event_age_days(cfg:dict[str,Any]|None=None)->int:
-    """Configurable discovery freshness window in calendar days (default 5)."""
+    """Configurable discovery freshness window in calendar days (default 7)."""
     policy=cfg
     if policy is None:
         try:policy=json.loads((ROOT/"autonomy_config.json").read_text())
         except (OSError,ValueError):policy={}
-    if not isinstance(policy,dict):return 5
-    try:value=int(policy.get("discovery_max_event_age_days",5))
-    except (TypeError,ValueError):return 5
-    return value if value>=0 else 5
+    if not isinstance(policy,dict):return 7
+    try:value=int(policy.get("discovery_max_event_age_days",7))
+    except (TypeError,ValueError):return 7
+    return value if value>=0 else 7
 
 
 def discovery_prompt(cfg:dict[str,Any],*,now:dt.datetime|None=None)->str:
