@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import ast
 import ctypes
@@ -145,6 +145,96 @@ class InterpreterTests(unittest.TestCase):
         found, _ = self.invoke([p], [proposal()])
         self.assertFalse(found)
         self.assertIsNone(p['publication_observation'])
+
+    def test_projected_original_conflict_is_non_overridable_refusal(self):
+        raw = page('Published: October 21, 2026\nPublished: October 20, 2026')
+        projected = observation.prepare_publication_evidence(raw,
+                extracted_text='Published: October 21, 2026')
+        self.assertEqual(projected['text'], 'Published: October 21, 2026')
+        self.assertIsNone(projected['publication_observation'])
+        self.assertEqual(observation.evaluate_publication(projected, now=NOW),
+                         (False, 'source_freshness_unknown'))
+        original = copy.deepcopy(projected)
+        found, diag = self.invoke([projected], [proposal()])
+        self.assertEqual(found, {})
+        self.assertEqual(diag, [dict(id='p0', reason='inadmissible_publication')])
+        self.assertEqual(projected, original)
+        self.assertEqual(self.calls, [])
+
+    def test_projected_lost_exact_timestamp_cannot_downgrade_at_boundary(self):
+        exact = '2026-04-24T15:59:59Z'  # 180 days + one second old at NOW.
+        text = f'<meta property="article:published_time" content="{exact}">'
+        raw = page(text)
+        exact_observation = observation.build_observation(raw, value=exact,
+                precision='instant', basis='structured_metadata', support=exact, location='meta')
+        self.assertIsNotNone(exact_observation)
+        self.assertEqual(observation.evaluate_publication(
+            {**raw, 'publication_observation':exact_observation}, now=NOW), (False, 'stale_source'))
+        day = 'Published: April 24, 2026'
+        projected = observation.prepare_publication_evidence(raw, extracted_text=day, max_chars=80)
+        self.assertEqual(projected['text'], day)
+        self.assertIsNone(projected['publication_observation'])
+        # The lossy day projection alone would pass calendar-day freshness.
+        candidate = observation.build_observation(projected, value='2026-04-24', precision='day',
+                basis='llm_grounded', support=day, location='header')
+        self.assertIsNotNone(candidate)
+        self.assertEqual(observation.evaluate_publication(
+            {**projected, 'publication_observation':candidate}, now=NOW), (True, None))
+        original = copy.deepcopy(projected)
+        found, diag = self.invoke([projected], [proposal(value='2026-04-24', support=day)])
+        self.assertEqual(found, {})
+        self.assertEqual(diag, [dict(id='p0', reason='inadmissible_publication')])
+        self.assertEqual(projected, original)
+        self.assertEqual(self.calls, [])
+
+    def test_invalid_present_observations_never_spend_invocation(self):
+        import publication_interpreter as interpreter
+        pages = [{**page(url=f'https://n{i}.example'), 'publication_observation':marker}
+                 for i, marker in enumerate([None, {}, {'value':'2026-10-21'}])]
+        original = copy.deepcopy(pages)
+        factory = Mock(return_value=['MOCK'])
+        runner = Mock(return_value=subprocess.CompletedProcess([], 0,
+            json.dumps({'version':1, 'results':[proposal(id=f'p{i}') for i in range(3)]})))
+        found, diag = interpreter.interpret_publications(pages, deadline=time.monotonic()+5,
+                command_factory=factory, runner=runner, now=NOW)
+        self.assertEqual(found, {})
+        self.assertEqual(diag, [dict(id=f'p{i}', reason='inadmissible_publication') for i in range(3)])
+        self.assertEqual(pages, original)
+        factory.assert_not_called()
+        runner.assert_not_called()
+
+    def test_mixed_refusal_unknown_and_valid_observation_are_isolated(self):
+        refused = observation.prepare_publication_evidence(
+            page('Published: October 21, 2026\nPublished: October 20, 2026'),
+            extracted_text='Published: October 21, 2026')
+        unknown = page(url='https://unknown.example/story')
+        self.assertNotIn('publication_observation', unknown)
+        valid = page(url='https://valid.example/story')
+        valid['publication_observation'] = observation.build_observation(valid,
+                value='2026-10-21', precision='day', basis='visible_context',
+                support=valid['text'], location='header')
+        self.assertTrue(observation.validate_observation(valid, valid['publication_observation']))
+        pages = [refused, unknown, valid]
+        original = copy.deepcopy(pages)
+        found, diag = self.invoke(pages, [proposal(), proposal(id='p1'), proposal(id='p2')])
+        self.assertEqual(set(found), {unknown['url']})
+        self.assertTrue(observation.validate_observation(unknown, found[unknown['url']]))
+        self.assertEqual(diag, [dict(id='p0', reason='inadmissible_publication'),
+            dict(id='p1', reason='success'), dict(id='p2', reason='existing_observation')])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual([p['id'] for p in json.loads(self.calls[0][1]['input'])['pages']], ['p1'])
+        self.assertEqual(pages, original)
+
+    def test_legitimate_unknown_absent_marker_still_recovers(self):
+        unknown = observation.prepare_publication_evidence(page('No captured date'),
+                extracted_text='Published: October 21, 2026')
+        self.assertNotIn('publication_observation', unknown)
+        found, diag = self.invoke([unknown], [proposal()])
+        self.assertEqual(set(found), {URL})
+        self.assertTrue(observation.validate_observation(unknown, found[URL]))
+        self.assertEqual(diag, [dict(id='p0', reason='success')])
+        self.assertEqual(len(self.calls), 1)
+        self.assertNotIn('publication_observation', unknown)
 
     def test_existing_valid_observation_is_not_replaced(self):
         p = page()

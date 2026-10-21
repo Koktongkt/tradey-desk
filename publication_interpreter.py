@@ -83,6 +83,12 @@ def _prepare_request(pages, reasons):
             reasons[id] = 'duplicate_url'
         elif validate_observation(page, page.get('publication_observation')):
             reasons[id] = 'existing_observation'
+        elif 'publication_observation' in page:
+            # Internal capture projection deliberately retains an invalid marker
+            # (including None) when original evidence cannot be safely retained.
+            # A lossy projection cannot authorize reversing that hard refusal.
+            # Only an absent key is recoverable unknown; never clear the marker.
+            reasons[id] = 'inadmissible_publication'
         else:
             row = dict(id=id, url=page['url'], returned_url=page.get('returned_url', page['url']),
                        title=page.get('title', ''), text=page['text'])
