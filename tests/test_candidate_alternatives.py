@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+SCOUT_FRESH_EVENT_DATE=dt.datetime.now(dt.timezone.utc).date().isoformat()
 from unittest.mock import patch
 
 import alpha_radar as radar
@@ -380,14 +381,14 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(len((root/'candidates.jsonl').read_text().splitlines()),1)
 
     def test_discovery_budget_caps_five_candidates_and_five_urls_at_both_parser_entries(self):
-        raw={'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event',
+        raw={'candidates':[{'symbol':'AAA','event_date':SCOUT_FRESH_EVENT_DATE,'catalyst':'dated event',
                             'urls':[f'https://source{i}.example/a' for i in range(6)]}]}
         with self.subTest(case='six_url_candidate_rejected_by_both_parser_entries'):
             text=json.dumps(raw)
             self.assertEqual(radar.extract_scout_candidates(text),[])
             self.assertEqual(radar.scout_parse_result(text)[0],[])
         with self.subTest(case='six_candidates_ranked_to_five_with_focused_budget'):
-            candidates=[{'symbol':s,'catalyst':'dated change','event_date':'2026-09-15',
+            candidates=[{'symbol':s,'catalyst':'dated change','event_date':SCOUT_FRESH_EVENT_DATE,
                          'urls':[f'https://{s.lower()}.example/story']} for s in ('AAA','BBB','CCC','DDD','EEE','FFF')]
             parsed, diagnostic=radar.scout_parse_result(json.dumps({'candidates':candidates}))
             self.assertEqual(len(parsed),5)
@@ -410,7 +411,7 @@ class CandidateAlternativesTests(unittest.TestCase):
                 ('durable_append_error',radar.DurableAppendError('private'),'research_persistence_failure')]
         for label, fault, reason in faults:
             with self.subTest(case=label), self.research_fixture([]) as (_,root,calls,fetch,_), patch.object(radar,'post_fetch_rescue_candidate') as rescue, patch.object(radar,'focused_retrieval',side_effect=self.real_focused_retrieval), patch('focused_capture.run_private_child',side_effect=lambda *a,**kw:calls(*a,**kw)), patch.object(subprocess,'Popen',side_effect=AssertionError('unexpected process boundary')):
-                calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':'2026-09-15','catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
+                calls.side_effect=[subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','event_date':SCOUT_FRESH_EVENT_DATE,'catalyst':'dated event','urls':['https://one.example/AAA']}]}),''),fault]
                 self.assertEqual(self.run_main(),(3,'SYSTEM_FAILURE '+reason))
                 self.assertEqual(calls.call_count,2);rescue.assert_not_called();fetch.assert_not_called()
 

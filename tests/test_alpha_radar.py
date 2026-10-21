@@ -20,9 +20,12 @@ def _body(label="evidence"):
     return ((label+" ")*60).strip()
 
 
+SCOUT_FRESH_EVENT_DATE=dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+
 def structured_scout(symbol="SNOW",urls=None):
     return json.dumps({"candidates":[{
-        "symbol":symbol,"catalyst":"current company event","event_date":"2026-09-14",
+        "symbol":symbol,"catalyst":"current company event","event_date":SCOUT_FRESH_EVENT_DATE,
         "urls":urls or ["https://a.example/1","https://b.example/2"],
     }]})
 
@@ -33,8 +36,8 @@ def _research_none_result():
 
 def _deferred_scout(urls, alternate_catalyst="supported"):
     return subprocess.CompletedProcess([], 0, json.dumps({"candidates": [
-        {"symbol": "AAA", "catalyst": "thin", "event_date": "2026-09-08", "urls": urls[:1]},
-        {"symbol": "BBB", "catalyst": alternate_catalyst, "event_date": "2026-09-08", "urls": urls[1:3]},
+        {"symbol": "AAA", "catalyst": "thin", "event_date":SCOUT_FRESH_EVENT_DATE, "urls": urls[:1]},
+        {"symbol": "BBB", "catalyst": alternate_catalyst, "event_date":SCOUT_FRESH_EVENT_DATE, "urls": urls[1:3]},
     ]}), "")
 
 
@@ -239,26 +242,26 @@ class AlphaRadarTests(unittest.TestCase):
         ranked = [json.loads(structured_scout(symbol,[f'https://{symbol.lower()}.example/1']))['candidates'][0]
                   for symbol in ('AAA','BBB','CCC','DDD','EEE','FFF')]
         malformed = [
-            {'symbol':'bad','catalyst':'invalid ticker','event_date':'2026-09-14','urls':['https://bad.example/1']},
+            {'symbol':'bad','catalyst':'invalid ticker','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://bad.example/1']},
             {'symbol':'NOPE','catalyst':'invalid date','event_date':'not-a-date','urls':['https://nope.example/1']},
         ]
         repeated = [json.loads(structured_scout('AAA',[f'https://source{i}.example/story']))['candidates'][0] for i in range(5)]
         other = json.loads(structured_scout('BBB',['https://different.example/story']))['candidates'][0]
         cases = (
-            ('invalid_json', '{bad', [], {'reason':'invalid_json'}, False, None),
-            ('empty_candidates', '{"candidates":[]}', [], {'reason':'no_discovered_candidate'}, False, None),
-            ('schema_rejection', json.dumps({'candidates':[{'symbol':'bad'}]}), [], {'reason':'candidate_schema_rejected'}, False, None),
+            ('invalid_json', '{bad', [], {'reason':'invalid_json','stale_event_date_rejected':0}, False, None),
+            ('empty_candidates', '{"candidates":[]}', [], {'reason':'no_discovered_candidate','stale_event_date_rejected':0}, False, None),
+            ('schema_rejection', json.dumps({'candidates':[{'symbol':'bad'}]}), [], {'reason':'candidate_schema_rejected','stale_event_date_rejected':0}, False, None),
             ('single_confirmed_url', structured_scout('AAA',['https://a.example/1']), ['AAA'],
-             {'reason':'discovery_candidates_ready','raw_candidate_count':1,'parsed_candidate_count':1,'valid_url_count':1}, True, None),
+             {'reason':'discovery_candidates_ready','raw_candidate_count':1,'parsed_candidate_count':1,'valid_url_count':1,'stale_event_date_rejected':0}, True, None),
             ('ranked_top_five', json.dumps({'candidates':ranked}), ['AAA','BBB','CCC','DDD','EEE'],
-             {'reason':'discovery_candidates_ready','raw_candidate_count':6,'parsed_candidate_count':5,'valid_url_count':5}, True, None),
+             {'reason':'discovery_candidates_ready','raw_candidate_count':6,'parsed_candidate_count':5,'valid_url_count':5,'stale_event_date_rejected':0}, True, None),
             ('duplicate_symbols', json.dumps({'candidates':repeated+[other]}), ['AAA','BBB'],
              {'raw_candidate_count':6,'valid_url_count':2}, False, ['https://source0.example/story']),
             ('malformed_before_funneling', json.dumps({'candidates':malformed+ranked}), ['AAA','BBB','CCC','DDD','EEE'],
              {'raw_candidate_count':8,'parsed_candidate_count':5,'reason':'discovery_candidates_ready'}, False, None),
             ('five_url_budget', structured_scout('AAA',[
                 'https://a.example/1','https://b.example/2','https://c.example/3','https://d.example/4','https://e.example/5','https://f.example/6',
-            ]), [], {'reason':'candidate_schema_rejected'}, False, None),
+            ]), [], {'reason':'candidate_schema_rejected','stale_event_date_rejected':0}, False, None),
         )
         for label, payload, symbols, expected_diag, exact_diag, first_urls in cases:
             with self.subTest(case=label):
@@ -284,8 +287,100 @@ class AlphaRadarTests(unittest.TestCase):
                 "parsed_candidate_count":0,"valid_url_count":0,"raw":"private",
             },path=path,now="2026-09-15T00:00:00Z")
             row=json.loads(path.read_text())
-        self.assertEqual(set(row),{"timestamp","stage","reason","raw_candidate_count","parsed_candidate_count","valid_url_count"})
+        self.assertEqual(set(row),{"timestamp","stage","reason","raw_candidate_count","parsed_candidate_count","valid_url_count","stale_event_date_rejected"})
         self.assertEqual(row["stage"],"discovery")
+
+    def test_discovery_prompt_states_current_dates_and_freshness_window(self):
+        now=dt.datetime(2026,10,21,3,0,tzinfo=dt.timezone.utc)  # 23:00 previous day in New York (EDT)
+        prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now)
+        for fragment in ('2026-10-21','2026-10-20','5 calendar days','2026-10-16','October 2026',
+                         'title or description shows an older date',
+                         'recency term derived from the current date'):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment,prompt)
+
+    def test_discovery_prompt_freshness_window_is_configurable(self):
+        now=dt.datetime(2026,10,21,3,0,tzinfo=dt.timezone.utc)
+        prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500,'discovery_max_event_age_days':2},now=now)
+        self.assertIn('2 calendar days',prompt)
+        self.assertIn('2026-10-19',prompt)
+        self.assertNotIn('5 calendar days',prompt)
+
+    def test_discovery_prompt_handles_utc_new_york_date_rollover(self):
+        # Just after midnight UTC: New York is still on the previous date.
+        now=dt.datetime(2026,10,21,0,5,tzinfo=dt.timezone.utc)
+        prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now)
+        self.assertIn('2026-10-21',prompt)
+        self.assertIn('2026-10-20',prompt)
+
+    def test_discovery_prompt_keeps_six_lane_search_contract(self):
+        now=dt.datetime(2026,10,21,3,0,tzinfo=dt.timezone.utc)
+        prompt=alpha_radar.discovery_prompt({'min_price_usd':1,'max_position_usd':500},now=now)
+        self.assertIn('call web_search exactly six times in parallel with limit 10 each',prompt)
+        self.assertEqual(prompt.count('call web_search'),1)
+
+    def test_extract_scout_candidates_reject_stale_event_dates(self):
+        now=dt.datetime(2026,10,21,12,0,tzinfo=dt.timezone.utc)
+        def raw(symbol,date):
+            return {'symbol':symbol,'catalyst':'dated event','event_date':date,'urls':[f'https://{symbol.lower()}.example/1']}
+        payload=json.dumps({'candidates':[raw('AAA','2026-10-20'),raw('BBB','2026-10-16'),
+                                          raw('CCC','2026-10-15'),raw('DDD','2025-10-21')]})
+        candidates=alpha_radar.extract_scout_candidates(payload,now=now)
+        self.assertEqual([c['symbol'] for c in candidates],['AAA','BBB'])
+
+    def test_extract_scout_candidates_rejects_stale_after_utc_midnight_rollover(self):
+        candidate={'candidates':[{'symbol':'AAA','catalyst':'dated event','event_date':'2026-10-16',
+                                  'urls':['https://a.example/1']}]}
+        late=dt.datetime(2026,10,21,23,59,tzinfo=dt.timezone.utc)
+        early=dt.datetime(2026,10,22,0,1,tzinfo=dt.timezone.utc)
+        self.assertEqual([c['symbol'] for c in alpha_radar.extract_scout_candidates(json.dumps(candidate),now=late)],['AAA'])
+        self.assertEqual(alpha_radar.extract_scout_candidates(json.dumps(candidate),now=early),[])
+
+    def test_extract_scout_candidates_rejects_naive_clock(self):
+        payload=json.dumps({'candidates':[{'symbol':'AAA','catalyst':'dated event','event_date':'2026-10-20',
+                                           'urls':['https://a.example/1']}]})
+        with self.assertRaises(ValueError):
+            alpha_radar.extract_scout_candidates(payload,now=dt.datetime(2026,10,21,12,0))
+
+    def test_scout_parse_result_types_stale_event_date_rejections(self):
+        now=dt.datetime(2026,10,21,12,0,tzinfo=dt.timezone.utc)
+        def raw(symbol,date):
+            return {'symbol':symbol,'catalyst':'dated event','event_date':date,'urls':[f'https://{symbol.lower()}.example/1']}
+        mixed=json.dumps({'candidates':[raw('AAA','2026-10-20'),raw('BBB','2026-10-01'),raw('CCC','2025-12-01')]})
+        candidates,diag=alpha_radar.scout_parse_result(mixed,now=now)
+        self.assertEqual([c['symbol'] for c in candidates],['AAA'])
+        self.assertEqual(diag['reason'],'discovery_candidates_ready')
+        self.assertEqual(diag['stale_event_date_rejected'],2)
+        all_stale=json.dumps({'candidates':[raw('BBB','2026-10-01'),raw('CCC','2025-12-01')]})
+        candidates,diag=alpha_radar.scout_parse_result(all_stale,now=now)
+        self.assertEqual(candidates,[])
+        self.assertEqual(diag['reason'],'stale_event_date_rejected')
+        self.assertEqual(diag['stale_event_date_rejected'],2)
+        self.assertEqual(diag['raw_candidate_count'],2)
+        empty,diag=alpha_radar.scout_parse_result('{"candidates":[]}',now=now)
+        self.assertEqual((empty,diag['reason'],diag['stale_event_date_rejected']),([],'no_discovered_candidate',0))
+
+    def test_record_scout_diagnostic_persists_stale_rejection_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"research.jsonl"
+            alpha_radar.record_scout_diagnostic({
+                "reason":"stale_event_date_rejected","raw_candidate_count":3,
+                "parsed_candidate_count":0,"valid_url_count":0,"stale_event_date_rejected":3,
+            },path=path,now="2026-10-21T00:00:00Z")
+            row=json.loads(path.read_text())
+        self.assertEqual(row["reason"],"stale_event_date_rejected")
+        self.assertEqual(row["stale_event_date_rejected"],3)
+
+    def test_live_research_types_all_stale_discovery_as_no_setup(self):
+        scout=subprocess.CompletedProcess([],0,json.dumps({'candidates':[{
+            'symbol':'AAA','catalyst':'old filing','event_date':'2026-10-01',
+            'urls':['https://a.example/1']}]}),"")
+        with _research_run(return_value=scout) as (td, _runs):
+            result=alpha_radar.live_research({"min_price_usd":1,"max_position_usd":500})
+            row=json.loads((Path(td)/"private"/"research_diagnostics.jsonl").read_text())
+        self.assertEqual(result,{"status":"none","none_reason":"no_fresh_setup"})
+        self.assertEqual(row["reason"],"stale_event_date_rejected")
+        self.assertEqual(row["stale_event_date_rejected"],1)
 
     def test_live_research_treats_empty_discovery_as_healthy_no_setup(self):
         scout=subprocess.CompletedProcess([],0,'{"candidates":[]}',"")
@@ -339,7 +434,7 @@ class AlphaRadarTests(unittest.TestCase):
                 )
 
     def test_extract_scout_candidates_schema_and_ranked_groups(self):
-        valid = {'symbol':'AAA', 'catalyst':'raised guidance', 'event_date':'2026-09-14', 'urls':['https://a.example/1']}
+        valid = {'symbol':'AAA', 'catalyst':'raised guidance', 'event_date':SCOUT_FRESH_EVENT_DATE, 'urls':['https://a.example/1']}
         cases = [('non_json_legacy_urls', 'https://a.example/1\nhttps://b.example/2', [], None)]
         for date in (None, '', '2026-02-30', '09/14/2026', '2026-9-14'):
             raw = dict(valid)
@@ -354,7 +449,7 @@ class AlphaRadarTests(unittest.TestCase):
             ('oversized_catalyst', json.dumps({'candidates':[{**valid, 'catalyst':'x'*501}]}), [], None),
             ('ranked_company_event_groups', json.dumps({'candidates':[
                 {**valid, 'urls':['https://a.example/1','https://b.example/2']},
-                {'symbol':'BBB','catalyst':'contract win','event_date':'2026-09-13','urls':['https://c.example/3','https://d.example/4']},
+                {'symbol':'BBB','catalyst':'contract win','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://c.example/3','https://d.example/4']},
             ]}), ['AAA','BBB'], ['https://a.example/1','https://b.example/2']),
         ))
         for label, payload, symbols, first_urls in cases:
@@ -786,8 +881,8 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_attributes_evidence_blocker_to_top_candidate_only(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"top event","event_date":"2026-09-14","urls":["https://a.example/1","https://missing.example/2"]},
-            {"symbol":"BBB","catalyst":"lower event","event_date":"2026-09-13","urls":["https://old-c.example/3","https://old-d.example/4"]},
+            {"symbol":"AAA","catalyst":"top event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://a.example/1","https://missing.example/2"]},
+            {"symbol":"BBB","catalyst":"lower event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://old-c.example/3","https://old-d.example/4"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         pages=[
@@ -818,8 +913,8 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_synthesizes_next_candidate_when_first_bundle_is_thin(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-14","urls":["https://a.example/1"]},
-            {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-14","urls":["https://c.example/3","https://d.example/4"]},
+            {"symbol":"AAA","catalyst":"thin event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://a.example/1"]},
+            {"symbol":"BBB","catalyst":"supported event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://c.example/3","https://d.example/4"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         synth=_research_none_result()
@@ -844,7 +939,7 @@ class AlphaRadarTests(unittest.TestCase):
 
     def test_live_research_rejects_synthesis_symbol_outside_selected_bundle(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-14","urls":["https://c.example/3","https://d.example/4"]}
+            {"symbol":"BBB","catalyst":"supported event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://c.example/3","https://d.example/4"]}
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         synth=subprocess.CompletedProcess([],0,json.dumps({"symbol":"AAA","sources":[]}),"")
@@ -1171,7 +1266,7 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_post_fetch_rescue_uses_primary_then_independent_and_stops_at_two_domains(self):
         candidate={
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-08",
+            "symbol":"AAA","catalyst":"raised guidance","event_date":SCOUT_FRESH_EVENT_DATE,
             "urls":["https://www.businesswire.com/news/a","https://one.example/a"],
         }
         accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
@@ -1197,7 +1292,7 @@ class BundleRescueTests(unittest.TestCase):
     def test_post_fetch_rescue_keeps_valid_later_url_after_five_url_candidate(self):
         initial_urls=[f"https://d{i}.example/article" for i in range(5)]
         candidate={
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-08",
+            "symbol":"AAA","catalyst":"raised guidance","event_date":SCOUT_FRESH_EVENT_DATE,
             "urls":initial_urls,
         }
         accepted=[{
@@ -1221,7 +1316,7 @@ class BundleRescueTests(unittest.TestCase):
     def test_post_fetch_rescue_wire_fallback_localizes_independent_lane_failure(self):
         for failure in ('empty_fetch','gateway_search','gateway_fetch'):
             with self.subTest(failure=failure):
-                candidate = {'symbol':'AAA','catalyst':'event','event_date':'2026-09-08','urls':['https://one.example/a']}
+                candidate = {'symbol':'AAA','catalyst':'event','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://one.example/a']}
                 accepted = [{'url':'https://one.example/a','title':'One','text':_body('one'),'published_at':'2026-09-08T12:00:00Z'}]
                 independent_url = 'https://www.reuters.com/markets/a'
                 wire_url = 'https://www.prnewswire.com/news/a'
@@ -1251,7 +1346,7 @@ class BundleRescueTests(unittest.TestCase):
 
 
     def test_post_fetch_rescue_preserves_unrelated_global_failure(self):
-        candidate={"symbol":"AAA","catalyst":"event","event_date":"2026-09-08","urls":["https://one.example/a"]}
+        candidate={"symbol":"AAA","catalyst":"event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://one.example/a"]}
         accepted=[{"url":"https://one.example/a","title":"One","text":_body("one"),"published_at":"2026-09-08T12:00:00Z"}]
         with patch.object(alpha_radar,"sec_edgar_filing_url",return_value=None), patch.object(
             alpha_radar,"gateway_rescue_url",side_effect=alpha_radar.ResearchFailure("research_persistence_failure")
@@ -1264,7 +1359,7 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_post_fetch_rescue_rejects_unbound_page_then_tries_wire(self):
         candidate={
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-08",
+            "symbol":"AAA","catalyst":"raised guidance","event_date":SCOUT_FRESH_EVENT_DATE,
             "urls":["https://one.example/a"],
         }
         accepted=[{
@@ -1341,7 +1436,7 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_runs_post_fetch_rescue_after_one_of_two_sources_fails(self):
         scout_payload=json.dumps({"candidates":[{
-            "symbol":"AAA","catalyst":"raised guidance","event_date":"2026-09-08",
+            "symbol":"AAA","catalyst":"raised guidance","event_date":SCOUT_FRESH_EVENT_DATE,
             "urls":["https://www.businesswire.com/news/a","https://one.example/a"],
         }]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
@@ -1370,7 +1465,7 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_rescues_thin_scout_bundle_and_synthesizes(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"SYRE","catalyst":"phase 2 topline","event_date":"2026-09-08",
+            {"symbol":"SYRE","catalyst":"phase 2 topline","event_date":SCOUT_FRESH_EVENT_DATE,
              "urls":["https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
@@ -1393,8 +1488,8 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_uses_sourceable_candidate_without_rescue_outage(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"thin event","event_date":"2026-09-08","urls":["https://one.example/a"]},
-            {"symbol":"BBB","catalyst":"supported event","event_date":"2026-09-08","urls":["https://two.example/b","https://three.example/b"]},
+            {"symbol":"AAA","catalyst":"thin event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://one.example/a"]},
+            {"symbol":"BBB","catalyst":"supported event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://two.example/b","https://three.example/b"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         synth=_research_none_result()
@@ -1548,7 +1643,7 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_live_research_reports_retrieval_blocker_when_rescue_cannot_complete_bundle(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"SYRE","catalyst":"phase 2 topline","event_date":"2026-09-08",
+            {"symbol":"SYRE","catalyst":"phase 2 topline","event_date":SCOUT_FRESH_EVENT_DATE,
              "urls":["https://www.sec.gov/Archives/edgar/data/1636282/000163628226000113/syre-20260908.htm"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
@@ -1568,9 +1663,9 @@ class BundleRescueTests(unittest.TestCase):
 
     def test_post_fetch_rescue_is_capped_at_three_candidates_per_run(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"one","event_date":"2026-09-08","urls":["https://a.example/1"]},
-            {"symbol":"BBB","catalyst":"two","event_date":"2026-09-08","urls":["https://b.example/2"]},
-            {"symbol":"CCC","catalyst":"three","event_date":"2026-09-08","urls":["https://c.example/3"]},
+            {"symbol":"AAA","catalyst":"one","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://a.example/1"]},
+            {"symbol":"BBB","catalyst":"two","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://b.example/2"]},
+            {"symbol":"CCC","catalyst":"three","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://c.example/3"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         synth=subprocess.CompletedProcess([],0,"not-json","")
@@ -1618,8 +1713,8 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
 
     def test_focused_retrieval_prompt_searches_all_three_lanes_for_all_candidates(self):
         prompt=alpha_radar.focused_retrieval_prompt([
-            {"symbol":"AAA","catalyst":"dated change","event_date":"2026-09-14","urls":["https://a.example/1"]},
-            {"symbol":"BBB","catalyst":"another change","event_date":"2026-09-13","urls":["https://b.example/2"]},
+            {"symbol":"AAA","catalyst":"dated change","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://a.example/1"]},
+            {"symbol":"BBB","catalyst":"another change","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://b.example/2"]},
         ])
         self.assertIn("AAA",prompt);self.assertIn("BBB",prompt)
         self.assertIn("primary",prompt);self.assertIn("independent",prompt);self.assertIn("wire",prompt)
@@ -1737,12 +1832,12 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
     def test_rerank_verified_strength_then_scout_order(self):
         cases = (
             ('stronger_verified_bundle', [
-                {'symbol':'AAA','catalyst':'adequate dated change','event_date':'2026-09-14','urls':['https://www.businesswire.com/a','https://www.globenewswire.com/b']},
-                {'symbol':'BBB','catalyst':'brief','event_date':'2026-09-14','urls':['https://www.sec.gov/c','https://www.reuters.com/d']},
+                {'symbol':'AAA','catalyst':'adequate dated change','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://www.businesswire.com/a','https://www.globenewswire.com/b']},
+                {'symbol':'BBB','catalyst':'brief','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://www.sec.gov/c','https://www.reuters.com/d']},
             ], 'BBB', 2),
             ('scout_order_tiebreaker', [
-                {'symbol':'AAA','catalyst':'x','event_date':'2026-09-14','urls':['https://a.example/1','https://b.example/2']},
-                {'symbol':'BBB','catalyst':'much more detailed catalyst prose','event_date':'2026-09-14','urls':['https://c.example/3','https://d.example/4']},
+                {'symbol':'AAA','catalyst':'x','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://a.example/1','https://b.example/2']},
+                {'symbol':'BBB','catalyst':'much more detailed catalyst prose','event_date':SCOUT_FRESH_EVENT_DATE,'urls':['https://c.example/3','https://d.example/4']},
             ], 'AAA', None),
         )
         for label, template, expected, evidence_count in cases:
@@ -1758,8 +1853,8 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
 
     def test_live_research_merges_focused_urls_then_selects_best_verified_candidate(self):
         scout_payload=json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"first","event_date":"2026-09-14","urls":["https://www.businesswire.com/a"]},
-            {"symbol":"BBB","catalyst":"second","event_date":"2026-09-14","urls":["https://www.sec.gov/c"]},
+            {"symbol":"AAA","catalyst":"first","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://www.businesswire.com/a"]},
+            {"symbol":"BBB","catalyst":"second","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://www.sec.gov/c"]},
         ]})
         scout=subprocess.CompletedProcess([],0,scout_payload,"")
         synth=_research_none_result()
@@ -1913,8 +2008,8 @@ class RetrievalHardeningTests(unittest.TestCase):
         scout="https://issuer.example/a";primary="https://www.sec.gov/a"
         independent="https://www.reuters.com/a";wire="https://www.businesswire.com/a"
         payload=subprocess.CompletedProcess([],0,json.dumps({"candidates":[
-            {"symbol":"AAA","catalyst":"event","event_date":"2026-09-29","urls":[scout]},
-            {"symbol":"BBB","catalyst":"event","event_date":"2026-09-29","urls":["https://other.example/b"]},
+            {"symbol":"AAA","catalyst":"event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":[scout]},
+            {"symbol":"BBB","catalyst":"event","event_date":SCOUT_FRESH_EVENT_DATE,"urls":["https://other.example/b"]},
         ]}),"")
         with patch.object(alpha_radar.subprocess,"run",return_value=payload), patch.object(
             alpha_radar,"focused_retrieval",return_value={"AAA":[primary,independent,wire]}

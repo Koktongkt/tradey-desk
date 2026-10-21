@@ -572,17 +572,39 @@ def research_prompt(cfg:dict[str,Any]|None=None)->str:
 RESEARCHED_AT_TOLERANCE_MINUTES = 15
 
 
+def discovery_max_event_age_days(cfg:dict[str,Any]|None=None)->int:
+    """Configurable discovery freshness window in calendar days (default 5)."""
+    policy=cfg
+    if policy is None:
+        try:policy=json.loads((ROOT/"autonomy_config.json").read_text())
+        except (OSError,ValueError):policy={}
+    if not isinstance(policy,dict):return 5
+    try:value=int(policy.get("discovery_max_event_age_days",5))
+    except (TypeError,ValueError):return 5
+    return value if value>=0 else 5
+
+
 def discovery_prompt(cfg:dict[str,Any],*,now:dt.datetime|None=None)->str:
     sectors=('Energy','Materials','Industrials','Consumer Discretionary','Consumer Staples',
              'Health Care','Financials','Information Technology','Communication Services',
              'Utilities','Real Estate')
     clock=now if now is not None else dt.datetime.now(dt.timezone.utc)
     if clock.tzinfo is None or clock.utcoffset() is None:raise ValueError('discovery clock must be timezone-aware')
+    utc_now=clock.astimezone(dt.timezone.utc);utc_date=utc_now.date()
+    try:
+        from zoneinfo import ZoneInfo
+        ny_date=utc_now.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:ny_date=utc_now.astimezone(dt.timezone(dt.timedelta(hours=-5))).date()
+    max_age_days=discovery_max_event_age_days(cfg)
+    cutoff_date=utc_date-dt.timedelta(days=max_age_days)
+    recency=utc_date.strftime('%B %Y')
     # Stateless UTC twenty-minute buckets: repeated calls/restarts in one slot
     # agree, equivalent timezone representations agree, and successive slots rotate.
     sector=sectors[(int(clock.timestamp())//1200)%len(sectors)]
     floor=f"{float(cfg.get('min_price_usd',1)):g}";cap=f"{float(cfg.get('max_position_usd',500)):g}"
     return f"""You are the broad discovery stage of a stock research pipeline. Using web search ONLY, identify up to five provisionally ranked US-listed cash-equity company + catalyst pairs worth deeper research today. Do not extract pages, perform focused corroboration, synthesize a trade, or require a two-source bundle; the focused retrieval stage does that next. A catalyst must be specific and dated: state what changed, when, the prior expectation/state, and why it could affect earnings, cash flow, valuation, competitive position, or market expectations. Prefer liquid common stocks whose approximate whole-share price is within the deterministic ${floor}-${cap} intake range. Do not select imminent pre-earnings setups, non-common-stock instruments, generic AI narratives, routine conference appearances, unexplained price moves, recycled stories, or promotional commentary.
+
+Today's date is {utc_date.isoformat()} (UTC); the current New York date is {ny_date.isoformat()}. Freshness window: every proposed catalyst event must have occurred within the last {max_age_days} calendar days, i.e. on or after {cutoff_date.isoformat()}; discard any web_search result whose title or description shows an older date. Include a recency term derived from the current date (for example the current month and year, {recency}) in each of the six lane queries below.
 
 Use exactly one tool-using turn: call web_search exactly six times in parallel with limit 10 each, one call per lane. Use six distinct discovery lanes, not variations of one broad query: (1) broad US-equity catalysts—fresh material company-specific developments across industries; (2) SEC filings—recent material 8-Ks and other dated regulatory filings, using SEC-hosted article/document results rather than issuer press releases; (3) issuer IR disclosures—dated material company announcements on issuer investor-relations sites, distinct from the SEC lane; (4) independent financial reporting—recent company-specific Reuters, Bloomberg, Dow Jones/WSJ, CNBC, AP, FT, or Barron's coverage; (5) undercovered sectors or smaller liquid companies—dated, substantive catalysts outside the most-covered mega-cap technology names, including credible trade wires such as Business Wire, PR Newswire, or GlobeNewswire; (6) rotating sector-specific search—search for material company events within the sector named below, not another generic market query. The rotating focus is a search-coverage instruction, not a candidate quota: do not force a sector candidate, pad the shortlist, or exclude stronger candidates from other sectors. Search only for events relevant today; do not broaden the evidence freshness or security eligibility rules. Merge and deduplicate company-event pairs across all six search results before ranking; do not favor a candidate merely because it appears in more searches. Rank the provisional company-event pairs by catalyst materiality/certainty, freshness, 1-30-session horizon fit, observable market confirmation, liquidity/approximate ${floor}-${cap} affordability, and lower binary-event risk.
 
@@ -608,8 +630,15 @@ def extract_candidate_urls(text:str,limit:int=6)->list[str]:
     return out
 
 
-def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5)->list[dict[str,Any]]:
-    """Parse a strict structured scout response without legacy text fallback."""
+def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5,*,now:dt.datetime|None=None,stale_rejections:list[int]|None=None)->list[dict[str,Any]]:
+    """Parse a strict structured scout response without legacy text fallback.
+
+    Deterministic freshness gate: candidates whose event_date is older than the
+    discovery freshness window are rejected and counted in stale_rejections[0].
+    """
+    clock=now if now is not None else dt.datetime.now(dt.timezone.utc)
+    if clock.tzinfo is None or clock.utcoffset() is None:raise ValueError('discovery clock must be timezone-aware')
+    cutoff=clock.astimezone(dt.timezone.utc).date()-dt.timedelta(days=discovery_max_event_age_days())
     try:payload=json.loads(text)
     except (json.JSONDecodeError,TypeError):return []
     if not isinstance(payload,dict):return []
@@ -626,8 +655,11 @@ def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5)->list
         if not isinstance(symbol,str) or not re.fullmatch(r"[A-Z]{1,6}",symbol):continue
         if not isinstance(catalyst,str) or not 1<=len(catalyst.strip())<=500:continue
         if not isinstance(event_date,str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}",event_date):continue
-        try:dt.date.fromisoformat(event_date)
+        try:parsed_date=dt.date.fromisoformat(event_date)
         except ValueError:continue
+        if parsed_date<cutoff:
+            if stale_rejections is not None:stale_rejections[0]=stale_rejections[0]+1
+            continue
         if not isinstance(raw_urls,list) or not raw_urls:continue
         if len(raw_urls)>max_urls:continue
         if any(
@@ -647,17 +679,20 @@ def extract_scout_candidates(text:str,max_candidates:int=5,max_urls:int=5)->list
     return candidates
 
 
-def scout_parse_result(text:str,max_candidates:int=5,max_urls:int=5)->tuple[list[dict[str,Any]],dict[str,Any]]:
-    base={"raw_candidate_count":0,"parsed_candidate_count":0,"valid_url_count":0}
+def scout_parse_result(text:str,max_candidates:int=5,max_urls:int=5,*,now:dt.datetime|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
+    base={"raw_candidate_count":0,"parsed_candidate_count":0,"valid_url_count":0,"stale_event_date_rejected":0}
+    stale=[0]
     try:payload=json.loads(text)
     except (json.JSONDecodeError,TypeError):return [],{"reason":"invalid_json",**base}
     raw=payload.get("candidates") if isinstance(payload,dict) else None
     if not isinstance(raw,list):return [],{"reason":"candidate_schema_rejected",**base}
     raw_count=min(len(raw),100)
-    candidates=extract_scout_candidates(text,max_candidates=max_candidates,max_urls=max_urls)
+    candidates=extract_scout_candidates(text,max_candidates=max_candidates,max_urls=max_urls,now=now,stale_rejections=stale)
     valid_urls=sum(len(c.get("urls",[])) for c in candidates)
-    reason="discovery_candidates_ready" if candidates else ("no_discovered_candidate" if not raw else "candidate_schema_rejected")
-    return candidates,{"reason":reason,"raw_candidate_count":raw_count,"parsed_candidate_count":len(candidates),"valid_url_count":valid_urls}
+    if candidates:reason="discovery_candidates_ready"
+    elif stale[0]:reason="stale_event_date_rejected"
+    else:reason="no_discovered_candidate" if not raw else "candidate_schema_rejected"
+    return candidates,{"reason":reason,"raw_candidate_count":raw_count,"parsed_candidate_count":len(candidates),"valid_url_count":valid_urls,"stale_event_date_rejected":stale[0]}
 
 
 def extract_page_text(body:str)->str:
@@ -1338,13 +1373,13 @@ def record_research_diagnostics(
 
 def record_scout_diagnostic(diagnostic:dict[str,Any],path:Path|None=None,now:str|None=None)->None:
     """Persist a bounded discovery summary without symbols, URLs, or raw model text."""
-    allowed={"invalid_json","no_discovered_candidate","candidate_schema_rejected","discovery_candidates_ready"}
+    allowed={"invalid_json","no_discovered_candidate","candidate_schema_rejected","discovery_candidates_ready","stale_event_date_rejected"}
     reason=str(diagnostic.get("reason") or "")
     if reason not in allowed:reason="candidate_schema_rejected"
     def count(key:str)->int:
         value=diagnostic.get(key,0)
         return min(100,max(0,value if isinstance(value,int) and not isinstance(value,bool) else 0))
-    row={"timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),"stage":"discovery","reason":reason,"raw_candidate_count":count("raw_candidate_count"),"parsed_candidate_count":count("parsed_candidate_count"),"valid_url_count":count("valid_url_count")}
+    row={"timestamp":now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),"stage":"discovery","reason":reason,"raw_candidate_count":count("raw_candidate_count"),"parsed_candidate_count":count("parsed_candidate_count"),"valid_url_count":count("valid_url_count"),"stale_event_date_rejected":count("stale_event_date_rejected")}
     target=path or ROOT/"private"/"research_diagnostics.jsonl"
     append_jsonl(target,{**row,**research_correlation()})
 
@@ -1702,7 +1737,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     try:record_scout_diagnostic(scout_diagnostic)
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     if not scout_candidates:
-        if scout_diagnostic["reason"]=="no_discovered_candidate":return {"status":"none","none_reason":"no_fresh_setup"}
+        if scout_diagnostic["reason"] in {"no_discovered_candidate","stale_event_date_rejected"}:return {"status":"none","none_reason":"no_fresh_setup"}
         if scout_diagnostic["reason"]=="invalid_json":raise ResearchFailure("research_scout_parse_failure")
         raise ResearchFailure("research_scout_schema_rejected")
     focused_pages=None

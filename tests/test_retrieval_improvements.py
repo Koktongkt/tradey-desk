@@ -1,4 +1,5 @@
 """Regression tests for bounded, sourceable radar evidence selection."""
+import datetime as dt
 import json
 import subprocess
 import tempfile
@@ -167,7 +168,7 @@ class RetrievalImprovements(unittest.TestCase):
     def test_initial_sec_page_uses_verified_submissions_date(self):
         url="https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/report.htm"
         scout=subprocess.CompletedProcess([],0,json.dumps({"candidates":[{
-            "symbol":"NVDA","catalyst":"new event","event_date":"2026-09-29","urls":[url]
+            "symbol":"NVDA","catalyst":"new event","event_date":dt.datetime.now(dt.timezone.utc).date().isoformat(),"urls":[url]
         }]}),"")
         page={"url":url,"title":"8-K","text":"Material event "*20,"published_at":None}
         observed=[]
