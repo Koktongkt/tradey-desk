@@ -52,7 +52,8 @@ def score_claims(rows, claims, *, accepted_ids):
                          representations=len(group), scored_representations=0,
                          fetch_errors=0, parsing_errors=0, known=0, correct=0,
                          missed_known=0, wrong_claims=0, wrong_accepted=0,
-                         unknown_falsely_accepted=0, abstention=0, accepted=0)
+                         unknown_falsely_accepted=0, abstention=0, accepted=0,
+                         precision_loss=0)
         for row in group:
             if row.get('fetch_error'):
                 counts['fetch_errors'] += 1
@@ -63,11 +64,19 @@ def score_claims(rows, claims, *, accepted_ids):
             counts['scored_representations'] += 1
             claim = claims.get(row['id'])
             known = row.get('label') is not None
-            correct = same_claim(claim, row.get('label'))
+            label = row.get('label')
+            correct = same_claim(claim, label)
+            # A supported civil day against an instant label counts as correct
+            # AND as a distinct precision_loss — never silently folded.
+            precision_loss = bool(claim and label
+                and claim.get('precision') == 'day'
+                and label.get('precision') == 'instant'
+                and claim.get('value') == label.get('value', '')[:10])
             accepted = row['id'] in accepted_ids
             counts['accepted'] += accepted
             counts['known'] += known
             counts['correct'] += correct
+            counts['precision_loss'] += precision_loss
             counts['missed_known'] += known and not correct
             counts['wrong_claims'] += bool(claim) and known and not correct
             counts['wrong_accepted'] += accepted and known and not correct
@@ -187,6 +196,134 @@ def evaluate(dataset, results=None):
     scored.update(origin=results['origin'], diagnostics=diagnostics, decisions=decisions,
                   raw_proposals=raw, validated_observations=found)
     return scored
+
+
+def metadata_region_extract(capture_text, *, limit=8192):
+    """Bounded header/metadata slice of an oversized raw capture.
+
+    Bounded observation input ONLY — never a replacement capture. The original
+    full HTML capture remains the binding witness and hash basis.
+    """
+    if not isinstance(capture_text, str) or isinstance(capture_text, bool):
+        raise ValueError('capture_text_must_be_str')
+    if type(limit) is not int or not 1 <= limit <= 8192:
+        raise ValueError('limit must be within 1..8192')
+    return capture_text[:limit]
+
+
+def evaluate_metadata_region(dataset, *, base_dir=None, limit=8192, max_chars=6000):
+    """Offline, deterministic metadata-region evaluation. No model, no network.
+
+    For representations whose raw capture exceeds the 100k projection limit,
+    slice ONLY the bounded header/metadata region (first `limit` chars) and run
+    the reviewed prepare_publication_evidence as an eligible unresolved page
+    (marker absent). The full capture is hash-verified against the frozen
+    dataset before slicing — a mismatch is recorded, never scored.
+    """
+    from publication_observation import prepare_publication_evidence
+    from alpha_radar import filter_evidence, publisher_domain
+    base = Path(base_dir) if base_dir else ROOT / 'test_artifacts/publication-hybrid-validation'
+    clocks = {k: datetime.fromisoformat(v.replace('Z', '+00:00'))
+              for k, v in dataset['cohorts'].items()}
+    totals = Counter(representations=0, oversized=0, hash_verified=0, hash_mismatch=0,
+                     recovered_without_model=0, still_unresolved=0, wrong_accepted=0,
+                     validator_rejections=0, precision_loss=0, freshness_rejected=0)
+    per_publisher = {}
+    rows_out = []
+    for row in dataset['rows']:
+        if row.get('kind') != 'real' or row.get('fetch_error') or row.get('parsing_error'):
+            continue
+        capture_rel = row.get('capture')
+        if not capture_rel:
+            continue
+        totals['representations'] += 1
+        capture_path = base / capture_rel
+        if not capture_path.exists():
+            rows_out.append({'id': row['id'], 'result': 'capture_missing'})
+            continue
+        raw_bytes = capture_path.read_bytes()
+        try:
+            capture = raw_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            rows_out.append({'id': row['id'], 'result': 'capture_decode_error'})
+            continue
+        if hashlib.sha256(raw_bytes).hexdigest() != row.get('capture_sha256'):
+            totals['hash_mismatch'] += 1
+            rows_out.append({'id': row['id'], 'result': 'hash_mismatch'})
+            continue
+        if len(capture) <= 100_000:
+            continue  # not oversized; covered by the standard corpus evaluation
+        totals['oversized'] += 1
+        totals['hash_verified'] += 1
+        domain = publisher_domain(row['url'])
+        agg = per_publisher.setdefault(domain, Counter(representations=0,
+            recovered_without_model=0, still_unresolved=0, wrong_accepted=0,
+            validator_rejections=0, precision_loss=0, freshness_rejected=0))
+        agg['representations'] += 1
+        sliced = metadata_region_extract(capture, limit=limit)
+        page = {'url': row['page']['url'], 'title': row['page'].get('title'),
+                'text': sliced}
+        try:
+            prepared = prepare_publication_evidence(page, extracted_text=sliced,
+                                                    max_chars=max_chars)
+        except ValueError:
+            prepared = {'publication_observation': None}
+        obs = prepared.get('publication_observation')
+        claim = None
+        if isinstance(obs, dict) and obs.get('value'):
+            claim = {'value': obs['value'], 'precision': obs.get('precision')}
+        label = row.get('label')
+        # Date agreement in BOTH directions: an instant observation for a day
+        # label is recovery of that day (more precise), not a mismatch.
+        correct = same_claim(claim, label) or (
+            label is not None and same_claim(
+                {'value': label.get('value'), 'precision': label.get('precision')}, claim))
+        now = clocks[row['cohort']]
+        ok, why = filter_evidence([prepared], now=now)
+        # Precision loss = a day-precision observation against an instant label
+        # (less precise than ground truth). An instant observation against a day
+        # label is finer, never counted as loss.
+        day_against_instant = bool(claim and label
+            and claim.get('precision') == 'day'
+            and label.get('precision') == 'instant')
+        if claim is None:
+            result = 'unresolved'
+            totals['still_unresolved'] += 1
+            agg['still_unresolved'] += 1
+        elif correct:
+            # Date recovery is independent of the freshness gate; a stale
+            # rejection is a separate counter, never a missed recovery.
+            result = 'recovered'
+            totals['recovered_without_model'] += 1
+            agg['recovered_without_model'] += 1
+            if not ok:
+                result = 'recovered_freshness_rejected'
+                totals['freshness_rejected'] += 1
+                agg['freshness_rejected'] += 1
+            elif day_against_instant:
+                result = 'recovered_precision_loss'
+                totals['precision_loss'] += 1
+                agg['precision_loss'] += 1
+        elif ok:
+            result = 'wrong_accepted'
+            totals['wrong_accepted'] += 1
+            agg['wrong_accepted'] += 1
+        else:
+            result = 'validator_rejected'
+            totals['validator_rejections'] += 1
+            agg['validator_rejections'] += 1
+        rows_out.append({'id': row['id'], 'domain': domain,
+                         'capture_len': len(capture), 'slice_len': len(sliced),
+                         'label': label,
+                         'observation': ({k: obs.get(k) for k in
+                                          ('value', 'precision', 'support', 'location', 'basis')}
+                                         if isinstance(obs, dict) else obs),
+                         'filter_accepted': bool(ok),
+                         'filter_reasons': [x['reason'] for x in why],
+                         'correct': bool(correct), 'result': result})
+    return {'totals': dict(totals),
+            'per_publisher': {d: dict(a) for d, a in sorted(per_publisher.items())},
+            'rows': rows_out, 'slice_limit': limit, 'projection_limit': 100_000}
 
 
 def private_json(path, value, *, exclusive=False):

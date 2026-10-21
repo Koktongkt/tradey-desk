@@ -67,6 +67,39 @@ class PublicationProbeTests(unittest.TestCase):
                                     {'value':'2025-01-03T04:00:00Z','precision':'instant'}))
 
 
+    def test_precision_loss_counter_distinguishes_day_vs_instant_and_exact(self):
+        m = probe()
+        rows = [dict(id='d', kind='real', url='https://one.example/a', event='a',
+                     label={'value':'2025-01-02T23:00:00-05:00','precision':'instant'},
+                     fetch_error=None, parsing_error=None),
+                dict(id='x', kind='real', url='https://two.example/a', event='b',
+                     label={'value':'2025-01-02T23:00:00-05:00','precision':'instant'},
+                     fetch_error=None, parsing_error=None),
+                dict(id='w', kind='real', url='https://three.example/a', event='c',
+                     label={'value':'2025-01-02T23:00:00-05:00','precision':'instant'},
+                     fetch_error=None, parsing_error=None)]
+        claims = {'d': {'value':'2025-01-02','precision':'day'},
+                  'x': {'value':'2025-01-02T23:00:00-05:00','precision':'instant'},
+                  'w': {'value':'2025-01-03','precision':'day'}}
+        counts = m.score_claims(rows, claims, accepted_ids=set())
+        self.assertEqual(counts['real']['precision_loss'], 1)
+        self.assertEqual(counts['real']['correct'], 2)
+        self.assertEqual(counts['real']['wrong_claims'], 1)
+        self.assertEqual(counts['real']['missed_known'], 1)
+
+    def test_replay_accepts_bytes_stdout_like_real_runner(self):
+        m = probe()
+        page = {'url':'https://synthetic.example/b','title':'Results',
+                'text':'Results\nPublished: January 2, 2025\n'+'Revenue improved during the quarter. '*5}
+        row = dict(id='s', kind='synthetic', url=page['url'], event='b', cohort='fixed',
+                   page=page, legacy=None, label={'value':'2025-01-02','precision':'day'})
+        data = {'version':1,'cohorts':{'fixed':'2025-01-03T12:00:00+00:00'},'rows':[row]}
+        raw = {'version':1,'results':[{'id':'p0','value':'2025-01-02','precision':'day',
+                                       'support':'Published: January 2, 2025','location':'header'}]}
+        result = m.evaluate(data, {'page_ids':['s'],'stdout':json.dumps(raw).encode(),'origin':'synthetic_control'})
+        self.assertEqual(result['raw']['synthetic']['correct'], 1)
+        self.assertEqual(result['model_evaluated']['synthetic'], 1)
+
     def test_exclusive_invocation_record_refuses_failed_or_timeout_retry(self):
         m=probe()
         parent=ROOT/'test_artifacts/publication-hybrid-validation/tests'
@@ -145,6 +178,108 @@ class PublicationProbeTests(unittest.TestCase):
         self.assertEqual(scored['freshness_rejection']['synthetic'],1)
         self.assertEqual(scored['validator_induced_rejection']['synthetic'],0)
         self.assertEqual(scored['hybrid']['synthetic']['accepted'],0)
+
+
+    # --- metadata-region extraction (approved Task5 scope extension) ---
+
+    def test_metadata_region_extract_slices_to_bounded_header_region(self):
+        m = probe()
+        capture = '<html><head><meta property="article:published_time" content="2025-06-10">' + 'x' * 20000
+        n = len(capture)
+        sliced = m.metadata_region_extract(capture)
+        self.assertLessEqual(len(sliced), 8192)
+        self.assertTrue(sliced.startswith('<html>'))
+        # Original capture is never mutated or replaced.
+        self.assertEqual(len(capture), n)
+        self.assertIn('article:published_time', sliced)
+        with self.assertRaises(ValueError):
+            m.metadata_region_extract(12345)
+        with self.assertRaises(ValueError):
+            m.metadata_region_extract(capture, limit=0)
+        with self.assertRaises(ValueError):
+            m.metadata_region_extract(capture, limit=10000)
+
+    def _synthetic_oversized_row(self, m, head_html, body_fill, label):
+        import hashlib
+        capture = head_html + body_fill
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / 'captures').mkdir(mode=0o700)
+            (base / 'captures' / 's0.original.txt').write_text(capture)
+            page = {'url': 'https://synthetic.example/a', 'title': 'Release',
+                    'text': 'Release\n' + 'Filler body line. ' * 400,
+                    'publication_observation': {'invalid': True}}
+            row = dict(id='s0', kind='real', url=page['url'], event=page['url'],
+                       class_='independent reporting', cohort='fixed', representation='html',
+                       label=label, label_witness='w', label_rationale='r',
+                       fetch_error=None, parsing_error=None, page=page,
+                       capture='captures/s0.original.txt',
+                       capture_sha256=hashlib.sha256(capture.encode()).hexdigest())
+            data = {'version': 1, 'cohorts': {'fixed': '2025-06-11T12:00:00+00:00'}, 'rows': [row]}
+            return m.evaluate_metadata_region(data, base_dir=str(base))
+
+    def test_synthetic_oversized_header_metadata_recovers_without_model(self):
+        m = probe()
+        head = ('<html><head><title>Release</title>'
+                '<meta property="article:published_time" content="2025-06-10T08:00:00-04:00">'
+                '</head><body>')
+        result = self._synthetic_oversized_row(
+            m, head, 'Body prose. ' * 20000,
+            {'value': '2025-06-10', 'precision': 'day'})
+        totals = result['totals']
+        self.assertEqual(totals['oversized'], 1)
+        self.assertEqual(totals['hash_verified'], 1)
+        self.assertEqual(totals['recovered_without_model'], 1)
+        self.assertEqual(totals['still_unresolved'], 0)
+        self.assertEqual(totals['wrong_accepted'], 0)
+        self.assertEqual(totals['precision_loss'], 0)
+
+    def test_synthetic_body_embedded_metadata_stays_unresolved_honestly(self):
+        m = probe()
+        head = '<html><head><title>Release</title></head><body>'
+        result = self._synthetic_oversized_row(
+            m, head, 'Body prose. ' * 20000 + 'Published 2025-06-10 in the deep body. ',
+            {'value': '2025-06-10', 'precision': 'day'})
+        totals = result['totals']
+        self.assertEqual(totals['recovered_without_model'], 0)
+        self.assertEqual(totals['still_unresolved'], 1)
+        self.assertEqual(totals['wrong_accepted'], 0)
+
+    def test_real_corpus_metadata_region_scoring_is_hash_bound_and_honest(self):
+        m = probe()
+        dataset_path = ROOT / 'test_artifacts/publication-hybrid-validation/dataset.json'
+        if not dataset_path.exists():
+            self.skipTest('private frozen corpus absent')
+        data = json.loads(dataset_path.read_text())
+        result = m.evaluate_metadata_region(data)
+        totals = result['totals']
+        self.assertEqual(totals['hash_verified'], totals['oversized'])
+        self.assertEqual(totals['oversized'], 17)
+        # Every counted outcome sums exactly to the oversized total
+        # (freshness_rejected/precision_loss overlap recovered_without_model).
+        self.assertEqual(totals['recovered_without_model'] + totals['still_unresolved']
+                         + totals['wrong_accepted'] + totals['validator_rejections'],
+                         totals['oversized'])
+        # Apple JSON-LD dates sit ~250k deep: header slice must NOT recover them.
+        by_id = {r['id']: r for r in result['rows']}
+        self.assertEqual(by_id['r00']['result'], 'unresolved')
+        self.assertEqual(by_id['r01']['result'], 'unresolved')
+        # Head-region metadata pages (PRNewswire/Guardian/BBC/NASA) do recover.
+        self.assertEqual(by_id['r04']['result'], 'recovered')
+        # Guardian instant dates are correct but stale at the 2026-04-01 cohort
+        # clock: recovery counted, freshness rejection as a separate counter.
+        self.assertEqual(by_id['r10']['result'], 'recovered_freshness_rejected')
+        self.assertIn(by_id['r10']['id'],
+                      [row['id'] for row in result['rows']
+                       if row['result'].startswith('recovered')])
+        self.assertEqual(by_id['r18']['result'], 'unresolved')
+        self.assertEqual(by_id['r22']['result'], 'recovered_freshness_rejected')
+        # Per-publisher summary present and consistent.
+        self.assertTrue(result['per_publisher'])
+        for domain, agg in result['per_publisher'].items():
+            self.assertEqual(agg['recovered_without_model'] + agg['still_unresolved']
+                             + agg['wrong_accepted'] + agg['validator_rejections'],
+                             agg['representations'])
 
 
 if __name__ == '__main__':
