@@ -566,10 +566,26 @@ class TradeySafetyTests(unittest.TestCase):
         missing = autotrader.replace_broker_fields({'earnings_sessions_lower_bound': 999}, {})
         self.assertIsNone(missing['earnings_sessions_lower_bound'])
 
+    def test_snapshot_failure_provisions_missing_private_artifact_parent(self):
+        # Catches reliance on an ignored directory left by an earlier run.
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=artifact_root) as td:
+            source_root = Path(td)
+            (source_root / 'tests').mkdir(mode=0o700)
+            (source_root / 'test_artifacts').mkdir(mode=0o700)
+            missing_parent = source_root / 'test_artifacts/broker-calendar-snapshot'
+            self.assertFalse(missing_parent.exists())
+            with patch.dict(globals(), __file__=str(source_root / 'tests/test_safety.py')):
+                self.test_snapshot_failure_classification_does_not_invent_authentication()
+            self.assertTrue(missing_parent.is_dir())
+            self.assertEqual(missing_parent.stat().st_mode & 0o777, 0o700)
+
     def test_snapshot_failure_classification_does_not_invent_authentication(self):
         # Catches the original unconditional AUTH_FAILURE classification.
         from test_blocker_diagnostics import _setup_root, _snapshot
         artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=artifact_root) as td:
             root = Path(td) / 'test_artifacts'
             root.mkdir(mode=0o700)

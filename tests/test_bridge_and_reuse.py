@@ -21,9 +21,25 @@ import autotrader
 
 
 class SnapshotErrorContractTests(unittest.TestCase):
+    def test_typed_transport_provisions_missing_private_artifact_parent(self):
+        # Catches reliance on an ignored directory left by an earlier run.
+        artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=artifact_root) as td:
+            source_root = Path(td)
+            (source_root / 'tests').mkdir(mode=0o700)
+            (source_root / 'test_artifacts').mkdir(mode=0o700)
+            missing_parent = source_root / 'test_artifacts/broker-calendar-snapshot'
+            self.assertFalse(missing_parent.exists())
+            with patch.dict(globals(), __file__=str(source_root / 'tests/test_bridge_and_reuse.py')):
+                self.test_typed_transport_is_fixed_allowlist_and_preserves_retry_policy()
+            self.assertTrue(missing_parent.is_dir())
+            self.assertEqual(missing_parent.stat().st_mode & 0o777, 0o700)
+
     def test_typed_transport_is_fixed_allowlist_and_preserves_retry_policy(self):
         # Catches raw prose or legacy class names being promoted to auth.
         artifact_root = Path(__file__).resolve().parents[1] / 'test_artifacts/broker-calendar-snapshot'
+        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         cases = (
             ('entry_calendar_unavailable', 'BLOCKER entry_calendar_unavailable', 2),
             ('entry_calendar_invalid', 'BLOCKER entry_calendar_invalid', 2),
