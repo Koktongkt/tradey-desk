@@ -118,6 +118,13 @@ class DeadlineContextTests(unittest.TestCase):
 
 class ResearchBudgetGuardTests(unittest.TestCase):
     def setUp(self):
+        # focused_retrieval reads optional diagnostic history before launching;
+        # mocked transports alone do not isolate a migrated operational journal.
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        root = patch.object(alpha_radar, "ROOT", Path(runtime.name))
+        root.start()
+        self.addCleanup(root.stop)
         import focused_pipeline, focused_search
         for module in (focused_pipeline,focused_search):
             clock=patch.object(module,"monotonic",side_effect=lambda:alpha_radar.monotonic())
@@ -232,7 +239,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
                 self.assertIs(caught.exception.__cause__,error)
 
     def test_bounded_research_call_source_pins(self):
-        source = (alpha_radar.ROOT / "alpha_radar.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "alpha_radar.py").read_text()
         pins = (
             ("discovery_uses_bounded_prompt_and_dynamic_timeout",
              ("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=",),
@@ -286,7 +293,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS+30,600)
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
         self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
-        source = (alpha_radar.ROOT / "run_cycle.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "run_cycle.py").read_text()
         pins = (
             ("radar_runs_once_with_explicit_timeout", "timeout_seconds=600", False),
             ("radar_launch_attempts_single", "attempts=1", False),

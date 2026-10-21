@@ -5,6 +5,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +31,42 @@ def load_runner():
 
 
 class TestArchitectureTests(unittest.TestCase):
+    def test_focused_fixtures_do_not_access_existing_operational_journal(self):
+        # A checkout without a migrated DB hides the read-side schema writes.
+        # Do not nest this source copy under test_artifacts: _storage_root gives
+        # any such ancestor priority over the source root's private directory.
+        with tempfile.TemporaryDirectory(prefix="tradey-journal-isolation-") as td:
+            root = Path(td).resolve()
+            self.assertNotIn("test_artifacts", [p.name for p in (root, *root.parents)])
+            (root / "tests").mkdir(mode=0o700)
+            for directory in (ROOT, ROOT / "tests"):
+                for source in directory.glob("*.py"):
+                    shutil.copyfile(source, root / source.relative_to(ROOT))
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            database = private / "trading_journal.sqlite3"
+            # Independent empty synthetic migrated-schema fixture, no paper data.
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("CREATE TABLE ledger_entries (id INTEGER PRIMARY KEY, stream TEXT, sequence INTEGER, record_json TEXT, record_sha256 TEXT, appended_at TEXT)")
+                connection.execute("PRAGMA user_version=1")
+                connection.commit()
+            finally:
+                connection.close()
+            database.chmod(0o600)
+            self.assertEqual(sqlite_ledger.database_path(private / "research_diagnostics.jsonl"), database)
+            before = load_runner().snapshot_operational_state(root)
+            done = subprocess.run(
+                [sys.executable, str(root / "tests/journal_isolation_probe.py")],
+                cwd=root, capture_output=True, text=True, timeout=60,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HERMES_DISABLE_LAZY_INSTALLS": "1"},
+            )
+            after = load_runner().snapshot_operational_state(root)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn("Ran 5 tests", done.stderr)
+            self.assertIn("OPERATIONAL_JOURNAL_ATTEMPTS 0", done.stderr)
+            self.assertEqual(before, after)
+
     def test_manifest_classifies_every_discovered_module_exactly_once(self):
         runner = load_runner()
         manifest = runner.load_manifest(MANIFEST_PATH)

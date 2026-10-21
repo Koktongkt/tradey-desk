@@ -686,7 +686,8 @@ print('complete')
         def batch(urls, **kwargs):
             return {'version':2,'status':'ok','results':[{'requested_url':u,
                 'result':worker.project_row({'url':u,'content':BODY})} for u in urls]}
-        with patch('focused_capture.run_private_child',return_value=done) as launch, patch.object(
+        # The real history reader must not consult the checkout's journal.
+        with tempfile.TemporaryDirectory() as td, patch.object(radar, 'ROOT', Path(td)), patch('focused_capture.run_private_child',return_value=done) as launch, patch.object(
             focused_pipeline,'run_validation_worker',side_effect=validation_done
         ), patch.object(focused_pipeline,'run_batch_worker',side_effect=batch), patch.object(
             radar.subprocess,'run',side_effect=AssertionError('unwrapped launch')
