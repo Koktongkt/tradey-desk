@@ -40,6 +40,13 @@ class FocusedHandoffTests(unittest.TestCase):
         stack.enter_context(patch.object(radar,'discovery_command',return_value=['offline']))
         stack.enter_context(patch.object(radar,'focused_retrieval_command',return_value=['offline']))
         stack.enter_context(patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps({'candidates':candidates}),'')))
+        # The new tool-free child is independent of subprocess.run. Keep the
+        # real adapter/validation, but explicitly fake both child boundaries.
+        stack.enter_context(patch.object(radar,'research_subprocess_command',return_value=['offline-publication']))
+        def publication_child(command,*,input,deadline):
+            return subprocess.CompletedProcess(command,0,json.dumps({'version':1,'results':[
+                {'id':p['id'],'status':'unknown'} for p in json.loads(input)['pages']]}).encode(),b'')
+        stack.enter_context(patch.object(radar,'run_publication_process',side_effect=publication_child))
         stack.enter_context(patch('focused_capture.run_private_child',side_effect=child))
         stack.enter_context(patch.object(pipeline,'run_validation_worker',side_effect=validate))
         stack.enter_context(patch.object(pipeline,'run_batch_worker',side_effect=batch))
@@ -109,9 +116,14 @@ class FocusedHandoffTests(unittest.TestCase):
                 pages=radar.gather_evidence([url,url],focused_pages=focused.focused_pages,
                                             collection_deadline=radar.monotonic()+5)
                 self.assertEqual(len(pages),1)
-                self.assertEqual(pages[0]['title'],'Ordinary bounded fetch')
-                self.assertEqual(http.call_count,1)
-                self.assertLessEqual(http.call_args.kwargs['timeout'],5)
+                if kind=='undated':
+                    self.assertEqual(pages[0]['title'],'Company revenue guidance raised')
+                    self.assertEqual(radar.filter_evidence(pages)[0],[])
+                    http.assert_not_called()  # Retain useful unknown, without admission.
+                else:
+                    self.assertEqual(pages[0]['title'],'Ordinary bounded fetch')
+                    self.assertEqual(http.call_count,1)
+                    self.assertLessEqual(http.call_args.kwargs['timeout'],5)
                 fallback.assert_not_called()
 
     def test_undated_sec_miss_keeps_official_date_enrichment_after_real_handoff(self):
@@ -134,7 +146,7 @@ class FocusedHandoffTests(unittest.TestCase):
             self.assertEqual(len(pages),25)
             page=next(p for p in pages if p['url']==sec_url)
             self.assertEqual(page['published_at'],official_date+'T00:00:00Z')
-            self.assertEqual(http.call_count,1)
+            self.assertEqual(http.call_count,0)  # Reuse undated capture, then official date enrichment.
             official.assert_called_once()
             self.assertEqual(official.call_args.args[0],sec_url)
             fallback.assert_not_called()
@@ -160,7 +172,9 @@ class FocusedHandoffTests(unittest.TestCase):
             self.assertEqual(rescue.call_count,3)
             self.assertEqual(sec.call_count,3)
             self.assertEqual(search.call_count,6)
-            self.assertEqual(transport.call_count,34)  # 25 initial + 3 URLs on three candidates
+            self.assertEqual(sum(len(c.args[0]) for c in pipeline.run_batch_worker.call_args_list),25)
+            self.assertEqual(transport.call_count,9)  # Reuse 25 undated captures; 3 rescue URLs on three candidates.
+            self.assertEqual(radar.run_publication_process.call_count,1)
             for call in rescue.call_args_list:
                 candidate=call.args[0]
                 self.assertEqual(len(candidate['urls']),8)

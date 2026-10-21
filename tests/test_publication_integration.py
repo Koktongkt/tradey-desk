@@ -29,7 +29,9 @@ def envelope(text, url=URL):
 
 class PublicationIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='publication-task2-')
+        parent=Path(__file__).resolve().parents[1]/'test_artifacts/publication-hybrid/task4'
+        parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        self.temp = tempfile.TemporaryDirectory(prefix='publication-task2-',dir=parent)
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.root_patch = patch.object(radar, 'ROOT', self.home)
@@ -47,6 +49,33 @@ class PublicationIntegrationTests(unittest.TestCase):
                      'horizon_rationale':'Dated guidance catalyst', 'earnings_event_at':'2027-02-01T12:00:00Z', 'earnings_source':'trusted_fixture'}
         with patch.object(radar, 'synthesis_command', return_value=['offline']), patch.object(radar.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, json.dumps(candidate), '')), patch.object(radar, 'resolve_candidate_earnings', side_effect=lambda c, **kw:c), patch.object(radar, 'synchronized_completed_close_prices', return_value={'price':20,'spy_price':600}):
             return radar.synthesize_candidate({'max_position_usd':100}, {'symbol':'ABC'}, self.dated_pages(), monotonic()+120)
+
+    def test_recovered_unknowns_flow_through_real_receipt_and_qualification_gates(self):
+        import publication_recovery as recovery
+        import publication_interpreter as interpreter
+        pages=[raw('Quarterly results\nPublished: October 21, 2026\n'+BODY,url)
+               for url in [URL,'https://independent.example/article']]
+        candidates=[{'symbol':'ABC','urls':[p['url'] for p in pages]}]
+        def runner(command,*,input,deadline):
+            payload=json.loads(input)
+            return subprocess.CompletedProcess(command,0,json.dumps({'version':1,'results':[
+                {'id':p['id'],'value':'2026-10-21','precision':'day','support':'Published: October 21, 2026','location':'header'}
+                for p in payload['pages']]}).encode(),b'')
+        updated,_=recovery.recover_publications(candidates,pages,[],state=recovery.RecoveryState(),
+            overall_deadline=monotonic()+180,downstream_reserve=80,cache_path=None,
+            fetcher=lambda *a: self.fail('no direct fetch'),
+            interpreter=lambda pages,*,deadline:interpreter.interpret_publications(pages,deadline=deadline,
+                command_factory=lambda:['synthetic'],runner=runner,now=NOW))
+        accepted,_=radar.filter_evidence(updated,now=NOW)
+        selected,bundle=radar.select_candidate_evidence(candidates,accepted)
+        self.assertEqual(selected['symbol'],'ABC');self.assertEqual(len(bundle),2)
+        with patch.object(self,'dated_pages',return_value=bundle):candidate=self.synthesized()
+        with patch.object(radar,'earnings_intake_blocker',return_value=None):
+            candidate=radar.prepare_candidate(candidate,{'min_price_usd':5,'max_position_usd':100,'earnings_blackout_sessions':2})
+        self.assertTrue(radar.verify_sources(candidate))
+        self.assertEqual({s['publication_basis'] for s in candidate['sources']},{'llm_grounded'})
+        candidate['sources'][0]['publication_precision']='second'
+        self.assertFalse(radar.verify_sources(candidate))
 
     def test_day_observation_survives_receipt_synthesis_and_review_projection(self):
         import autotrader

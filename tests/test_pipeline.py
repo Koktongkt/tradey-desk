@@ -15,6 +15,18 @@ import run_cycle
 
 
 class PipelineTests(unittest.TestCase):
+    def test_publication_budget_reaches_research_child_only_with_audit_and_single_attempt(self):
+        parent=Path(__file__).resolve().parents[1]/'test_artifacts/publication-hybrid/task4'
+        parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        with tempfile.TemporaryDirectory(dir=parent) as td:
+            for mode,timeout,stage,child in [('premarket',720,'research','alpha_radar.py'),
+                    ('radar',720,'research','alpha_radar.py'),('autotrader',600,'execution','autotrader.py')]:
+                with self.subTest(mode=mode),patch.object(run_cycle,'ROOT',Path(td)),patch.object(sys,'argv',['offline',mode]),patch.object(run_cycle,'scheduled_slot',return_value=True),patch.object(run_cycle,'in_window',return_value=True),patch.object(run_cycle,'completed_today',return_value=False),patch.object(run_cycle,'mark_completed') as complete,patch.object(run_cycle,'execute',return_value=0) as execute:
+                    self.assertEqual(run_cycle.main(),0)
+                    execute.assert_called_once_with([sys.executable,str(Path(td)/child)],
+                        timeout_seconds=timeout,attempts=1,audit_mode=mode,audit_stage=stage)
+                    self.assertEqual(complete.call_count,1 if mode=='premarket' else 0)
+
     def test_radar_rejects_unknown_or_malformed_earnings_before_qualification(self):
         base={
             "symbol":"AAPL","price":100,"spy_price":500,"instrument_type":"cash_equity",

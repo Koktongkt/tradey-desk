@@ -49,9 +49,12 @@ def _event_pages(urls, label="material event"):
 @contextlib.contextmanager
 def _research_run(**run_options):
     """Fresh diagnostic root and explicitly configured scout/synthesis mock."""
+    def publication_child(command,*,input,deadline):
+        return subprocess.CompletedProcess(command,0,json.dumps({'version':1,'results':[
+            {'id':p['id'],'status':'unknown'} for p in json.loads(input)['pages']]}).encode(),b'')
     with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)), patch.object(
         alpha_radar.subprocess, "run", **run_options
-    ) as runs:
+    ) as runs, patch.object(alpha_radar,'run_publication_process',side_effect=publication_child):
         yield td, runs
 
 
@@ -890,7 +893,7 @@ class AlphaRadarTests(unittest.TestCase):
             {"url":"https://old-c.example/3","title":"C","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
             {"url":"https://old-d.example/4","title":"D","text":_body("old"),"published_at":"2025-01-01T10:00:00Z"},
         ]
-        def gather(_urls,diagnostics,cache_path=None,collection_deadline=None,attempt_path=None):
+        def gather(_urls,diagnostics,cache_path=None,collection_deadline=None,attempt_path=None,cache_hits=None):
             diagnostics.append({"url":"https://missing.example/2","domain":"missing.example","reason":"source_fetch_timeout"})
             return pages
         with _research_run(return_value=scout) as (td, _runs), patch.object(alpha_radar,"gather_evidence",side_effect=gather), patch.object(

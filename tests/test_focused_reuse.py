@@ -801,8 +801,17 @@ sys.exit(int(sys.argv[1]) if sys.argv[1]!='sleep' else 0)
             with self.subTest(body=body[:80]), patch.object(radar, 'is_safe_public_url', return_value=True), patch.object(
                 radar, 'fetch_source', return_value=expected
             ) as direct, patch.object(radar, 'fetch_source_via_gateway') as fallback:
-                self.assertEqual(radar.gather_evidence([URL, URL], focused_pages={URL: receipt}), [expected])
-                direct.assert_called_once()
+                if body=='Undated '*70:
+                    # Task4 retains useful unknown captures for bounded publication
+                    # interpretation, but does not admit them as dated evidence.
+                    pages=radar.gather_evidence([URL, URL],focused_pages={URL:receipt})
+                    self.assertEqual(len(pages),1)
+                    self.assertIn('Undated',pages[0]['text'])
+                    self.assertEqual(radar.filter_evidence(pages)[0],[])
+                    direct.assert_not_called()
+                else:
+                    self.assertEqual(radar.gather_evidence([URL, URL], focused_pages={URL: receipt}), [expected])
+                    direct.assert_called_once()
                 fallback.assert_not_called()
 
     def test_installed_runtime_registry_hook_and_lifetime_guard(self):

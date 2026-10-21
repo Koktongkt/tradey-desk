@@ -28,7 +28,9 @@ RETRIEVAL_DIAGNOSTIC_REASONS={"source_fetch_timeout","source_fetch_failed","sour
 SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source","article_body_missing","source_freshness_unknown"}
 MIN_EVIDENCE_BODY_CHARS=80
 GATEWAY_RESCUE_TIMEOUT_SECONDS=30
-RESEARCH_ACTIVE_BUDGET_SECONDS=570
+RESEARCH_ACTIVE_BUDGET_SECONDS=690
+from publication_recovery import RecoveryState, recover_publications, RECOVERY_BUDGET_SECONDS, RECOVERY_REASONS, preserve_cached_refusal
+from publication_interpreter import interpret_publications, run_publication_process
 DISCOVERY_TIMEOUT_SECONDS=165
 FOCUSED_RETRIEVAL_TIMEOUT_SECONDS=150
 EVIDENCE_PIPELINE_BUDGET_SECONDS=180
@@ -40,7 +42,7 @@ ENRICHMENT_BUDGET_SECONDS=45
 # five seconds of transition headroom. This bounded margin is not a hard-real-time guarantee.
 # The 90-second synthesis phase includes intermediate enrichment; caps are not additive.
 FOCUSED_TRANSITION_HEADROOM_SECONDS=5
-FOCUSED_DOWNSTREAM_RESERVE_SECONDS=(EVIDENCE_PIPELINE_BUDGET_SECONDS+MIN_SYNTHESIS_WINDOW_SECONDS+ENRICHMENT_BUDGET_SECONDS+FOCUSED_TRANSITION_HEADROOM_SECONDS)
+FOCUSED_DOWNSTREAM_RESERVE_SECONDS=(EVIDENCE_PIPELINE_BUDGET_SECONDS+RECOVERY_BUDGET_SECONDS+MIN_SYNTHESIS_WINDOW_SECONDS+ENRICHMENT_BUDGET_SECONDS+FOCUSED_TRANSITION_HEADROOM_SECONDS)
 _timing_enabled:ContextVar[bool]=ContextVar("radar_timing_enabled",default=False)
 
 @contextmanager
@@ -1025,6 +1027,7 @@ def gather_evidence(
     strict_gateway_provider:bool=False,
     attempt_path:Path|None=None,
     focused_pages:dict[str,Any]|None=None,
+    cache_hits:set[str]|None=None,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     urls=list(dict.fromkeys(urls))  # one in-flight fetch and one result per exact URL
@@ -1048,6 +1051,7 @@ def gather_evidence(
     collected=[False]
     cache:dict[str,Any]={}
     cached_urls:set[str]=set()
+    checked_times:dict[str,str]={}
     current=dt.datetime.now(dt.timezone.utc)
     if cache_path is not None:
         try:
@@ -1058,10 +1062,14 @@ def gather_evidence(
             entry=cache.get(url)
             if not isinstance(entry,dict) or not isinstance(entry.get("page"),dict):continue
             if str(entry["page"].get("url") or "")!=url:continue
+            if 'publication_observation' in entry['page']:
+                from publication_observation import validate_observation
+                if not validate_observation(entry['page'],entry['page']['publication_observation']):continue
             try:checked=dt.datetime.fromisoformat(str(entry["checked_at"]).replace("Z","+00:00"))
             except (KeyError,ValueError):continue
             if checked.tzinfo is not None and checked<=current and current-checked<=dt.timedelta(hours=24):
                 results[i]=entry["page"];cached_urls.add(url)
+                if cache_hits is not None:cache_hits.add(url)
                 attempts[i].update(direct_reason="cache_hit",remaining_ms=max(0,round((deadline-monotonic())*1000)))
     def publish_page(i:int,u:str,page:Any)->None:
         if not isinstance(page,dict) or page.get("url")!=u:
@@ -1069,7 +1077,11 @@ def gather_evidence(
                 if not collected[0]:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_url_mismatch"}
             return
         with lock:
-            if not collected[0]:results[i]=page
+            if not collected[0]:
+                entry=cache.get(u,{})
+                if isinstance(entry,dict):page=preserve_cached_refusal(page,entry.get('page',{}))
+                results[i]=page
+                checked_times[u]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
 
     reused_urls:set[str]=set()
     def worker(i:int,u:str)->None:
@@ -1079,8 +1091,10 @@ def gather_evidence(
             captured=focused_pages.get(u)
             if captured is not None and monotonic()<deadline and is_safe_public_url(u):
                 page=validate_structured_page(u,captured,deadline=deadline)
-                accepted,_=filter_evidence([page],now=current) if page is not None else ([],[])
-                if accepted and monotonic()<deadline:
+                accepted,quality=filter_evidence([page],now=current) if page is not None else ([],[])
+                useful_unknown=bool(page is not None and 'publication_observation' not in page and quality and quality[0]['reason']=='source_freshness_unknown')
+                if (accepted or useful_unknown) and monotonic()<deadline:
+                    if not accepted:accepted=[page]
                     checked_at=getattr(captured,"checked_at",None)
                     if checked_at is not None:accepted[0]={**accepted[0],"checked_at":checked_at}
                     with lock:reused_urls.add(u)
@@ -1201,12 +1215,14 @@ def gather_evidence(
         stamp=current.isoformat().replace("+00:00","Z")
         for page in results:
             if page and isinstance(page.get("url"),str) and page["url"] not in cached_urls and page["url"] not in reused_urls:
-                cache[page["url"]]={"checked_at":stamp,"page":page}
+                cache[page["url"]]={"checked_at":checked_times.get(page['url'],stamp),"page":page}
         cache=dict(sorted(cache.items(),key=lambda item:str(item[1].get("checked_at", "")) if isinstance(item[1],dict) else "",reverse=True)[:200])
         try:
-            cache_path.parent.mkdir(parents=True,exist_ok=True)
+            cache_path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             temporary=cache_path.with_suffix(cache_path.suffix+".tmp")
-            temporary.write_text(json.dumps(cache,separators=(",",":"),sort_keys=True),encoding="utf-8")
+            with temporary.open('w',encoding='utf-8') as stream:
+                temporary.chmod(0o600)
+                json.dump(cache,stream,separators=(",",":"),sort_keys=True)
             temporary.replace(cache_path)
         except OSError:pass
     return [r for r in results if r]
@@ -1410,6 +1426,12 @@ def record_research_diagnostics(
     timestamp=now or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
     for item in diagnostics:
         reason=item.get("reason")
+        if item.get('stage')=='publication_recovery':
+            ident=item.get('id')
+            if reason in RECOVERY_REASONS and isinstance(ident,str) and re.fullmatch(r'(?:p[0-9]{1,2}|batch)',ident):
+                append_jsonl(target,{'timestamp':timestamp,'stage':'publication_recovery',
+                                    'id':ident,'reason':reason,**research_correlation()})
+            continue
         if reason=="bundle_rescue_progress":
             token=str(item.get("candidate_token") or "")
             outcome=item.get("outcome")
@@ -1819,6 +1841,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             if url not in seen_urls:
                 seen_urls.add(url);urls.append(url)
     source_diagnostics:list[dict[str,str]]=[]
+    recovery_state=RecoveryState()  # One owner for this entire run, including deferred rescue.
+    cache_hits:set[str]=set()
+    downstream_reserve=MIN_SYNTHESIS_WINDOW_SECONDS+ENRICHMENT_BUDGET_SECONDS+FOCUSED_TRANSITION_HEADROOM_SECONDS
     evidence_deadline=min(overall_deadline,monotonic()+EVIDENCE_PIPELINE_BUDGET_SECONDS)
     if not urls:
         raise ResearchFailure("research_source_retrieval_failed" if scout_candidates else "research_evidence_insufficient")
@@ -1826,6 +1851,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         fetched_evidence=gather_evidence(
             urls,diagnostics=source_diagnostics,cache_path=ROOT/"private"/"source_cache.json",
             collection_deadline=evidence_deadline,
+            cache_hits=cache_hits,
             attempt_path=ROOT/"private"/"source_attempts.jsonl",
             **({"focused_pages":focused_pages} if focused_pages is not None else {}),
         )
@@ -1837,6 +1863,25 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             sec_dates[url]=sec_filing_date_for_url(url,deadline=evidence_deadline)
     fetched_evidence=attach_sec_filing_dates(fetched_evidence,sec_dates)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
+    # Pause only the unspent evidence allowance. Recovery has a distinct clock;
+    # consumed evidence time is never replenished by the 90-second fallback.
+    evidence_remaining=max(0.0,evidence_deadline-monotonic())
+    with timed_research_stage("publication_recovery"):
+        try:
+            fetched_evidence,recovery_notes=recover_publications(
+                scout_candidates,fetched_evidence,filtered_evidence,state=recovery_state,
+                overall_deadline=overall_deadline,downstream_reserve=downstream_reserve,
+                cache_path=ROOT/"private"/"source_cache.json",fetcher=fetch_source,
+                interpreter=lambda pages,*,deadline:interpret_publications(
+                    pages,deadline=deadline,
+                    command_factory=lambda:research_subprocess_command('bot_room',max_turns=1,run_budget=45),
+                    runner=run_publication_process,now=dt.datetime.now(dt.timezone.utc)),
+                publisher=publisher_domain,filter_pages=filter_evidence,refetch_urls=cache_hits,
+            )
+        except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+    evidence_deadline=min(overall_deadline,monotonic()+evidence_remaining)
+    filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
+    source_diagnostics.extend({**note,"stage":"publication_recovery"} for note in recovery_notes)
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     if cfg.get("focused_retrieval_enabled",False) and hasattr(focused,"focused_result"):
         accepted_by_symbol={c["symbol"]:[p for p in filtered_evidence if p["url"] in c["urls"]]

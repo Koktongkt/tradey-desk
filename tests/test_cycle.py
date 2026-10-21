@@ -375,7 +375,7 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(run_cycle.main(),0)
         window.assert_not_called();execute.assert_not_called();audit.assert_not_called()
 
-    def test_research_uses_600_seconds_without_changing_execution_budget(self):
+    def test_research_uses_720_seconds_without_changing_execution_budget(self):
         for mode in ("radar","premarket","autotrader"):
             with self.subTest(mode=mode), patch.object(sys,"argv",["run_cycle.py",mode]), \
                  patch("run_cycle.scheduled_slot",return_value=True), \
@@ -384,7 +384,7 @@ class CycleTests(unittest.TestCase):
                  patch("run_cycle.mark_completed"), \
                  patch.object(run_cycle,"execute",return_value=0) as call:
                 run_cycle.main()
-                self.assertEqual(call.call_args.kwargs["timeout_seconds"],600)
+                self.assertEqual(call.call_args.kwargs["timeout_seconds"],600 if mode=='autotrader' else 720)
                 self.assertEqual(call.call_args.kwargs["attempts"],1)
 class PortableCronEntrypointTests(unittest.TestCase):
     def test_wrappers_resolve_their_project_and_preserve_arguments(self):
