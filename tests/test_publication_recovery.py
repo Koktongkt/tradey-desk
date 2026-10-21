@@ -42,13 +42,89 @@ class RecoveryTests(unittest.TestCase):
         self.fetch = Mock(side_effect=AssertionError('unexpected fetch'))
         self.model = Mock(side_effect=lambda pages, **kw:({p['url']:observation(p) for p in pages}, []))
 
-    def run_recovery(self, pages=None, accepted=None, **kwargs):
-        return recovery.recover_publications(self.candidates, self.pages if pages is None else pages,
-            accepted or [], state=self.state, overall_deadline=690, downstream_reserve=80,
-            cache_path=self.cache, fetcher=self.fetch, interpreter=self.model, **kwargs)
+    def run_recovery(self, pages=None, accepted=None, deterministic=False, **kwargs):
+        # Existing tests isolate the MODEL/cache/refetch path. Deterministic
+        # bounded preparation has its own real-path regressions below; large
+        # capture regressions continue to use the real helper unchanged.
+        real = recovery.candidate_recovery_page
+        def prepare(p, **kw):
+            return real(p, **kw) if deterministic or len(p.get('text','')) > 6000 else None
+        with patch.object(recovery, 'candidate_recovery_page', side_effect=prepare):
+            return recovery.recover_publications(self.candidates, self.pages if pages is None else pages,
+                accepted or [], state=self.state, overall_deadline=690, downstream_reserve=80,
+                cache_path=self.cache, fetcher=self.fetch, interpreter=self.model, **kwargs)
 
     def write_cache(self, p, stamp='2026-10-21T15:00:00Z'):
         self.cache.write_text(json.dumps({p['url']:{'checked_at':stamp,'page':p}}))
+
+    def test_fresh_scoped_refetch_is_parsed_before_model(self):
+        old = dict(self.pages[0],text='Results\n'+BODY)
+        self.write_cache(old)
+        self.fetch.side_effect=lambda *a:self.pages[0]
+        updated, _ = self.run_recovery(pages=[old], deterministic=True)
+        self.fetch.assert_called_once()
+        self.model.assert_not_called()
+        self.assertEqual(updated[0]['publication_precision'],'day')
+
+    def test_preparation_defers_model_until_rescue_and_counts_only_active_work(self):
+        unknown = dict(self.pages[0], text='Results\n' + BODY)
+        delivered, _ = self.run_recovery(pages=[unknown], allow_model=False)
+        self.model.assert_not_called()
+        self.assertFalse(self.state.attempted_model)
+        self.clock[0] += 93  # Rescue waiting is evidence work, NOT recovery work.
+        late = dict(self.pages[1], text='Results\n' + BODY)
+        seen = []
+        def model(pages, **kw):
+            seen.extend(p['url'] for p in pages)
+            self.assertLessEqual(kw['deadline'] - self.clock[0], 90)
+            return {}, []
+        self.model.side_effect = model
+        self.run_recovery(pages=[*delivered, late])
+        self.assertEqual(seen, [unknown['url'], late['url']])
+        self.assertEqual(self.model.call_count, 1)
+        self.run_recovery(pages=[late])
+        self.assertEqual(self.model.call_count, 1)
+
+    def test_bounded_deterministic_page_preserves_original_hash_and_hard_refusal(self):
+        p = self.pages[0]
+        updated, _ = self.run_recovery(pages=[p], allow_model=False, deterministic=True)
+        self.assertEqual(updated[0]['publication_precision'], 'day')
+        import hashlib
+        self.assertEqual(updated[0]['publication_observation']['content_sha256'], hashlib.sha256(p['text'].encode()).hexdigest())
+        self.model.assert_not_called()
+        refused = dict(p, publication_observation=None)
+        updated, _ = self.run_recovery(pages=[refused], allow_model=False)
+        self.assertIsNone(updated[0]['publication_observation'])
+
+    def test_advancing_preparation_clock_debits_cumulative_allowance_across_rescue(self):
+        p=dict(self.pages[0],text='No publication cue\n'+BODY)
+        def slow(*a, **kw):self.clock[0]+=20;return None
+        with patch.object(recovery,'candidate_recovery_page',side_effect=slow):
+            self.run_recovery(pages=[p],allow_model=False,deterministic=True)
+        self.assertEqual(self.state.remaining_seconds,70)
+        self.clock[0]+=93
+        def model(pages, *, deadline):
+            self.assertEqual(deadline,self.clock[0]+70)
+            self.clock[0]+=30
+            return {}, []
+        self.model.side_effect=model
+        self.run_recovery(pages=[p])
+        self.assertEqual(self.state.remaining_seconds,40)
+        self.assertEqual(self.model.call_count,1)
+
+    def test_empty_shortlist_and_empty_rescue_never_launch_model(self):
+        self.candidates=[]
+        self.run_recovery(pages=[])
+        self.run_recovery(pages=[])
+        self.model.assert_not_called()
+        self.assertFalse(self.state.attempted_model)
+
+    def test_late_deferred_deterministic_page_does_not_reopen_spent_batch(self):
+        self.run_recovery(pages=[self.pages[0]])
+        self.assertEqual(self.model.call_count,1)
+        updated,_=self.run_recovery(pages=[self.pages[1]],deterministic=True)
+        self.assertEqual(updated[0]['publication_precision'],'day')
+        self.assertEqual(self.model.call_count,1)
 
     def test_known_legacy_instant_is_not_reinterpreted_even_when_future(self):
         p=dict(self.pages[0],published_at='2028-01-01T00:00:00Z')
@@ -274,6 +350,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('fetch_failed',[d['reason'] for d in notes])
         self.assertNotIn('SECRET',json.dumps(notes));self.assertNotIn(p['url'],json.dumps(notes))
 
+    def test_large_candidate_projection_cannot_hide_original_conflicting_claim(self):
+        deep = ('<meta property="article:published_time" content="2026-10-21">'
+                + '<p>Filler text.</p>'*400
+                + '\nPublished: October 20, 2026\n' + BODY)
+        p = dict(self.pages[0], text=deep)
+        self.assertIsNone(recovery.candidate_recovery_page(p, now=NOW, filter_pages=radar.filter_evidence))
+
     def test_oversized_page_gets_deterministic_candidate_recovery_without_model(self):
         # Pages beyond the 6000-char transport bound were previously
         # unservable. Bounded date-candidate extraction recovers them
@@ -400,16 +483,16 @@ class RecoveryWiringTests(unittest.TestCase):
             self.assertTrue(all(p['publication_basis']=='llm_grounded' for p in evidence))
             self.assertEqual(kw['enrichment_budget']['overall'],790)
             return {'status':'none'}
-        with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch('publication_interpreter.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['discovery']), patch.object(radar.subprocess,'run',side_effect=child), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'research_subprocess_command',return_value=['publication']) as factory, patch.object(radar,'run_publication_process',side_effect=runner), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'post_fetch_rescue_candidate') as rescue:
+        with patch.object(recovery,'candidate_recovery_page',return_value=None), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch('publication_interpreter.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['discovery']), patch.object(radar.subprocess,'run',side_effect=child), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'research_subprocess_command',return_value=['publication']) as factory, patch.object(radar,'run_publication_process',side_effect=runner), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'post_fetch_rescue_candidate',return_value=[]) as rescue:
             result=radar.live_research({},intake=lambda c:c)
         self.assertEqual(result,{'status':'none'});self.assertEqual(len(calls),1)
         factory.assert_called_once_with('bot_room',max_turns=1,run_budget=45)
-        rescue.assert_not_called()
+        rescue.assert_called_once()  # Collection now precedes the one model batch.
 
     def test_recovery_pauses_unspent_evidence_not_an_expired_absolute_clock(self):
         import subprocess
         urls=['https://issuer.example/x','https://independent.example/x']
-        pages=[page(u) for u in urls];scout={'symbol':'ABC','urls':urls}
+        pages=[dict(page(u),text='No publication cue\n'+BODY) for u in urls];scout={'symbol':'ABC','urls':urls}
         clock=[100.0];rescue_deadlines=[]
         def gather(*a,**kw):clock[0]+=40;return pages
         def interpret(pages,*,deadline,**kw):clock[0]+=50;return {},[]
@@ -420,7 +503,7 @@ class RecoveryWiringTests(unittest.TestCase):
         with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['discovery']), patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'interpret_publications',side_effect=interpret), patch.object(radar,'synthesize_candidate',return_value={'status':'none'}), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue):
             result=radar.live_research({},intake=lambda c:c)
         self.assertEqual(result,{'status':'none'})
-        self.assertEqual(rescue_deadlines,[330])  # 100 + 40 normal + 50 recovery + 140 unspent.
+        self.assertEqual(rescue_deadlines,[280])  # 100 + 40 normal + 140 unspent; model now AFTER rescue.
 
     def test_recovery_diagnostics_are_strict_private_typed_and_correlated(self):
         radar.correlated_research_run(lambda:radar.record_research_diagnostics([
@@ -505,7 +588,7 @@ class RecoveryWiringTests(unittest.TestCase):
             updated,_=recovery.recover_publications([{'urls':[p['url']]}],got,[],
                 state=recovery.RecoveryState(),overall_deadline=recovery.monotonic()+100,
                 downstream_reserve=0,cache_path=cache,fetcher=Mock(),interpreter=model,refetch_urls=set())
-        model.assert_called_once()
+        model.assert_not_called()  # Changed authentic bounded capture parses locally.
         self.assertTrue(pub.validate_observation(updated[0],updated[0]['publication_observation']))
         self.assertEqual(len(radar.filter_evidence(updated,now=NOW)[0]),1)
 

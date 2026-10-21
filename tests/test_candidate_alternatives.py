@@ -186,8 +186,8 @@ class CandidateAlternativesTests(unittest.TestCase):
                 clock[0]+=15
                 return none
             def rescue(selected,accepted,**kwargs):
-                self.assertEqual(kwargs['deadline'],615)
-                clock[0]=615
+                self.assertEqual(kwargs['deadline'],610)  # Preserve 30 synthesis + 45 enrichment + 5 transition.
+                clock[0]=610
                 return accepted+[pages[3]]
             with patch.object(radar,'focused_retrieval',side_effect=late_focused), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue) as rescued:
                 self.assertEqual(radar.live_research(cfg)['status'],'none')

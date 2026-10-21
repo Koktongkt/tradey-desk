@@ -43,6 +43,59 @@ class InterpreterTests(unittest.TestCase):
         return interpreter.interpret_publications(pages, deadline=time.monotonic()+5,
                     command_factory=lambda:['MOCK-NEVER-EXECUTED'], runner=runner, now=NOW, **kwargs)
 
+    def test_large_pages_share_encoded_bytes_but_originals_own_validation(self):
+        pages = [page('Published: October 21, 2026\n' + 'é\\"'*1900,
+                      url=f'https://n{i}.example/story') for i in range(2)]
+        found, _ = self.invoke(pages, [proposal(), proposal(id='p1')])
+        self.assertEqual(len(self.calls), 1)
+        wire = self.calls[0][1]['input']
+        self.assertLessEqual(len(wire), 8192)
+        self.assertEqual([p['id'] for p in json.loads(wire)['pages']], ['p0', 'p1'])
+        self.assertEqual(set(found), {p['url'] for p in pages})
+        for p in pages:
+            self.assertEqual(found[p['url']]['content_sha256'], hashlib.sha256(p['text'].encode()).hexdigest())
+        pages[1]['text'] += '\nPublished: October 20, 2026'
+        found, _ = self.invoke(pages, [proposal(), proposal(id='p1')])
+        self.assertEqual(set(found), {pages[0]['url']})
+
+    def test_compact_reservations_precede_expansion_for_all_five_candidates(self):
+        pages = [page('Published: October 21, 2026\n'+'界\\"'*1800,
+                      url=f'https://candidate{i%5}.example/{i}') for i in range(10)]
+        found, diag = self.invoke(pages, [proposal(id=f'p{i}') for i in range(10)])
+        wire = self.calls[0][1]['input']
+        self.assertLessEqual(len(wire), 8192)
+        self.assertEqual([p['id'] for p in json.loads(wire)['pages']], [f'p{i}' for i in range(10)])
+        self.assertEqual(len(found), 10)
+        self.assertEqual({d['reason'] for d in diag}, {'success'})
+
+    def test_compact_original_exact_and_hidden_conflicts_cannot_downgrade(self):
+        for tail in ['\nPublished: October 20, 2026',
+                     '\n<meta property="article:published_time" content="2026-10-21T10:00:00Z">',
+                     '\nUpdated: October 20, 2026']:
+            p = page('Published: October 21, 2026\n'+'x'*5600+tail)
+            found, _ = self.invoke([p, page(url='https://other.example/x')], [proposal()])
+            if 'Updated:' in tail:
+                self.assertIn(URL, found)  # Update is not publication conflict.
+            else:
+                self.assertNotIn(URL, found)
+
+    def test_long_url_overhead_and_escaping_never_widen_transport(self):
+        pages = [page(url='https://n.example/'+'界'*1300), page(url='https://other.example/x')]
+        found, diag = self.invoke(pages, [proposal(id='p1')])
+        self.assertEqual(diag[0]['reason'], 'input_limit')
+        self.assertEqual(set(found), {pages[1]['url']})
+        self.assertLessEqual(len(self.calls[0][1]['input']),8192)
+        p = page('Published: October 21, 2026\n'+'x'*5700)
+        from publication_interpreter import _prepare_request
+        reasons={}; admitted, wire=_prepare_request([p],reasons)
+        self.assertIn('p0',admitted)
+        # Exact encoded-byte admission boundary, with the real encoder.
+        with patch('publication_interpreter.MAX_REQUEST_BYTES',len(wire)-1):
+            admitted, smaller=_prepare_request([p],{})
+            self.assertLessEqual(len(smaller),len(wire)-1)
+        with patch('publication_interpreter.MAX_REQUEST_BYTES',len(wire)):
+            self.assertEqual(_prepare_request([p],{})[1],wire)
+
     def test_valid_day_binds_original_page_without_mutation(self):
         p = page(); original = copy.deepcopy(p)
         found, diagnostics = self.invoke([p], [proposal()])
@@ -322,7 +375,7 @@ class InterpreterTests(unittest.TestCase):
         self.assertLessEqual(len(payload['pages']),10)
         self.assertLessEqual(sum(len(p['text']) for p in payload['pages']),60000)
         for p in payload['pages']:
-            self.assertEqual(p['text'], pages[int(p['id'][1:])]['text'])
+            self.assertIn(p['text'], pages[int(p['id'][1:])]['text'])
             self.assertEqual(set(p),{'id','url','returned_url','title','text'})
             self.assertNotIn('published_at',p)
         self.assertEqual(diag[-1]['reason'],'page_limit')

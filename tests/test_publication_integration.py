@@ -73,9 +73,108 @@ class PublicationIntegrationTests(unittest.TestCase):
         with patch.object(radar,'earnings_intake_blocker',return_value=None):
             candidate=radar.prepare_candidate(candidate,{'min_price_usd':5,'max_position_usd':100,'earnings_blackout_sessions':2})
         self.assertTrue(radar.verify_sources(candidate))
-        self.assertEqual({s['publication_basis'] for s in candidate['sources']},{'llm_grounded'})
+        self.assertEqual({s['publication_basis'] for s in candidate['sources']},{'visible_context'})
         candidate['sources'][0]['publication_precision']='second'
         self.assertFalse(radar.verify_sources(candidate))
+
+    def test_live_single_batch_contains_late_rescue_original_before_rejection(self):
+        import publication_recovery as recovery
+        clock = [100.0]
+        seed = raw('No publication cue\n' + BODY)
+        late = raw('No publication cue\n' + BODY, 'https://independent.example/late')
+        scout = {'symbol':'ABC', 'urls':[URL]}
+        calls = []
+        def rescue(candidate, accepted, **kwargs):
+            candidate['urls'].append(late['url'])
+            return kwargs['publication_handler']([late])
+        def interpret(pages, **kwargs):
+            calls.append([p['url'] for p in pages])
+            return {}, []
+        with patch.object(radar, 'monotonic', side_effect=lambda:clock[0]), patch.object(recovery, 'monotonic', side_effect=lambda:clock[0]), patch.object(radar, 'discovery_command', return_value=['offline']), patch.object(radar.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar, 'scout_parse_result', return_value=([scout],{})), patch.object(radar, 'record_scout_diagnostic'), patch.object(radar, 'record_research_diagnostics'), patch.object(radar, 'gather_evidence', return_value=[seed]), patch.object(radar, 'post_fetch_rescue_candidate', side_effect=rescue), patch.object(radar, 'interpret_publications', side_effect=interpret):
+            with self.assertRaises(radar.ResearchFailure) as error:
+                radar.live_research({}, intake=lambda c:c)
+        self.assertEqual(error.exception.code, 'research_source_freshness_insufficient')
+        self.assertEqual(calls, [[URL, late['url']]])
+
+    def test_frozen_retained_incident_late_gnw_reaches_only_batch_but_stays_unknown(self):
+        fixture = Path(__file__).resolve().parents[1]/'test_artifacts/recovery-fair-handoff'
+        paths = [fixture/'incident-advfn.json', fixture/'incident-gnw.json']
+        if not all(p.exists() for p in paths):
+            self.skipTest('private retained incident captures absent')
+        seed, late = [json.loads(p.read_text())[0] for p in paths]
+        self.assertEqual(len(seed['text']),5825)
+        self.assertEqual(hashlib.sha256(seed['text'].encode()).hexdigest(),
+                         '3d761b176cd728629020ef88d549c501cec3052c717cfb19e22b05df5ca3bf38')
+        self.assertEqual(len(late['text']),5869)
+        self.assertEqual(hashlib.sha256(late['text'].encode()).hexdigest(),
+                         'b9edb2af2ac2569181dbd162bf5b3fa98a76655e01d26156ff41f44a1086a2ce')
+        self.assertIn('October 19, 2026 15:37 ET',late['text'])
+        import publication_recovery as recovery
+        clock=[100.0]
+        frozen=dt.datetime(2026,10,21,15,43,7,tzinfo=dt.timezone.utc)
+        scout={'symbol':'RAMP','urls':[seed['url']], '_alternate_urls':[late['url']]}
+        calls=[]; diagnostics=[]
+        def gather(urls, **kw):
+            return [late] if urls==[late['url']] else [seed]
+        def runner(command, *, input, deadline):
+            payload=json.loads(input);calls.append(payload)
+            rows=[{'id':p['id'],'value':'2026-10-19','precision':'day',
+                   'support':'October 19, 2026 15:37 ET','location':'article header'}
+                  if p['url']==late['url'] else {'id':p['id'],'status':'unknown'}
+                  for p in payload['pages']]
+            return subprocess.CompletedProcess(command,0,json.dumps({'version':1,'results':rows}).encode(),b'')
+        real_filter=radar.filter_evidence
+        real_interpret=radar.interpret_publications
+        def filtering(pages, **kw):return real_filter(pages,now=frozen)
+        def interpreting(pages, **kw):
+            kw['now']=frozen
+            return real_interpret(pages,**kw)
+        with patch.object(radar,'filter_evidence',side_effect=filtering), patch.object(radar,'interpret_publications',side_effect=interpreting), patch.object(recovery,'utc_now',return_value=frozen), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch('publication_interpreter.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['offline']), patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'record_research_diagnostics',side_effect=lambda rows:diagnostics.extend(rows)), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'sec_edgar_filing_url',return_value=None), patch.object(radar,'gateway_rescue_url',return_value=None), patch.object(radar,'research_subprocess_command',return_value=['offline']), patch.object(radar,'run_publication_process',side_effect=runner):
+            with self.assertRaises(radar.ResearchFailure) as error:
+                radar.live_research({},intake=lambda c:c)
+        self.assertEqual(error.exception.code,'research_source_freshness_insufficient')
+        self.assertEqual(len(calls),1)
+        self.assertIn(late['url'],[p['url'] for p in calls[0]['pages']])
+        self.assertEqual(radar.filter_evidence([seed,late],now=frozen)[0],[])
+        self.assertFalse(any(d.get('reason')=='fetched' for d in diagnostics))
+        self.assertIn('inadmissible_publication',[d.get('reason') for d in diagnostics])
+
+    def test_rescue_preparation_receives_the_current_launch_deadline(self):
+        p=raw('Published: October 21, 2026\n'+BODY)
+        scout={'symbol':'ABC','urls':[], '_alternate_urls':[URL]}
+        seen=[]
+        def prepare(pages, *, deadline):
+            seen.append(deadline)
+            return [dict(pages[0],published_at='2026-10-21T10:00:00Z')]
+        with patch.object(radar,'monotonic',return_value=100.0), patch.object(radar,'gather_evidence',return_value=[p]), patch.object(radar,'sec_edgar_filing_url',return_value=None), patch.object(radar,'gateway_rescue_url',return_value=None):
+            result=radar.post_fetch_rescue_candidate(scout,[],diagnostics=[],deadline=140,
+                                                     publication_handler=prepare)
+        self.assertEqual(seen,[140])
+        self.assertEqual([p['url'] for p in result],[URL])
+
+    def test_deferred_rescue_can_spend_previously_unused_batch_without_second_call(self):
+        import publication_recovery as recovery
+        good=[dict(raw(BODY,u),published_at='2026-10-21T10:00:00Z')
+              for u in ['https://a.example/x','https://b.example/x']]
+        late=[raw('Published: October 21, 2026\n'+BODY,u)
+              for u in ['https://c.example/x','https://d.example/x']]
+        scouts=[{'symbol':'AAA','urls':[p['url'] for p in good]}, {'symbol':'BBB','urls':[]}]
+        seen=[];synth=[]
+        def rescue(candidate, accepted, **kw):
+            candidate['urls'].extend(p['url'] for p in late)
+            return kw['publication_handler'](late,deadline=kw['deadline'])
+        def interpret(pages, **kw):
+            seen.append([p['url'] for p in pages])
+            return {p['url']:publication.build_observation(p,value='2026-10-21',precision='day',
+                basis='llm_grounded',support='Published: October 21, 2026',location='header') for p in pages}, []
+        def synthesis(cfg, selected, evidence, *a, **kw):
+            synth.append((selected['symbol'],len(evidence)))
+            return {'status':'none'}
+        with patch.object(recovery,'candidate_recovery_page',return_value=None), patch.object(radar,'discovery_command',return_value=['offline']), patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar,'scout_parse_result',return_value=(scouts,{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'gather_evidence',return_value=good), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue), patch.object(radar,'interpret_publications',side_effect=interpret), patch.object(radar,'synthesize_candidate',side_effect=synthesis):
+            result=radar.live_research({},intake=lambda c:c)
+        self.assertEqual(result,{'status':'none'})
+        self.assertEqual(seen,[[p['url'] for p in late]])
+        self.assertEqual(synth,[('AAA',2),('BBB',2)])
 
     def test_day_observation_survives_receipt_synthesis_and_review_projection(self):
         import autotrader

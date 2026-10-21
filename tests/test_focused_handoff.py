@@ -174,7 +174,9 @@ class FocusedHandoffTests(unittest.TestCase):
             self.assertEqual(search.call_count,6)
             self.assertEqual(sum(len(c.args[0]) for c in pipeline.run_batch_worker.call_args_list),25)
             self.assertEqual(transport.call_count,9)  # Reuse 25 undated captures; 3 rescue URLs on three candidates.
-            self.assertEqual(radar.run_publication_process.call_count,1)
+            # No date-bearing compact context exists in these synthetic large
+            # undated bodies; don't spend a model invocation on unusable input.
+            self.assertEqual(radar.run_publication_process.call_count,0)
             for call in rescue.call_args_list:
                 candidate=call.args[0]
                 self.assertEqual(len(candidate['urls']),8)

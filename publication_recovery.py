@@ -55,6 +55,8 @@ class RecoveryState:
     deadline: float | None = None
     refreshed_urls: set[str] = field(default_factory=set)
     observations: dict[str, dict] = field(default_factory=dict)
+    remaining_seconds: float = RECOVERY_BUDGET_SECONDS
+    deterministic_urls: set[str] = field(default_factory=set)
 
 
 def _policy(publisher, filter_pages):
@@ -76,23 +78,33 @@ def _known_instant(page):
 
 def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
                             budget: int = 8192) -> dict | None:
-    """Deterministic bounded date-candidate recovery beyond the text bound.
+    """Deterministic recovery for bounded or oversized original captures.
 
-    Pages whose captured text exceeds the 6000-char transport bound were
-    previously unservable. The bounded candidate-context document (never a
-    fixed header slice) is the canonical interpretation text; the original
-    capture text remains the source of record on the unchanged page. I2 (fix
-    round 6): the recovered observation's content_sha256 binds the ORIGINAL
-    capture bytes (the hash/witness basis) via the `_capture_sha256` capture
-    basis recorded here; the stitched candidate document is interpretation
-    input only and is never the hash basis. Only a locally validated
-    observation that passes the same publisher/freshness filter is returned —
-    no model, no refetch, no fabricated dates.
+    Bounded originals keep their canonical text unchanged. For oversized pages
+    the bounded candidate-context document is interpretation input only: the
+    ORIGINAL capture remains the validation/hash authority, including claims
+    absent from that document. No model, refetch, guessed timezone or removal
+    of a present observation marker is permitted here.
     """
     from publication_observation import date_candidate_text, prepare_publication_evidence
     text = page.get('text')
-    if not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text or 'publication_observation' in page:
         return None
+    if len(text) <= 6000:
+        # All original claims are construction authority. A bounded original
+        # needs no replacement text or synthetic capture-hash authority.
+        from publication_observation import build_observation
+        parsed = prepare_publication_evidence(page, extracted_text=text)
+        obs = parsed.get('publication_observation')
+        if not isinstance(obs, dict):
+            return None
+        # A bounded original needs no projection: retain its exact canonical
+        # bytes, cache identity and ordinary receipt validation contract.
+        original = {k:v for k,v in page.items() if k != '_capture_sha256'}
+        obs = build_observation(original, value=obs['value'], precision=obs['precision'],
+            basis=obs['basis'], support=obs['support'], location=obs['location'])
+        prepared = _attach(original, obs, now=now)
+        return prepared if prepared and filter_pages([prepared], now=now)[0] else None
     try:
         candidate = date_candidate_text(text, budget=budget)
     except ValueError:
@@ -124,6 +136,9 @@ def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
         return None
     if not isinstance(prepared.get('publication_observation'), dict):
         return None
+    original = {k:v for k,v in page.items() if k != '_capture_sha256'}
+    if not validate_observation(original, prepared['publication_observation']):
+        return None  # Candidate extraction is never authority to hide a claim.
     # The prepared page carries the locally computed capture digest so cache
     # persistence and later re-validation stay internally consistent (I2).
     prepared['_capture_sha256'] = capture_hash
@@ -204,12 +219,36 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
                          fetcher: Callable, interpreter: Callable,
                          publisher: Callable | None = None,
                          filter_pages: Callable | None = None,
-                         refetch_urls: set[str] | None = None) -> tuple[list[dict], list[dict]]:
+                         refetch_urls: set[str] | None = None,
+                         allow_model: bool = True) -> tuple[list[dict], list[dict]]:
+    """Charge actual recovery work, not evidence/rescue waiting between calls.
+
+    `allow_model=False` prepares deterministic/cache/refetch evidence without
+    spending the single model batch. All calls share the same 90s work allowance.
+    """
     started = monotonic()
     if state.started_at is None:
         state.started_at = started
-        state.deadline = min(started + RECOVERY_BUDGET_SECONDS,
-                             overall_deadline - max(0, downstream_reserve))
+    state.deadline = min(started + state.remaining_seconds,
+                         overall_deadline - max(0, downstream_reserve))
+    try:
+        return _recover_publications(candidates, pages, accepted, state=state,
+            overall_deadline=overall_deadline, downstream_reserve=downstream_reserve,
+            cache_path=cache_path, fetcher=fetcher, interpreter=interpreter,
+            publisher=publisher, filter_pages=filter_pages, refetch_urls=refetch_urls,
+            allow_model=allow_model)
+    finally:
+        state.remaining_seconds = max(0.0, state.remaining_seconds - max(0.0, monotonic()-started))
+
+
+def _recover_publications(candidates: list[dict], pages: list[dict], accepted: list[dict], *,
+                         state: RecoveryState, overall_deadline: float,
+                         downstream_reserve: float, cache_path: Path | None,
+                         fetcher: Callable, interpreter: Callable,
+                         publisher: Callable | None = None,
+                         filter_pages: Callable | None = None,
+                         refetch_urls: set[str] | None = None,
+                         allow_model: bool = True) -> tuple[list[dict], list[dict]]:
     deadline = min(state.deadline, overall_deadline - max(0, downstream_reserve))
     publisher, filter_pages = _policy(publisher, filter_pages)
     result = [dict(p) for p in pages]
@@ -233,7 +272,6 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
         return result, [{'id':'batch','reason':'timeout'}]
     accepted_urls = {p['url'] for p in accepted if isinstance(p.get('url'),str)}
     checked_updates = {}
-    recovered_pages = 0
     for i, p in enumerate(result):
         if expired():
             note(i, 'timeout'); break
@@ -265,19 +303,16 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
             if expired(): note(i, 'timeout'); break
             result[i] = updated; note(i, 'cache_hit'); continue
         text = p.get('text')
-        if isinstance(text, str) and len(text) > 6000:
-            # Beyond the transport text bound this page was previously
-            # unservable; bounded date-candidate extraction recovers it
-            # deterministically before any scoped transport work. M1 (fix
-            # round 6): these deterministic admissions count against the same
-            # per-run ten-page fair-binding ceiling as model-path admissions.
-            if recovered_pages >= RECOVERY_PAGE_LIMIT:
+        if isinstance(text, str) and text:
+            # Deterministic preparation applies to every delivered capture.
+            # Separate deterministic/model ceilings stay ten each per run.
+            if url not in state.deterministic_urls and len(state.deterministic_urls) >= RECOVERY_PAGE_LIMIT:
                 note(i, 'recovered_page_limit')
                 continue
             prepared = candidate_recovery_page(p, now=utc_now(), filter_pages=filter_pages)
             if prepared is not None and not expired():
                 result[i] = prepared
-                recovered_pages += 1
+                state.deterministic_urls.add(url)
                 state.observations[url] = dict(prepared['publication_observation'])
                 note(i, 'recovered_day' if prepared['publication_precision'] == 'day'
                      else 'recovered_instant')
@@ -315,6 +350,13 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
                 valid, quality = filter_pages([fresh], now=utc_now())
                 if valid or (quality and quality[0].get('reason') == 'source_freshness_unknown'):
                     result[i] = dict(fresh)
+                    if (not valid and 'publication_observation' not in fresh
+                            and len(state.deterministic_urls) < RECOVERY_PAGE_LIMIT):
+                        prepared = candidate_recovery_page(fresh, now=utc_now(), filter_pages=filter_pages)
+                        if prepared is not None and not expired():
+                            result[i] = prepared
+                            state.deterministic_urls.add(url)
+                            state.observations[url] = dict(prepared['publication_observation'])
                     checked_updates[url] = utc_now().isoformat().replace('+00:00', 'Z')
                     note(i, 'refetched')
                 else: note(i, 'invalid_page')
@@ -323,7 +365,7 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
                                      publisher=publisher, filter_pages=filter_pages, deadline=deadline)
     if expired():
         return result, [*notes, {'id':'batch','reason':'timeout'}]
-    if selected and not state.attempted_model:
+    if selected and allow_model and not state.attempted_model:
         state.attempted_model = True
         observations, diagnostics = interpreter(selected, deadline=deadline)
         allowed_reasons = {'success','unknown','missing_member','duplicate_member','invalid_member',

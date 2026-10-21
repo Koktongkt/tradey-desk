@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 import math
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -61,11 +62,11 @@ def _valid_page(page):
 
 
 def _prepare_request(pages, reasons):
-    """Admit whole canonical contexts, reducing count, never silently widening I/O.
+    """Reserve compact wire contexts in fair-selector order before expansion.
 
-    60,000 characters is an upper bound, not an entitlement: the existing 8,192
-    encoded-byte transport admission often permits fewer complete pages. Skipping
-    rather than truncating also prevents hiding exact/conflicting evidence.
+    Only wire text is reduced. `admitted` retains the ORIGINAL page, so every
+    proposal, conflict, exact claim, hard marker and hash is validated there.
+    Encoded JSON (including all URL/title/schema overhead) owns admission.
     """
     admitted, wire = {}, []
     urls = Counter(p['url'] for p in pages[:MAX_PAGES] if _valid_page(p))
@@ -92,6 +93,27 @@ def _prepare_request(pages, reasons):
         else:
             row = dict(id=id, url=page['url'], returned_url=page.get('returned_url', page['url']),
                        title=page.get('title', ''), text=page['text'])
+            # Verbatim windows only: never synthesize a publication label. The
+            # full original remains the authority even for omitted conflicts.
+            signals = list(re.finditer(r'\b(?:19|20)\d{2}\b', page['text']))
+            fragments = []
+            for match in signals:
+                start = max(0, match.start()-90)
+                end = min(len(page['text']), match.end()+90)
+                fragment = page['text'][start:end]
+                # Reserve <=512 ENCODED bytes of verbatim context per page,
+                # including JSON escaping; omitted claims still face ORIGINAL
+                # validation. Prefer all date windows whenever they fit.
+                compact = '\n'.join([*fragments, fragment])
+                if (fragment not in fragments
+                        and len(json.dumps(compact,ensure_ascii=False).encode('utf-8')) <= 512):
+                    fragments.append(fragment)
+            compact = '\n'.join(fragments)
+            if len(encode([row])) > 1200:
+                if not compact:
+                    reasons[id] = 'input_limit'
+                    continue
+                row['text'] = compact
             candidate = encode([*wire, row])
             if len(candidate) > MAX_REQUEST_BYTES:
                 reasons[id] = 'input_limit'
@@ -99,6 +121,15 @@ def _prepare_request(pages, reasons):
                 admitted[id] = page
                 wire.append(row)
                 request = candidate
+    # Expansion is allowed only AFTER reservations; never displace another
+    # candidate to give the first page its original body.
+    for i, row in enumerate(wire):
+        original = admitted[row['id']]
+        expanded = dict(row, text=original['text'])
+        candidate = encode([*wire[:i], expanded, *wire[i+1:]])
+        if len(candidate) <= MAX_REQUEST_BYTES:
+            wire[i] = expanded
+            request = candidate
     return admitted, request
 
 

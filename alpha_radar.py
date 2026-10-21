@@ -1657,13 +1657,15 @@ def gateway_rescue_url(
 def post_fetch_rescue_candidate(
     candidate:dict[str,Any],accepted_pages:list[dict[str,Any]],*,
     diagnostics:list[dict[str,str]],deadline:float,resumable:bool=False,
+    publication_handler:Callable|None=None,
 ):
     """Drain one rescue for direct callers, or expose bounded operation turns.
 
     The iterator is run-local state, never a field on a public candidate. A turn
     completes one lookup, search or fetch; it never slices/cancels an operation.
     """
-    steps=_post_fetch_rescue_steps(candidate,accepted_pages,diagnostics=diagnostics,deadline=deadline)
+    steps=_post_fetch_rescue_steps(candidate,accepted_pages,diagnostics=diagnostics,deadline=deadline,
+                                  publication_handler=publication_handler)
     if resumable:return steps
     accepted=list(accepted_pages)
     for accepted in steps:pass
@@ -1672,7 +1674,7 @@ def post_fetch_rescue_candidate(
 
 def _post_fetch_rescue_steps(
     candidate:dict[str,Any],accepted_pages:list[dict[str,Any]],*,
-    diagnostics:list[dict[str,str]],deadline:float,
+    diagnostics:list[dict[str,str]],deadline:float,publication_handler:Callable|None=None,
 ):
     """Retain accepted evidence, pending URLs and completed lanes across turns."""
     accepted=list(accepted_pages)
@@ -1726,7 +1728,9 @@ def _post_fetch_rescue_steps(
             # The optional official date lookup is a separate bounded operation.
             yield accepted
             if monotonic()<deadline:sec_dates[url]=sec_filing_date_for_url(url,deadline=deadline)
-        filtered,quality=filter_evidence(attach_sec_filing_dates(bound,sec_dates))
+        delivered=attach_sec_filing_dates(bound,sec_dates)
+        if publication_handler is not None:delivered=publication_handler(delivered,deadline=deadline)
+        filtered,quality=filter_evidence(delivered)
         diagnostics.extend(quality)
         for page in filtered:
             domain=publisher_domain(str(page.get("url") or ""))
@@ -1863,25 +1867,31 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             sec_dates[url]=sec_filing_date_for_url(url,deadline=evidence_deadline)
     fetched_evidence=attach_sec_filing_dates(fetched_evidence,sec_dates)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
-    # Pause only the unspent evidence allowance. Recovery has a distinct clock;
-    # consumed evidence time is never replenished by the 90-second fallback.
-    evidence_remaining=max(0.0,evidence_deadline-monotonic())
-    with timed_research_stage("publication_recovery"):
-        try:
-            fetched_evidence,recovery_notes=recover_publications(
-                scout_candidates,fetched_evidence,filtered_evidence,state=recovery_state,
-                overall_deadline=overall_deadline,downstream_reserve=downstream_reserve,
-                cache_path=ROOT/"private"/"source_cache.json",fetcher=fetch_source,
-                interpreter=lambda pages,*,deadline:interpret_publications(
-                    pages,deadline=deadline,
-                    command_factory=lambda:research_subprocess_command('bot_room',max_turns=1,run_budget=45),
-                    runner=run_publication_process,now=dt.datetime.now(dt.timezone.utc)),
-                publisher=publisher_domain,filter_pages=filter_evidence,refetch_urls=cache_hits,
-            )
-        except OSError as error:raise ResearchFailure("research_persistence_failure") from error
-    evidence_deadline=min(overall_deadline,monotonic()+evidence_remaining)
+    def recover_stage(pages, *, allow_model, stage_deadline=None):
+        nonlocal evidence_deadline
+        # Pause ONLY unspent evidence work. Recovery charges its own cumulative
+        # allowance; rescue waiting never refills it.
+        evidence_remaining=max(0.0,evidence_deadline-monotonic())
+        with timed_research_stage("publication_recovery"):
+            try:
+                updated,notes=recover_publications(
+                    scout_candidates,pages,filtered_evidence,state=recovery_state,
+                    overall_deadline=min(overall_deadline,stage_deadline+downstream_reserve) if stage_deadline is not None else overall_deadline,
+                    downstream_reserve=downstream_reserve,
+                    cache_path=ROOT/"private"/"source_cache.json",fetcher=fetch_source,
+                    interpreter=lambda pages,*,deadline:interpret_publications(
+                        pages,deadline=deadline,
+                        command_factory=lambda:research_subprocess_command('bot_room',max_turns=1,run_budget=45),
+                        runner=run_publication_process,now=dt.datetime.now(dt.timezone.utc)),
+                    publisher=publisher_domain,filter_pages=filter_evidence,refetch_urls=cache_hits,
+                    allow_model=allow_model,
+                )
+            except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+        evidence_deadline=min(overall_deadline-downstream_reserve,monotonic()+evidence_remaining)
+        source_diagnostics.extend({**note,"stage":"publication_recovery"} for note in notes)
+        return updated
+    fetched_evidence=recover_stage(fetched_evidence,allow_model=False)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
-    source_diagnostics.extend({**note,"stage":"publication_recovery"} for note in recovery_notes)
     accepted_urls={url for page in filtered_evidence if isinstance((url:=page.get("url")),str)}
     if cfg.get("focused_retrieval_enabled",False) and hasattr(focused,"focused_result"):
         accepted_by_symbol={c["symbol"]:[p for p in filtered_evidence if p["url"] in c["urls"]]
@@ -1894,6 +1904,14 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     rescue_states={}
     rescue_turns={}
     initially_ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
+    def publication_handler(delivered, *, deadline=None):
+        nonlocal fetched_evidence
+        owned={p.get("url") for p in delivered}
+        prepared=[p for p in recover_stage(delivered,allow_model=False,stage_deadline=deadline) if p.get("url") in owned]
+        by_url={p["url"]:p for p in fetched_evidence}
+        by_url.update({p["url"]:p for p in prepared if p.get("url")})
+        fetched_evidence=list(by_url.values())
+        return prepared
     def rescue_thin_candidates(deadline:float)->None:
         with timed_research_stage("evidence_rescue"):
             pending=[]
@@ -1907,6 +1925,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                     if len(rescue_states)>=3:continue
                     rescue_states[symbol]=post_fetch_rescue_candidate(
                         scout_candidate,accepted,diagnostics=source_diagnostics,deadline=deadline,resumable=True,
+                        publication_handler=publication_handler,
                     )
                 state=rescue_states[symbol]
                 if state is not None:pending.append((symbol,state))
@@ -1926,11 +1945,14 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                             continue
                         following.append((symbol,state))
                     rescue_turns[symbol]=rescue_turns.get(symbol,0)+1
-                    for page in rescued_pages:
+                    for page in filter_evidence(rescued_pages)[0]:
                         url=page.get("url")
                         if isinstance(url,str) and url and url not in accepted_urls:
                             accepted_urls.add(url)
                             filtered_evidence.append(page)
+                            existing=next((i for i,p in enumerate(fetched_evidence) if p.get('url')==url),None)
+                            if existing is None:fetched_evidence.append(page)
+                            else:fetched_evidence[existing]=page
                 pending=following
             # Deadline-stopped continuations still receive candidate-local failure
             # attribution; no late provider operation is needed to finalize them.
@@ -1947,7 +1969,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 if len(domains)<2 and not any(d.get("reason")=="bundle_rescue_unavailable" and d.get("url") in owned for d in source_diagnostics):
                     url=str((scout_candidate.get("urls") or [""])[0])
                     source_diagnostics.append({"url":url,"domain":urllib.parse.urlparse(url).netloc.lower(),"reason":"bundle_rescue_unavailable"})
-    if not initially_ranked:rescue_thin_candidates(evidence_deadline)
+    if not initially_ranked:
+        rescue_deadline=min(evidence_deadline,overall_deadline-downstream_reserve-recovery_state.remaining_seconds)
+        rescue_thin_candidates(rescue_deadline)
+    fetched_evidence=recover_stage(fetched_evidence,allow_model=True)
+    filtered_evidence,final_quality=filter_evidence(fetched_evidence)
+    accepted_urls={p['url'] for p in filtered_evidence if isinstance(p.get('url'),str)}
+    source_diagnostics.extend(note for note in final_quality if note not in source_diagnostics)
     fetch_diagnostics=[item for item in source_diagnostics if item.get("reason") in RETRIEVAL_DIAGNOSTIC_REASONS]
     quality_diagnostics=[item for item in source_diagnostics if item.get("reason") in {"stale_source","article_body_missing","source_freshness_unknown"}]
     source_diagnostics.extend({
@@ -2000,6 +2028,12 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         diagnostics_before=len(source_diagnostics)
         urls_before=set(accepted_urls)
         rescue_thin_candidates(deferred_rescue_deadline)
+        # An unused batch may be spent here; an already-spent one never resets.
+        # Clamp even preparation to the deferred synthesis launch reservation.
+        fetched_evidence=recover_stage(fetched_evidence,allow_model=True,
+            stage_deadline=min(deferred_rescue_deadline,synthesis_deadline-MIN_SYNTHESIS_WINDOW_SECONDS-FOCUSED_TRANSITION_HEADROOM_SECONDS))
+        filtered_evidence,_=filter_evidence(fetched_evidence)
+        accepted_urls={p['url'] for p in filtered_evidence if isinstance(p.get('url'),str)}
         newly_fetched=[{
             "url":str(page.get("url") or ""),
             "domain":urllib.parse.urlparse(str(page.get("url") or "")).netloc.lower(),"reason":"fetched",
