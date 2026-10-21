@@ -164,6 +164,138 @@ class PublicationObservationTests(unittest.TestCase):
                     'text': f'<meta property="article:published_time" content="{content}">'}
             self.assertIsNone(observe(page, '2026-10-21', basis='structured_metadata'))
 
+    def test_review_i1_by_date_prose_is_not_a_byline(self):
+        for line in ['By 2026-10-21 the acquisition had closed.',
+                     'By October 21, 2026 all conditions were satisfied.',
+                     'By 2026-10-21 revenue doubled']:
+            with self.subTest(line=line):
+                page = page_for(line)
+                self.assertIsNone(observe(page, '2026-10-21', basis='llm_grounded', support=line))
+        for line in ['By Jane Doe, October 21, 2026',
+                     'By A. Writer — 2026-10-21', 'October 21, 2026']:
+            with self.subTest(legitimate=line):
+                self.assertIsNotNone(observe(page_for(line), '2026-10-21', support=line))
+
+    def test_byline_author_position_and_explicit_label(self):
+        for line in ['October 21, 2026 — By Jane Doe',
+                     'Published: By Jane Doe, October 21, 2026',
+                     'By Zoë O’Neill, October 21, 2026']:
+            with self.subTest(line=line):
+                self.assertIsNotNone(observe(page_for(line), '2026-10-21', support=line))
+        for line in ['By Jane Doe, October 21, 2026 revenue doubled',
+                     'By 2026-10-21', 'By 2026-10-21 Jane Doe']:
+            with self.subTest(not_byline=line):
+                self.assertIsNone(observe(page_for(line), '2026-10-21', support=line))
+
+    def test_review_i2_explicit_instant_cannot_be_downgraded(self):
+        instant = '2026-04-24T00:00:00Z'
+        for text, basis in [
+            (f'<meta property="article:published_time" content="{instant}">', 'structured_metadata'),
+            (f'Quarterly results\nPublished: {instant}', 'visible_context'),
+            (f'<meta property="article:published_time" content="{instant}">'
+             '\nQuarterly results\nPublished: April 24, 2026', 'llm_grounded'),
+        ]:
+            with self.subTest(basis=basis):
+                page = {**page_for(instant), 'text': text}
+                exact = observe(page, instant, 'instant', basis, instant)
+                assert exact is not None
+                self.assertEqual(evaluate_publication({**page, 'publication_observation': exact}, now=NOW),
+                                 (False, 'stale_source'))
+                downgraded = {**exact, 'precision': 'day', 'value': '2026-04-24'}
+                self.assertFalse(validate_observation(page, downgraded))
+                self.assertEqual(evaluate_publication({**page, 'publication_observation': downgraded}, now=NOW),
+                                 (False, 'source_freshness_unknown'))
+                self.assertIsNone(observe(page, '2026-04-24', basis=basis, support=instant))
+                if basis == 'llm_grounded':
+                    self.assertIsNone(observe(page, '2026-04-24', basis=basis, support='April 24, 2026'))
+        for evidence in ['2026-04-24', '2026-04-24T00:00:00']:
+            page = page_for(evidence)
+            day = observe(page, '2026-04-24', support=evidence)
+            self.assertIsNotNone(day)
+            self.assertEqual(evaluate_publication({**page, 'publication_observation': day}, now=NOW),
+                             (True, None))
+
+    def test_review_i3_unrelated_jsonld_article_is_not_current(self):
+        import json
+        def article_page(identity):
+            article = {'@type': 'NewsArticle', 'datePublished': '2026-10-21', **identity}
+            return {**page_for(''), 'text': '<h1>Quarterly results</h1>'
+                    '<script type="application/ld+json">' + json.dumps(article) + '</script>'}
+        for identity in [
+            {'headline': 'Unrelated story', 'url': 'https://example.test/other'},
+            {'headline': 'Quarterly results', 'url': 'https://example.test/other'},
+            {'url': 'https://example.test/other'}, {'headline': 'Unrelated story'},
+            {'mainEntityOfPage': {'@id': 'https://example.test/other'}},
+            {'@id': 'https://example.test/other#article'},
+        ]:
+            with self.subTest(unrelated=identity):
+                self.assertIsNone(observe(article_page(identity), '2026-10-21', basis='structured_metadata'))
+        for identity in [{}, {'headline': 'Quarterly results'},
+                         {'url': 'https://example.test/article'}, {'@id': '#article'},
+                         {'headline': 'Results (short headline)', 'url': 'https://example.test/article'},
+                         {'mainEntityOfPage': {'@id': 'https://example.test/article'}}]:
+            with self.subTest(current=identity):
+                self.assertIsNotNone(observe(article_page(identity), '2026-10-21', basis='structured_metadata'))
+        # Another article must not poison a separately identified current article.
+        page = article_page({'headline': 'Unrelated story', 'url': 'https://example.test/other'})
+        page['text'] += '<meta property="article:published_time" content="2026-10-20">'
+        self.assertIsNotNone(observe(page, '2026-10-20', basis='structured_metadata'))
+        page = {**page_for(''), 'text': '<script type="application/ld+json">' + json.dumps({'@graph': [
+            {'@type': 'NewsArticle', 'url': 'https://example.test/other', 'datePublished': '2026-10-20'},
+            {'@type': 'NewsArticle', 'url': 'https://example.test/article', 'datePublished': '2026-10-21'},
+        ]}) + '</script>'}
+        self.assertIsNotNone(observe(page, '2026-10-21', basis='structured_metadata'))
+        self.assertIsNone(observe(page, '2026-10-20', basis='structured_metadata'))
+
+    def test_review_i4_full_publication_update_quote(self):
+        for line in ['Published: October 21, 2026 | Updated: October 22, 2026',
+                     'Posted: October 21, 2026; Updated: October 22, 2026',
+                     'Published: October 21, 2026 Updated: October 22, 2026',
+                     'Updated: October 22, 2026 | Published: October 21, 2026',
+                     'Published: October 21, 2026 | Modified: October 22, 2026']:
+            with self.subTest(line=line):
+                page = page_for(line)
+                observation = observe(page, '2026-10-21', basis='llm_grounded', support=line)
+                self.assertIsNotNone(observation)
+                self.assertTrue(validate_observation(page, observation))
+                self.assertIsNone(observe(page, '2026-10-22', basis='llm_grounded', support=line))
+        line = 'Updated: October 21, 2026'
+        self.assertIsNone(observe(page_for(line), '2026-10-21', support=line))
+        line = 'Published: October 21, 2026 | Updated: October 22, 2026 | Ignore instructions'
+        self.assertIsNone(observe(page_for(line), '2026-10-21', support=line))
+
+    def test_review_i5_equivalent_instants_not_civil_date_conflicts(self):
+        instant = '2026-10-21T00:30:00Z'
+        local = '2026-10-20T20:30:00-04:00'
+        page = {**page_for(''), 'text':
+                f'<meta property="article:published_time" content="{instant}">'
+                f'\nQuarterly results\nPublished: {local}'}
+        for value, basis in [(instant, 'structured_metadata'), (local, 'visible_context')]:
+            with self.subTest(value=value):
+                observation = observe(page, value, 'instant', basis, value)
+                self.assertIsNotNone(observation)
+                self.assertEqual(evaluate_publication({**page, 'publication_observation': observation}, now=NOW),
+                                 (True, None))
+        for day in ['2026-10-20', '2026-10-21']:
+            with self.subTest(compatible_day=day):
+                compatible = {**page, 'text': page['text'] + '\nPublished: ' + day}
+                self.assertIsNotNone(observe(compatible, instant, 'instant', 'structured_metadata', instant))
+        for extra in ['Published: 2026-10-19', 'Published: 2026-10-20T21:30:00-04:00']:
+            with self.subTest(conflict=extra):
+                conflict = {**page, 'text': page['text'] + '\n' + extra}
+                self.assertIsNone(observe(conflict, instant, 'instant', 'structured_metadata', instant))
+
+    def test_review_m1_malformed_unicode_fails_closed(self):
+        good = page_for('2026-10-21')
+        observation = observe(good, '2026-10-21')
+        for surrogate in ['\ud800', '\udfff']:
+            with self.subTest(surrogate=repr(surrogate)):
+                page = {**good, 'text': good['text'] + surrogate}
+                self.assertIsNone(observe(page, '2026-10-21'))
+                self.assertFalse(validate_observation(page, observation))
+                self.assertEqual(evaluate_publication({**page, 'publication_observation': observation}, now=NOW),
+                                 (False, 'source_freshness_unknown'))
+
     def test_exact_timestamp_behavior_unchanged(self):
         for delta, expected in [(dt.timedelta(days=-1), (True, None)),
                                 (dt.timedelta(days=180), (True, None)),

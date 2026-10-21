@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 import json
 import re
 import unicodedata
-from urllib.parse import urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 OBSERVATION_VERSION = 1
 PARSER_VERSION = 'publication-observation/1'
@@ -32,7 +32,8 @@ _DATE = re.compile(
     + rf'|{_MONTH}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}'
     + rf'|\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}\.?[,]?\s+\d{{4}})(?!\w)', re.I)
 _ROLE = re.compile(r'^(?:published(?:\s+on)?|publication date|released(?:\s+on)?|issued(?:\s+on)?|posted(?:\s+on)?)\s*[:|\-–—]?\s*', re.I)
-_UNSAFE = re.compile(r'\b(?:updated?|modified|copyright|crawled?|retrieved|accessed|event|meeting|conference|webcast|ignore|instructions?|system|assistant|prompt|override)\b|©', re.I)
+_UNSAFE_QUOTE = re.compile(r'\b(?:copyright|crawled?|retrieved|accessed|event|meeting|conference|webcast|ignore|instructions?|system|assistant|prompt|override)\b|©', re.I)
+_UPDATE = re.compile(r'\b(?:updated?|modified)\b', re.I)
 
 
 def normalize_support(text: str) -> str:
@@ -53,10 +54,17 @@ def _url(value):
 
 
 def _page_valid(page):
-    return (isinstance(page, dict) and isinstance(page.get('text'), str)
+    valid = (isinstance(page, dict) and isinstance(page.get('text'), str)
             and 0 < len(page['text']) <= MAX_CONTENT_CHARS
             and _url(page.get('url'))
             and _url(page.get('returned_url', page.get('url'))))
+    if not valid:
+        return False
+    try:
+        page['text'].encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _hash(page):
@@ -105,6 +113,7 @@ class _RetainedHTML(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.visible = []
         self.metadata = []
+        self.articles = []
         self.hidden = None
         self.script = []
         self.ld = False
@@ -162,8 +171,35 @@ class _RetainedHTML(HTMLParser):
             kinds = [kind] if isinstance(kind, str) else kind
             if isinstance(kinds, list) and any(k in ('Article', 'NewsArticle', 'BlogPosting', 'Report') for k in kinds):
                 if isinstance(obj.get('datePublished'), str):
-                    self.metadata.append(obj['datePublished'])
+                    self.articles.append(obj)
             self._article_dates(obj.get('@graph'), depth + 1)
+
+
+def _current_article(article, page, titles):
+    """Exclude explicit foreign identities, not anonymous metadata.
+
+    This only disambiguates retained evidence; it does not authenticate origin.
+    URL identity is stronger than headline spelling (which can vary on-page).
+    """
+    base = page.get('returned_url', page['url'])
+    current = {urldefrag(page['url'])[0], urldefrag(base)[0]}
+    identities = []
+    for key in ('url', '@id', 'mainEntityOfPage'):
+        value = article.get(key)
+        if isinstance(value, dict):
+            value = value.get('@id', value.get('url'))
+        if isinstance(value, str) and value.strip():
+            try:
+                resolved = urljoin(base, value)
+                if _url(resolved):
+                    identities.append(urldefrag(resolved)[0])
+            except ValueError:
+                return False
+    if identities:
+        return all(identity in current for identity in identities)
+    headline = article.get('headline')
+    return (not isinstance(headline, str) or not headline.strip() or not titles
+            or normalize_support(headline) in titles)
 
 
 def _contexts(page):
@@ -174,7 +210,11 @@ def _contexts(page):
     except (ValueError, RecursionError):
         return []
     contexts = []
-    for metadata in parser.metadata:
+    titles = {normalize_support(title) for title in [page.get('title'), *parser.headings]
+              if isinstance(title, str) and title.strip()}
+    metadata_values = parser.metadata + [article['datePublished'] for article in parser.articles
+                                         if _current_article(article, page, titles)]
+    for metadata in metadata_values:
         if not isinstance(metadata, str) or not _DATE.fullmatch(html.unescape(metadata).strip()):
             continue
         for _, parsed, _ in _dates(metadata):
@@ -189,8 +229,8 @@ def _contexts(page):
         if len(line) > 1000:
             continue
         # A separate update is not a publication conflict. Never use its date.
-        for segment in re.split(r'\s*[|;]\s*|(?=\bUpdated\b)', line, flags=re.I):
-            if _UNSAFE.search(segment):
+        for segment in re.split(r'\s*[|;]\s*|(?=\b(?:updated?|modified)\b)', line, flags=re.I):
+            if _UNSAFE_QUOTE.search(segment) or _UPDATE.search(segment):
                 continue
             dates = list(_dates(segment))
             if not dates:
@@ -207,7 +247,16 @@ def _contexts(page):
             # Date-adjacent article header: a date-only row, optional byline,
             # or title plus date. Prose containing an event date is not a header.
             header = heading is not None and abs(i - heading) <= 3
-            byline = bool(re.fullmatch(r'by\s+[\w .\-]+', normalize_support(residual), re.I))
+            # A byline keeps "By [author]" together on one side of the date.
+            # Removing the date first mistakes "By [date] ..." for an author.
+            start, end = dates[0][2]
+            unescaped = html.unescape(segment)
+            prefix = normalize_support(_ROLE.sub('', unescaped[:start]))
+            suffix = normalize_support(unescaped[end:])
+            author = r'by\s+[^\W\d_]+(?:\s+[^\W\d_]+)*'
+            byline = (len(dates) == 1
+                      and ((bool(re.fullmatch(author, prefix, re.I)) and not suffix)
+                           or (not prefix and bool(re.fullmatch(author, suffix, re.I)))))
             if (explicit or header) and (not residual_normal or byline):
                 for _, parsed, _ in dates:
                     contexts.append(('visible_context', segment, parsed))
@@ -217,7 +266,7 @@ def _contexts(page):
 def _same_claim(parsed, candidate):
     if isinstance(parsed, dt.datetime):
         return isinstance(candidate, dt.datetime) and parsed == candidate
-    return parsed == (candidate.date() if isinstance(candidate, dt.datetime) else candidate)
+    return not isinstance(candidate, dt.datetime) and parsed == candidate
 
 
 def build_observation(page: dict, *, value: str, precision: str, basis: str,
@@ -251,15 +300,21 @@ def validate_observation(page: dict, observation: object) -> bool:
             return False
     parsed = _parse(o['value'], o['precision'])
     support = normalize_support(o['support'])
-    if parsed is None or not support or _UNSAFE.search(o['support']):
+    if parsed is None or not support or _UNSAFE_QUOTE.search(o['support']):
         return False
     contexts = _contexts(page)
     # All retained publication roles participate in conflict detection, regardless
     # of which quote/basis was selected. Updates/events never become candidates.
-    days = {candidate.date() if isinstance(candidate, dt.datetime) else candidate
-            for _, _, candidate in contexts}
+    days = {candidate for _, _, candidate in contexts if not isinstance(candidate, dt.datetime)}
     instants = {candidate for _, _, candidate in contexts if isinstance(candidate, dt.datetime)}
     if len(days) > 1 or len(instants) > 1:
+        return False
+    civil_days = {candidate.date() for _, _, candidate in contexts if isinstance(candidate, dt.datetime)}
+    if instants and days and not days <= civil_days:
+        return False
+    # Retained exact evidence governs precision, even if a caller selects a
+    # separate day-only quote. Do not weaken strict duration freshness cutoffs.
+    if instants and o['precision'] != 'instant':
         return False
     for basis, context, candidate in contexts:
         if o['basis'] not in (basis, 'llm_grounded') or not _same_claim(parsed, candidate):
