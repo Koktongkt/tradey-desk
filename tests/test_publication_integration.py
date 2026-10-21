@@ -1,6 +1,7 @@
 """Offline integration; all constructed publisher-style examples are synthetic."""
 import datetime as dt
 import io
+import hashlib
 import copy
 import json
 from pathlib import Path
@@ -124,9 +125,32 @@ class PublicationIntegrationTests(unittest.TestCase):
         large = publication.prepare_publication_evidence(raw('<meta property="article:published_time" content="2026-10-21">'), extracted_text=BODY*10)
         large['url'] = URL
         pages[0] = large
-        _, selected = radar.select_candidate_evidence([{'urls':[p['url'] for p in pages]}], pages, max_chars=6100)
+        candidate = {'symbol': 'ABC', 'urls': [p['url'] for p in pages]}
+        originals = {page['url']: copy.deepcopy(page) for page in pages}
+        self.assertEqual([len(page['text']) for page in pages], [6000, 889])
+
+        # The second complete witness cannot fit; refusing is safer than truncation.
+        refused, selected = radar.select_candidate_evidence([candidate], pages, max_chars=6100)
+        self.assertIsNone(refused)
+        self.assertEqual(selected, [])
+
+        # The unchanged default budget can retain both canonical sources in full.
+        chosen, selected = radar.select_candidate_evidence([candidate], pages)
+        self.assertIs(chosen, candidate)
+        self.assertEqual(len(selected), 2)
+        self.assertCountEqual([page['url'] for page in selected], candidate['urls'])
+        self.assertTrue(all(page['text'] and page['publication_observation'] for page in selected))
+        bindings_checked = 0
         for page in selected:
+            original = originals[page['url']]
+            self.assertEqual(page['text'], original['text'])
+            self.assertEqual(page['publication_observation'], original['publication_observation'])
+            self.assertEqual(page['publication_observation']['content_sha256'],
+                             hashlib.sha256(page['text'].encode('utf-8')).hexdigest())
             self.assertTrue(publication.validate_observation(page, page['publication_observation']))
+            bindings_checked += 1
+        self.assertEqual(bindings_checked, 2)
+        self.assertEqual(pages, [originals[url] for url in candidate['urls']])
 
     def test_day_metadata_direct_structured_and_filter(self):
         for date in ['2026-10-21', '2026-10-21T09:30:00']:
