@@ -19,6 +19,17 @@ def observe(page, value, precision='day', basis='visible_context', support=None)
 
 
 class PublicationObservationTests(unittest.TestCase):
+    def test_retention_reserves_body_under_long_header_article(self):
+        from publication_observation import prepare_publication_evidence
+        body = 'Company revenue and operating cash flow increased. ' * 300
+        raw = {'url':'https://example.test/article', 'title':'Quarterly results',
+               'text':'<header><h1>Quarterly results</h1><p>October 21, 2026</p></header><article>' + body + '</article>'}
+        page = prepare_publication_evidence(raw, extracted_text=body)
+        self.assertTrue(validate_observation(page, page['publication_observation']))
+        self.assertEqual(len(page['text']), 6000)
+        self.assertGreaterEqual(len(page['_publication_body_text']), 80)
+        self.assertTrue(page['_publication_body_text'].startswith('Company revenue'))
+
     def test_normalize_support(self):
         self.assertEqual(normalize_support('  Results &amp; Growth—October\u00a021, 2026! '),
                          normalize_support('results & growth October 21 2026'))

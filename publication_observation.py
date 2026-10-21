@@ -119,6 +119,8 @@ class _RetainedHTML(HTMLParser):
         self.ld = False
         self.headings = []
         self.heading = None
+        self.witnesses = []
+        self.script_tag = ''
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -128,10 +130,13 @@ class _RetainedHTML(HTMLParser):
             self.hidden = tag
             self.ld = tag == 'script' and (attrs.get('type') or '').lower() == 'application/ld+json'
             self.script = []
+            self.script_tag = self.get_starttag_text() if self.ld else ''
         if tag == 'meta' and (attrs.get('property') or attrs.get('name') or attrs.get('itemprop')) in ('article:published_time', 'datePublished'):
             self.metadata.append(attrs.get('content', ''))
+            self.witnesses.append(self.get_starttag_text())
         if tag == 'time' and attrs.get('itemprop') == 'datePublished':
             self.metadata.append(attrs.get('datetime', ''))
+            self.witnesses.append(self.get_starttag_text())
         if tag in ('h1', 'h2', 'p', 'div', 'br', 'article', 'header', 'time', 'li'):
             self.visible.append('\n')
 
@@ -141,6 +146,7 @@ class _RetainedHTML(HTMLParser):
             self.heading = None
         if tag == self.hidden:
             if self.ld:
+                self.witnesses.append(self.script_tag + ''.join(self.script) + '</script>')
                 try:
                     obj = json.loads(''.join(self.script))
                     self._article_dates(obj)
@@ -327,6 +333,81 @@ def validate_observation(page: dict, observation: object) -> bool:
                 and any(_same_claim(parsed, date) for _, date, _ in _dates(o['support']))):
             return True
     return False
+
+
+def prepare_publication_evidence(page: dict, *, extracted_text: str,
+                                 max_chars: int = 6000) -> dict:
+    """Project captured evidence without losing known conflicts or exact precision.
+
+    The processing bound is independent of transport limits. An invalid marker
+    blocks legacy fallback when captured claims cannot be faithfully projected.
+    External observation/body fields are never construction authority.
+    """
+    if type(max_chars) is not int or not 1 <= max_chars <= 6000:
+        raise ValueError('max_chars must be within 1..6000')
+    result = {k: v for k, v in page.items()
+              if k not in ('publication_observation', '_publication_body_text')}
+    body = extracted_text[:max_chars]
+    result.update(text=body, _publication_body_text=body)
+    if not _page_valid(page):
+        result['publication_observation'] = None
+        return result
+    parser = _RetainedHTML()
+    parser.feed(page['text'])
+    parser.close()
+    contexts = _contexts(page)
+    titles = {normalize_support(t) for t in [page.get('title'), *parser.headings]
+              if isinstance(t, str) and t.strip()}
+    applicable = bool(parser.metadata or any(
+        _current_article(a, page, titles) for a in parser.articles) or contexts)
+    if not applicable:
+        # A legacy regex must not promote a foreign Article's exact timestamp.
+        # It is present metadata, not proof for this page.
+        if parser.articles:result['publication_observation'] = None
+        return result
+    result['publication_observation'] = None
+    # Validate the proposal on ALL original contexts first, never a raw prefix.
+    contexts.sort(key=lambda c: isinstance(c[2], dt.datetime), reverse=True)
+    for basis, support, parsed in contexts:
+        precision = 'instant' if isinstance(parsed, dt.datetime) else 'day'
+        value = next((spelling for spelling, date, _ in _dates(support)
+                      if _same_claim(parsed, date)), parsed.isoformat()) if precision == 'instant' else parsed.isoformat()
+        original = build_observation(page, value=value, precision=precision,
+                                     basis=basis, support=support, location='captured publication context')
+        if original is None:
+            continue
+        # Visible lines are retained origin text, not new metadata derived from
+        # a parsed date. Keep header proximity and separately labeled contexts.
+        visible = ''.join(parser.visible)
+        lines = [line for line in visible.splitlines() if line.strip()]
+        visible_contexts = [c for b, c, _ in contexts if b == 'visible_context']
+        header_indices = [i for i, line in enumerate(lines[:20])
+                          if normalize_support(line) in titles or any(
+                              normalize_support(c) in normalize_support(line)
+                              for c in visible_contexts)]
+        header = '\n'.join(lines[:max(header_indices) + 1]) if visible_contexts and header_indices else ''
+        extras = [line for line in lines[20:]
+                  if any(normalize_support(c) in normalize_support(line)
+                         for b, c, _ in contexts if b == 'visible_context')]
+        witness = '\n'.join([*parser.witnesses, header, *extras]).strip()
+        # Reserve meaningful body; metadata never supplies the body minimum.
+        if len(witness) + 1 + min(len(body), 80) > max_chars:
+            return result
+        retained_body = body[:max_chars - len(witness) - 1]
+        projected = {**result, 'text': witness + '\n' + retained_body,
+                     '_publication_body_text': retained_body}
+        observation = build_observation(projected, value=value, precision=precision,
+                                        basis=basis, support=support,
+                                        location='retained publication context')
+        if observation is not None:
+            projected['publication_observation'] = observation
+            legacy_day = (page.get('publication_precision') == 'day'
+                          and _parse(page.get('published_at'), 'instant') is not None)
+            projected['published_at'] = page['published_at'] if legacy_day else value
+            projected['publication_precision'] = 'second' if precision == 'instant' else 'day'
+            projected['publication_basis'] = basis
+            return projected
+    return result
 
 
 def evaluate_publication(page: dict, *, now: dt.datetime,

@@ -97,8 +97,11 @@ class StructuredExtractionTests(unittest.TestCase):
                 ) as transport:
                     direct = radar.fetch_source(URL)
                     self.assertEqual(direct['title'], 'News service')
-                    self.assertTrue(direct['text'].startswith('News service ' + leading))
-                    self.assertNotIn('<', direct['text'])
+                    self.assertTrue(direct['_publication_body_text'].startswith('News service ' + leading))
+                    self.assertNotIn('<', direct['_publication_body_text'])
+                    self.assertIn(meta, direct['text'])
+                    from publication_observation import validate_observation
+                    self.assertTrue(validate_observation(direct, direct['publication_observation']))
                     self.assertEqual(direct['published_at'], '2026-10-17T00:00:00Z')
                     cache = Path(td) / 'source_cache.json'
                     cache.write_text(json.dumps({URL: {
@@ -386,7 +389,8 @@ print(json.dumps(asyncio.run(scenario())))
         adapter = module('structured_extraction')
         with patch.object(adapter, 'run_worker', return_value=envelope()), patch.object(radar, 'is_safe_public_url', return_value=True), patch.object(radar, 'research_subprocess_command', side_effect=AssertionError('model forbidden')):
             page = radar.fetch_source_via_gateway(URL)
-        self.assertEqual(page, {'url': URL, 'title': 'Release', 'text': BODY.strip(), 'published_at': None})
+        self.assertEqual(page, {'url': URL, 'title': 'Release', 'text': BODY.strip(), 'published_at': None,
+                                '_publication_body_text': BODY.strip()})
 
     def test_worker_dispatch_contract_and_untrusted_provider_response(self):
         worker = module('extraction_worker')

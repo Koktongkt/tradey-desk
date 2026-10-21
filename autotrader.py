@@ -400,7 +400,7 @@ REVIEW_CANDIDATE_FIELDS = {
     "researched_at", "sources", "sources_verified_at", "candidate_id",
     "dossier_hash",
 }
-REVIEW_SOURCE_FIELDS = {"url", "title", "published_at"}
+REVIEW_SOURCE_FIELDS = {"url", "title", "published_at", "publication_precision", "publication_basis"}
 
 
 def build_review_bundle(candidate: dict[str, Any], snapshot: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
