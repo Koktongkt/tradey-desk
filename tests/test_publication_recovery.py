@@ -274,6 +274,35 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('fetch_failed',[d['reason'] for d in notes])
         self.assertNotIn('SECRET',json.dumps(notes));self.assertNotIn(p['url'],json.dumps(notes))
 
+    def test_oversized_page_gets_deterministic_candidate_recovery_without_model(self):
+        # Pages beyond the 6000-char transport bound were previously
+        # unservable. Bounded date-candidate extraction recovers them
+        # deterministically; the model is never invoked.
+        deep = ('<html><head><title>Results</title></head><body>'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '<meta property="article:published_time" content="2026-10-01T08:00:00-04:00">'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '</body></html>')
+        self.assertGreater(len(deep), 6000)
+        p = dict(page('https://issuer.example/x'), text=deep)
+        updated, notes = self.run_recovery(pages=[p])
+        self.model.assert_not_called(); self.fetch.assert_not_called()
+        obs = updated[0].get('publication_observation')
+        self.assertIsInstance(obs, dict)
+        self.assertEqual((obs['value'], obs['precision']),
+                         ('2026-10-01T08:00:00-04:00', 'instant'))
+        self.assertIn('recovered_instant', [d['reason'] for d in notes])
+        # The bounded candidate text is the canonical interpretation basis.
+        self.assertLessEqual(len(updated[0]['text'].encode('utf-8')), 8192)
+
+    def test_oversized_page_without_date_signal_stays_unresolved(self):
+        deep = ('<html><body>' + '<p>Filler prose without dates.</p>' * 300
+                + '</body></html>')
+        self.assertGreater(len(deep), 6000)
+        p = dict(page('https://issuer.example/x'), text=deep)
+        updated, notes = self.run_recovery(pages=[p])
+        self.model.assert_not_called()
+        self.assertNotIn('publication_observation', updated[0])
 
 class RecoveryWiringTests(unittest.TestCase):
     def setUp(self):
@@ -434,6 +463,7 @@ class RecoveryWiringTests(unittest.TestCase):
         with patch.object(radar,'validate_structured_page',return_value=p), patch.object(radar,'is_safe_public_url',return_value=True), patch.object(radar,'fetch_source') as direct, patch.object(radar,'fetch_source_via_gateway') as gateway:
             got=radar.gather_evidence([p['url']],focused_pages={p['url']:{'capture':'synthetic'}})
         self.assertEqual(got,[p]);direct.assert_not_called();gateway.assert_not_called()
+
 
 
 if __name__=='__main__':unittest.main()

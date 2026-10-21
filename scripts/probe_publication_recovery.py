@@ -326,6 +326,124 @@ def evaluate_metadata_region(dataset, *, base_dir=None, limit=8192, max_chars=60
             'rows': rows_out, 'slice_limit': limit, 'projection_limit': 100_000}
 
 
+def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6000):
+    """Offline, deterministic date-candidate evaluation. No model, no network.
+
+    Replaces the fixed first-8k header slice with bounded date-candidate
+    context extraction (publication_observation.date_candidate_text): the
+    full capture is scanned read-only and hash-verified before use, and the
+    stitched candidate document is the canonical interpretation text run
+    through the reviewed prepare_publication_evidence as an eligible
+    unresolved page (marker absent). The original capture remains the
+    binding witness and hash basis — a hash mismatch is recorded, never
+    scored.
+    """
+    from publication_observation import date_candidate_text, prepare_publication_evidence
+    from alpha_radar import filter_evidence, publisher_domain
+    base = Path(base_dir) if base_dir else ROOT / 'test_artifacts/publication-hybrid-validation'
+    clocks = {k: datetime.fromisoformat(v.replace('Z', '+00:00'))
+              for k, v in dataset['cohorts'].items()}
+    totals = Counter(representations=0, oversized=0, hash_verified=0, hash_mismatch=0,
+                     recovered_without_model=0, still_unresolved=0, wrong_accepted=0,
+                     validator_rejections=0, precision_loss=0, freshness_rejected=0)
+    per_publisher = {}
+    rows_out = []
+    for row in dataset['rows']:
+        if row.get('kind') != 'real' or row.get('fetch_error') or row.get('parsing_error'):
+            continue
+        capture_rel = row.get('capture')
+        if not capture_rel:
+            continue
+        totals['representations'] += 1
+        capture_path = base / capture_rel
+        if not capture_path.exists():
+            rows_out.append({'id': row['id'], 'result': 'capture_missing'})
+            continue
+        raw_bytes = capture_path.read_bytes()
+        try:
+            capture = raw_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            rows_out.append({'id': row['id'], 'result': 'capture_decode_error'})
+            continue
+        if hashlib.sha256(raw_bytes).hexdigest() != row.get('capture_sha256'):
+            totals['hash_mismatch'] += 1
+            rows_out.append({'id': row['id'], 'result': 'hash_mismatch'})
+            continue
+        if len(capture) <= 100_000:
+            continue  # not oversized; covered by the standard corpus evaluation
+        totals['oversized'] += 1
+        totals['hash_verified'] += 1
+        domain = publisher_domain(row['url'])
+        agg = per_publisher.setdefault(domain, Counter(representations=0,
+            recovered_without_model=0, still_unresolved=0, wrong_accepted=0,
+            validator_rejections=0, precision_loss=0, freshness_rejected=0))
+        agg['representations'] += 1
+        candidate = date_candidate_text(capture, budget=budget)
+        page = {'url': row['page']['url'], 'title': row['page'].get('title'),
+                'text': candidate}
+        # Candidate contexts are the binding text; a bounded slice of the
+        # original capture is retained as body for the reviewed body gate.
+        extracted = candidate
+        if len(extracted) + 1 < max_chars:
+            extracted = candidate + '\n' + capture[:max_chars - len(candidate) - 1]
+        try:
+            prepared = prepare_publication_evidence(page, extracted_text=extracted,
+                                                    max_chars=max_chars)
+        except ValueError:
+            prepared = {'publication_observation': None}
+        obs = prepared.get('publication_observation')
+        claim = None
+        if isinstance(obs, dict) and obs.get('value'):
+            claim = {'value': obs['value'], 'precision': obs.get('precision')}
+        label = row.get('label')
+        # Date agreement in BOTH directions: an instant observation for a day
+        # label is recovery of that day (more precise), not a mismatch.
+        correct = same_claim(claim, label) or (
+            label is not None and same_claim(
+                {'value': label.get('value'), 'precision': label.get('precision')}, claim))
+        now = clocks[row['cohort']]
+        ok, why = filter_evidence([prepared], now=now)
+        day_against_instant = bool(claim and label
+            and claim.get('precision') == 'day'
+            and label.get('precision') == 'instant')
+        if claim is None:
+            result = 'unresolved'
+            totals['still_unresolved'] += 1
+            agg['still_unresolved'] += 1
+        elif correct:
+            result = 'recovered'
+            totals['recovered_without_model'] += 1
+            agg['recovered_without_model'] += 1
+            if not ok:
+                result = 'recovered_freshness_rejected'
+                totals['freshness_rejected'] += 1
+                agg['freshness_rejected'] += 1
+            elif day_against_instant:
+                result = 'recovered_precision_loss'
+                totals['precision_loss'] += 1
+                agg['precision_loss'] += 1
+        elif ok:
+            result = 'wrong_accepted'
+            totals['wrong_accepted'] += 1
+            agg['wrong_accepted'] += 1
+        else:
+            result = 'validator_rejected'
+            totals['validator_rejections'] += 1
+            agg['validator_rejections'] += 1
+        rows_out.append({'id': row['id'], 'domain': domain,
+                         'capture_len': len(capture), 'candidate_len': len(candidate),
+                         'label': label,
+                         'observation': ({k: obs.get(k) for k in
+                                          ('value', 'precision', 'support', 'location', 'basis')}
+                                         if isinstance(obs, dict) else obs),
+                         'filter_accepted': bool(ok),
+                         'filter_reasons': [x['reason'] for x in why],
+                         'correct': bool(correct), 'result': result})
+    return {'totals': dict(totals),
+            'per_publisher': {d: dict(a) for d, a in sorted(per_publisher.items())},
+            'rows': rows_out, 'candidate_budget': budget, 'projection_limit': 100_000}
+
+
 def private_json(path, value, *, exclusive=False):
     """Create private parents/files; never follow a final-component symlink."""
     path = Path(path)

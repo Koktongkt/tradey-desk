@@ -70,6 +70,46 @@ def _known_instant(page):
         return False
 
 
+def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
+                            budget: int = 8192) -> dict | None:
+    """Deterministic bounded date-candidate recovery beyond the text bound.
+
+    Pages whose captured text exceeds the 6000-char transport bound were
+    previously unservable. The bounded candidate-context document (never a
+    fixed header slice) is the canonical interpretation text; the original
+    capture text remains the source of record on the unchanged page. Only a
+    locally validated observation that passes the same publisher/freshness
+    filter is returned — no model, no refetch, no fabricated dates.
+    """
+    from publication_observation import date_candidate_text, prepare_publication_evidence
+    text = page.get('text')
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        candidate = date_candidate_text(text, budget=budget)
+    except ValueError:
+        return None
+    if not candidate:
+        return None
+    candidate_page = {k: v for k, v in page.items()
+                      if k not in ('publication_observation', '_publication_body_text')}
+    candidate_page['text'] = candidate
+    # Candidate contexts are the interpretation/binding text; a bounded slice
+    # of the original capture is retained as body so the reviewed body-minimum
+    # gate judges real captured content, never metadata alone.
+    extracted = candidate
+    if len(extracted) + 1 < 6000:
+        extracted = candidate + '\n' + text[:6000 - len(candidate) - 1]
+    try:
+        prepared = prepare_publication_evidence(candidate_page, extracted_text=extracted)
+    except ValueError:
+        return None
+    if not isinstance(prepared.get('publication_observation'), dict):
+        return None
+    ok, _ = filter_pages([prepared], now=now)
+    return prepared if ok else None
+
+
 def choose_recovery_pages(candidates: list[dict], pages: list[dict], accepted: list[dict],
                           *, limit: int = 10, publisher: Callable | None = None,
                           filter_pages: Callable | None = None,
@@ -202,6 +242,18 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
         if updated is not None and filter_pages([updated], now=utc_now())[0]:
             if expired(): note(i, 'timeout'); break
             result[i] = updated; note(i, 'cache_hit'); continue
+        text = p.get('text')
+        if isinstance(text, str) and len(text) > 6000:
+            # Beyond the transport text bound this page was previously
+            # unservable; bounded date-candidate extraction recovers it
+            # deterministically before any scoped transport work.
+            prepared = candidate_recovery_page(p, now=utc_now(), filter_pages=filter_pages)
+            if prepared is not None and not expired():
+                result[i] = prepared
+                state.observations[url] = dict(prepared['publication_observation'])
+                note(i, 'recovered_day' if prepared['publication_precision'] == 'day'
+                     else 'recovered_instant')
+                continue
     # Fairly bind at most ten pages BEFORE any scoped transport work.
     bound = choose_recovery_pages(candidates, result, accepted,
                                  publisher=publisher, filter_pages=filter_pages, deadline=deadline)

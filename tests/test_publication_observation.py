@@ -3,6 +3,7 @@ import datetime as dt
 import unittest
 from pathlib import Path
 
+import publication_observation as pub
 from publication_observation import (build_observation, evaluate_publication,
                                      normalize_support, validate_observation)
 
@@ -459,6 +460,119 @@ class PublicationObservationTests(unittest.TestCase):
                 self.assertNotIsInstance(entries[0][1], dt.datetime, dateline)
                 self.assertEqual(entries[0][1], day, dateline)
                 self.assertEqual(entries[0][2], (0, len('Jul 30, 2025')), dateline)
+
+
+class DateCandidateTests(unittest.TestCase):
+    """Bounded date-candidate extraction; publisher-agnostic structural patterns."""
+
+    URL = 'https://synthetic.example/a'
+
+    def contexts(self, text, title='Article'):
+        page = {'url': self.URL, 'returned_url': self.URL, 'title': title, 'text': text}
+        return pub._contexts(page)
+
+    def test_reportage_jsonld_article_type_retains_datepublished(self):
+        # ReportageNewsArticle is a schema.org Article subtype; the generic
+        # pattern is the Article type family, not a vendor list.
+        text = ('<html><head><script type="application/ld+json">'
+                '{"@context":"https://schema.org","@type":"ReportageNewsArticle",'
+                '"url":"https://synthetic.example/a",'
+                '"datePublished":"2025-10-09T18:06:04.334Z"}</script></head>'
+                '<body>Full report follows.</body></html>')
+        contexts = self.contexts(text)
+        self.assertEqual([c[0] for c in contexts], ['structured_metadata'])
+        self.assertEqual(contexts[0][2], dt.datetime(2025, 10, 9, 18, 6, 4, 334000, dt.timezone.utc))
+
+    def test_generic_publish_meta_names_recognized_and_unrelated_rejected(self):
+        recognized = ('<html><head>'
+                      '<meta name="cXenseParse:publishtime" content="2025-10-09T18:06:04Z">'
+                      '</head><body>Report body.</body></html>')
+        contexts = self.contexts(recognized)
+        self.assertEqual([c[0] for c in contexts], ['structured_metadata'])
+        self.assertEqual(contexts[0][2], dt.datetime(2025, 10, 9, 18, 6, 4, tzinfo=dt.timezone.utc))
+        unrelated = ('<html><head>'
+                     '<meta property="og:updated_time" content="2025-10-09T18:06:04Z">'
+                     '</head><body>Report body.</body></html>')
+        self.assertEqual(self.contexts(unrelated), [])
+
+    def test_dateonly_zone_designator_metadata_is_day_precision(self):
+        # A date-only JSON-LD value with a trailing zone designator states the
+        # civil day; no time-of-day exists, so midnight/UTC is never invented.
+        text = ('<html><head><script type="application/ld+json">'
+                '{"@context":"http://schema.org","@type":"NewsArticle",'
+                '"mainEntityOfPage":"https://synthetic.example/a",'
+                '"datePublished":"2025-09-09Z"}</script></head>'
+                '<body>Release notes.</body></html>')
+        contexts = self.contexts(text)
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0][0], 'structured_metadata')
+        self.assertEqual(contexts[0][1], '2025-09-09')
+        self.assertEqual(contexts[0][2], dt.date(2025, 9, 9))
+        page = {'url': self.URL, 'returned_url': self.URL, 'title': 't', 'text': text}
+        observation = pub.build_observation(page, value='2025-09-09', precision='day',
+            basis='structured_metadata', support='2025-09-09', location='retained publication context')
+        self.assertIsNotNone(observation)
+
+    def test_prose_dateline_place_prefix_retains_publication_day_only(self):
+        # AP-style place dateline: "PLACE — DATE — body". The trailing quarter
+        # period date in the same paragraph is never a publication candidate.
+        text = ('<html><body><p>Microsoft Cloud and AI Strength Fuels '
+                'Fourth Quarter Results</p><p><span>REDMOND, Wash. — July 30, 2025 — '
+                '</span><span>Microsoft Corp. today announced results for the '
+                'quarter ended June 30, 2025, compared to last year:</span></p>'
+                '</body></html>')
+        contexts = self.contexts(text)
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0][0], 'visible_context')
+        self.assertEqual(contexts[0][2], dt.date(2025, 7, 30))
+        self.assertIn('July 30, 2025', contexts[0][1])
+
+    def test_dateline_needs_dash_or_line_end_tail(self):
+        # A period label with a dash is not a place dateline: the date is
+        # followed by prose, not a dash or the end of the line.
+        text = ('<html><body><p>Quarter ended - June 30, 2025, as compared to '
+                'the corresponding period of last fiscal year.</p>'
+                '<p>Earnings call - May 15, 2025 was hosted by management.</p>'
+                '</body></html>')
+        self.assertEqual(self.contexts(text, title='Unrelated title'), [])
+
+    def test_date_candidate_text_bounded_structured_and_deterministic(self):
+        capture = ('<html><head>'
+                   '<meta property="article:published_time" content="2025-06-10T08:00:00-04:00">'
+                   '<meta property="article:published_time" content="2025-06-10T08:00:00-04:00">'
+                   '<script type="application/ld+json">'
+                   '{"@type":"NewsArticle","datePublished":"2025-06-10T08:00:00-04:00",'
+                   '"dateModified":"2025-06-11T09:00:00-04:00"}'
+                   '</script></head><body>'
+                   + '<p>Filler paragraph text with no dates at all.</p>' * 300
+                   + '<p>REDMOND, Wash. — June 10, 2025 — The release is available.</p>'
+                   + '<p>Filler paragraph text with no dates at all.</p>' * 300
+                   + '</body></html>')
+        n = len(capture)
+        candidate = pub.date_candidate_text(capture)
+        self.assertEqual(len(capture), n)  # read-only: original never mutated
+        encoded = candidate.encode('utf-8')
+        self.assertLessEqual(len(encoded), 8192)
+        self.assertEqual(candidate, pub.date_candidate_text(capture))  # deterministic
+        # Identical candidates dedupe; dateModified is not a publication candidate.
+        self.assertEqual(candidate.count('article:published_time'), 1)
+        self.assertIn('datePublished', candidate)
+        self.assertNotIn('dateModified', candidate)
+        self.assertIn('REDMOND, Wash. — June 10, 2025', candidate)
+        # The stitched candidate document is the canonical interpretation text.
+        page = {'url': self.URL, 'returned_url': self.URL, 'title': 't', 'text': candidate}
+        prepared = pub.prepare_publication_evidence(page, extracted_text=candidate)
+        observation = prepared.get('publication_observation')
+        self.assertIsInstance(observation, dict)
+        self.assertEqual((observation['value'], observation['precision']),
+                         ('2025-06-10T08:00:00-04:00', 'instant'))
+        with self.assertRaises(ValueError):
+            pub.date_candidate_text(12345)
+        with self.assertRaises(ValueError):
+            pub.date_candidate_text(capture, budget=0)
+        with self.assertRaises(ValueError):
+            pub.date_candidate_text(capture, budget=10000)
+        self.assertEqual(pub.date_candidate_text('no signals at all'), '')
 
 
 if __name__ == '__main__':

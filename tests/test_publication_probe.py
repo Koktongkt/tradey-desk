@@ -272,10 +272,94 @@ class PublicationProbeTests(unittest.TestCase):
         self.assertIn(by_id['r10']['id'],
                       [row['id'] for row in result['rows']
                        if row['result'].startswith('recovered')])
-        self.assertEqual(by_id['r18']['result'], 'unresolved')
+        # Controller-ruled generic JSON-LD/cXenseParse recognition replaced the
+        # closed BBC refusal: the BBC head-region JSON-LD (ReportageNewsArticle)
+        # now recovers even under the old fixed header slice.
+        self.assertIn(by_id['r18']['result'], ('recovered', 'recovered_freshness_rejected'))
         self.assertEqual(by_id['r22']['result'], 'recovered_freshness_rejected')
         # Per-publisher summary present and consistent.
         self.assertTrue(result['per_publisher'])
+        for domain, agg in result['per_publisher'].items():
+            self.assertEqual(agg['recovered_without_model'] + agg['still_unresolved']
+                             + agg['wrong_accepted'] + agg['validator_rejections'],
+                             agg['representations'])
+
+    # --- date-candidate context extraction (controller-ruled header-slice
+    # replacement): full-capture date signals — JSON-LD datePublished fields,
+    # generic publish/date meta names, itemprop time tags, prose datelines —
+    # extracted as bounded candidate contexts, never a fixed first-8k slice.
+
+    def _date_candidate_row(self, m, head_html, body_fill, label, url='https://synthetic.example/a'):
+        import hashlib
+        capture = head_html + body_fill
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / 'captures').mkdir(mode=0o700)
+            (base / 'captures' / 's0.original.txt').write_text(capture)
+            page = {'url': url, 'title': 'Release',
+                    'text': 'Release\n' + 'Filler body line. ' * 400,
+                    'publication_observation': {'invalid': True}}
+            row = dict(id='s0', kind='real', url=page['url'], event=page['url'],
+                       class_='independent reporting', cohort='fixed', representation='html',
+                       label=label, label_witness='w', label_rationale='r',
+                       fetch_error=None, parsing_error=None, page=page,
+                       capture='captures/s0.original.txt',
+                       capture_sha256=hashlib.sha256(capture.encode()).hexdigest())
+            data = {'version': 1, 'cohorts': {'fixed': '2025-06-11T12:00:00+00:00'}, 'rows': [row]}
+            return m.evaluate_date_candidates(data, base_dir=str(base))
+
+    def test_evaluate_date_candidates_deep_metadata_recovers_without_model(self):
+        m = probe()
+        head = '<html><head><title>Release</title></head><body>'
+        deep = ('<p>Filler paragraph with no dates.</p>' * 1500
+                + '<script type="application/ld+json">'
+                  '{"@context":"http://schema.org","@type":"NewsArticle",'
+                  '"mainEntityOfPage":"https://synthetic.example/a",'
+                  '"datePublished":"2025-06-10T08:00:00-04:00"}</script>'
+                + '<p>Filler paragraph with no dates.</p>' * 1500)
+        result = self._date_candidate_row(
+            m, head, deep, {'value': '2025-06-10T08:00:00-04:00', 'precision': 'instant'})
+        totals = result['totals']
+        self.assertEqual(totals['oversized'], 1)
+        self.assertEqual(totals['hash_verified'], 1)
+        self.assertEqual(totals['recovered_without_model'], 1)
+        self.assertEqual(totals['still_unresolved'], 0)
+        self.assertEqual(totals['wrong_accepted'], 0)
+        self.assertEqual(totals['validator_rejections'], 0)
+
+    def test_evaluate_date_candidates_no_signal_stays_unresolved_honestly(self):
+        m = probe()
+        head = '<html><head><title>Release</title></head><body>'
+        result = self._date_candidate_row(
+            m, head, '<p>Filler prose without any dates or signals.</p>' * 2500,
+            {'value': '2025-06-10', 'precision': 'day'})
+        totals = result['totals']
+        self.assertEqual(totals['recovered_without_model'], 0)
+        self.assertEqual(totals['still_unresolved'], 1)
+        self.assertEqual(totals['wrong_accepted'], 0)
+
+    def test_real_corpus_date_candidates_scoring_is_hash_bound_and_honest(self):
+        m = probe()
+        dataset_path = ROOT / 'test_artifacts/publication-hybrid-validation/dataset.json'
+        if not dataset_path.exists():
+            self.skipTest('private frozen corpus absent')
+        data = json.loads(dataset_path.read_text())
+        result = m.evaluate_date_candidates(data)
+        totals = result['totals']
+        self.assertEqual(totals['oversized'], 17)
+        self.assertEqual(totals['hash_verified'], totals['oversized'])
+        self.assertEqual(totals['recovered_without_model'] + totals['still_unresolved']
+                         + totals['wrong_accepted'] + totals['validator_rejections'],
+                         totals['oversized'])
+        # The ten formerly header-slice-unresolved representations recover
+        # through bounded date-candidate extraction (deep JSON-LD, deep
+        # publish metadata, generic subtypes, prose place datelines).
+        by_id = {r['id']: r for r in result['rows']}
+        for rid in ('r00', 'r01', 'r02', 'r03', 'r15', 'r16', 'r17', 'r18', 'r19', 'r20'):
+            self.assertIn(by_id[rid]['result'],
+                          ('recovered', 'recovered_freshness_rejected'), rid)
+        # No regressions and no false acceptances anywhere.
+        self.assertEqual(totals['wrong_accepted'], 0)
         for domain, agg in result['per_publisher'].items():
             self.assertEqual(agg['recovered_without_model'] + agg['still_unresolved']
                              + agg['wrong_accepted'] + agg['validator_rejections'],

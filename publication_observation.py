@@ -64,6 +64,22 @@ _TZ_OFFSETS = {
     'cet': 3600, 'cest': 2 * 3600, 'eet': 2 * 3600, 'eest': 3 * 3600,
 }
 _TZ_NAMES_SORTED = sorted(_TZ_OFFSETS.items(), key=lambda kv: -len(kv[0]))
+# A date-only ISO value with a trailing zone designator ('2025-09-09Z') states
+# the civil day and no time-of-day; the designator never promotes it to an
+# instant, so midnight/UTC are still never invented.
+_DAY_WITH_ZONE = re.compile(r'(\d{4}-\d{2}-\d{2})Z')
+# Generic publication metadata names: any property/name/itemprop that contains
+# a publish/date root is a candidate. Unrelated names (e.g. og:updated_time)
+# are not, and a non-date content still fails the structured gate below.
+_PUBLISH_ROOT = re.compile(r'publish|date\b|pubdate', re.I)
+# AP-style place dateline: 'PLACE — DATE' with a digit-free place prefix. The
+# date must be followed by another dash or end the line, so period labels
+# ('Quarter ended - June 30, 2025, as compared...') are never datelines.
+_DATELINE = re.compile(
+    r"^[ \t]*[A-Z][A-Za-z .,'’-]{0,48}[.,]?[ \t]*[—–-][ \t]+(?=[A-Z0-9])")
+_MAX_CANDIDATE_BUDGET = 8192
+_LD_ARTICLE_KEYS = ('@type', 'url', '@id', 'mainEntityOfPage', 'headline',
+                    'datePublished')
 
 
 def normalize_support(text: str) -> str:
@@ -226,7 +242,8 @@ class _RetainedHTML(HTMLParser):
             self.ld = tag == 'script' and (attrs.get('type') or '').lower() == 'application/ld+json'
             self.script = []
             self.script_tag = self.get_starttag_text() if self.ld else ''
-        if tag == 'meta' and (attrs.get('property') or attrs.get('name') or attrs.get('itemprop')) in ('article:published_time', 'datePublished'):
+        key = (attrs.get('property') or attrs.get('name') or attrs.get('itemprop'))
+        if tag == 'meta' and isinstance(key, str) and _PUBLISH_ROOT.search(key):
             self.metadata.append(attrs.get('content', ''))
             self.witnesses.append(self.get_starttag_text())
         if tag == 'time' and attrs.get('itemprop') == 'datePublished':
@@ -270,7 +287,9 @@ class _RetainedHTML(HTMLParser):
         elif isinstance(obj, dict):
             kind = obj.get('@type', [])
             kinds = [kind] if isinstance(kind, str) else kind
-            if isinstance(kinds, list) and any(k in ('Article', 'NewsArticle', 'BlogPosting', 'Report') for k in kinds):
+            if isinstance(kinds, list) and any(
+                    isinstance(k, str) and ('Article' in k or k in ('BlogPosting', 'Report'))
+                    for k in kinds):
                 if isinstance(obj.get('datePublished'), str):
                     self.articles.append(obj)
             self._article_dates(obj.get('@graph'), depth + 1)
@@ -316,7 +335,15 @@ def _contexts(page):
     metadata_values = parser.metadata + [article['datePublished'] for article in parser.articles
                                          if _current_article(article, page, titles)]
     for metadata in metadata_values:
-        if not isinstance(metadata, str) or not _DATE.fullmatch(html.unescape(metadata).strip()):
+        if not isinstance(metadata, str):
+            continue
+        raw_metadata = html.unescape(metadata).strip()
+        day_zone = _DAY_WITH_ZONE.fullmatch(raw_metadata)
+        if day_zone:
+            # A trailing zone designator on a date-only value designates the
+            # civil day; retain the date portion, never an instant.
+            metadata = day_zone.group(1)
+        elif not _DATE.fullmatch(raw_metadata):
             continue
         for _, parsed, _ in _dates(metadata):
             contexts.append(('structured_metadata', metadata, parsed))
@@ -329,6 +356,22 @@ def _contexts(page):
     for i, line in enumerate(lines):
         if len(line) > 1000:
             continue
+        # An AP-style place dateline ('PLACE — DATE — body' or 'PLACE — DATE')
+        # is a publication header even with trailing prose: the date is
+        # bounded by a dash or the end of the line, so a quarter period
+        # followed by prose is never a dateline.
+        dateline = _DATELINE.match(line)
+        if dateline is not None:
+            tail = line[dateline.end():]
+            dateline_dates = list(_dates(tail))
+            first = dateline_dates[0] if dateline_dates else None
+            after = tail[first[2][1]:] if first else ''
+            if (first is not None and not _UNSAFE_QUOTE.search(line)
+                    and not _UPDATE.search(line)
+                    and (not after.lstrip() or after.lstrip()[:1] in ('—', '–', '-'))):
+                contexts.append(('visible_context',
+                                 line[:dateline.end() + first[2][1]], first[1]))
+                continue
         # A separate update is not a publication conflict. Never use its date.
         for segment in re.split(r'\s*[|;]\s*|(?=\b(?:updated?|modified)\b)', line, flags=re.I):
             if _UNSAFE_QUOTE.search(segment) or _UPDATE.search(segment):
@@ -362,6 +405,106 @@ def _contexts(page):
                 for _, parsed, _ in dates:
                     contexts.append(('visible_context', segment, parsed))
     return contexts
+
+
+def date_candidate_text(text: str, *, budget: int = _MAX_CANDIDATE_BUDGET) -> str:
+    """Bounded stitched document of date-candidate contexts from a raw capture.
+
+    Replaces the fixed first-8k header slice: the full capture is scanned
+    read-only for date-like signals — JSON-LD datePublished fields (parsed,
+    never whole blocks), meta tags whose property/name/itemprop generically
+    contains a publish/date root, itemprop=datePublished time tags, and
+    AP-style prose place datelines. Each candidate is retained verbatim
+    (structured tags) or as the captured dateline prefix; identical candidates
+    dedupe; total encoded size is capped at `budget`. The stitched document is
+    the canonical interpretation text; the original capture remains the
+    binding witness and hash basis and is never mutated. dateModified and
+    other modification timestamps are deliberately not candidates: they are
+    not publication dates and would create conflicts.
+    """
+    if not isinstance(text, str) or isinstance(text, bool):
+        raise ValueError('text_must_be_str')
+    if type(budget) is not int or not 1 <= budget <= _MAX_CANDIDATE_BUDGET:
+        raise ValueError('budget must be within 1..8192')
+    fragments: list[tuple[int, str]] = []
+    ld_pattern = re.compile(
+        r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', re.S | re.I)
+    for match in ld_pattern.finditer(text):
+        try:
+            obj = json.loads(match.group(1))
+        except (ValueError, RecursionError):
+            continue
+        for article in _ld_article_dates(obj):
+            reduced = {key: article[key] for key in _LD_ARTICLE_KEYS if key in article}
+            fragment = ('<script type="application/ld+json">'
+                        + json.dumps(reduced, sort_keys=True) + '</script>')
+            fragments.append((match.start(), fragment))
+    for match in re.finditer(r'<meta\b[^>]*>', text, re.I):
+        tag = match.group()
+        key_match = re.search(
+            r'(?:property|name|itemprop)[ \t]*=[ \t]*"([^"]*)"', tag, re.I)
+        if not key_match or not _PUBLISH_ROOT.search(key_match.group(1)):
+            continue
+        content_match = re.search(r'\bcontent[ \t]*=[ \t]*"([^"]*)"', tag, re.I)
+        if not content_match:
+            continue
+        raw_content = html.unescape(content_match.group(1)).strip()
+        day_zone = _DAY_WITH_ZONE.fullmatch(raw_content)
+        if day_zone or _DATE.fullmatch(raw_content):
+            fragments.append((match.start(), tag))
+    for match in re.finditer(r'<time\b[^>]*>', text, re.I):
+        tag = match.group()
+        if re.search(r'itemprop[ \t]*=[ \t]*"datePublished"', tag, re.I):
+            fragments.append((match.start(), tag))
+    parser = _RetainedHTML()
+    try:
+        parser.feed(text)
+        parser.close()
+    except (ValueError, RecursionError):
+        parser.visible = []
+    for line in (' '.join(part.split()) for part in ''.join(parser.visible).splitlines()):
+        if len(line) > 1000 or _UNSAFE_QUOTE.search(line) or _UPDATE.search(line):
+            continue
+        dateline = _DATELINE.match(line)
+        if dateline is None:
+            continue
+        tail_rest = line[dateline.end():]
+        dates = list(_dates(tail_rest))
+        first = dates[0] if dates else None
+        after = tail_rest[first[2][1]:] if first else ''
+        if (first is not None
+                and (not after.lstrip() or after.lstrip()[:1] in ('—', '–', '-'))):
+            fragments.append((-1, '<p>' + line[:dateline.end() + first[2][1]] + '</p>'))
+    kept: list[str] = []
+    used = 0
+    seen = set()
+    for _, fragment in sorted(fragments, key=lambda item: item[0]):
+        if fragment in seen:
+            continue
+        cost = len(fragment.encode('utf-8')) + (1 if kept else 0)
+        if used + cost > budget:
+            continue
+        seen.add(fragment)
+        kept.append(fragment)
+        used += cost
+    return '\n'.join(kept)
+
+
+def _ld_article_dates(obj, depth=0):
+    """Yield dict objects with an Article-family type and a string datePublished."""
+    if depth > 8:
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            yield from _ld_article_dates(item, depth + 1)
+    elif isinstance(obj, dict):
+        kind = obj.get('@type', [])
+        kinds = [kind] if isinstance(kind, str) else kind
+        if (isinstance(kinds, list) and isinstance(obj.get('datePublished'), str)
+                and any(isinstance(k, str) and ('Article' in k or k in ('BlogPosting', 'Report'))
+                        for k in kinds)):
+            yield obj
+        yield from _ld_article_dates(obj.get('@graph'), depth + 1)
 
 
 def _same_claim(parsed, candidate):
