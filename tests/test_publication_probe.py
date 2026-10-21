@@ -338,6 +338,30 @@ class PublicationProbeTests(unittest.TestCase):
         self.assertEqual(totals['still_unresolved'], 1)
         self.assertEqual(totals['wrong_accepted'], 0)
 
+    def test_evaluate_date_candidates_observation_hash_binds_original_capture(self):
+        # I2 mirror: the offline probe binds each recovered observation's hash
+        # to the original capture bytes, never the stitched candidate document.
+        m = probe()
+        import hashlib
+        head = '<html><head><title>Release</title></head><body>'
+        deep = ('<p>Filler paragraph with no dates.</p>' * 1500
+                + '<script type="application/ld+json">'
+                + json.dumps({'@context': 'https://schema.org',
+                              '@type': 'NewsArticle',
+                              'mainEntityOfPage': 'https://synthetic.example/a',
+                              'datePublished': '2025-06-10T08:00:00-04:00'},
+                             sort_keys=True)
+                + '</script>'
+                + '<p>Filler paragraph with no dates.</p>' * 1500)
+        capture = head + deep
+        result = self._date_candidate_row(
+            m, head, deep, {'value': '2025-06-10T08:00:00-04:00', 'precision': 'instant'})
+        row = result['rows'][0]
+        self.assertEqual(row['result'], 'recovered')
+        self.assertTrue(row['hash_bound'])
+        self.assertEqual(row['capture_sha256'],
+                         hashlib.sha256(capture.encode('utf-8')).hexdigest())
+
     def test_real_corpus_date_candidates_scoring_is_hash_bound_and_honest(self):
         m = probe()
         dataset_path = ROOT / 'test_artifacts/publication-hybrid-validation/dataset.json'

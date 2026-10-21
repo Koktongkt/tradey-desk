@@ -373,6 +373,7 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
             continue  # not oversized; covered by the standard corpus evaluation
         totals['oversized'] += 1
         totals['hash_verified'] += 1
+        capture_hash = hashlib.sha256(raw_bytes).hexdigest()
         domain = publisher_domain(row['url'])
         agg = per_publisher.setdefault(domain, Counter(representations=0,
             recovered_without_model=0, still_unresolved=0, wrong_accepted=0,
@@ -380,7 +381,10 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
         agg['representations'] += 1
         candidate = date_candidate_text(capture, budget=budget)
         page = {'url': row['page']['url'], 'title': row['page'].get('title'),
-                'text': candidate}
+                'text': candidate,
+                # I2 mirror: the recovered observation's hash basis is the
+                # original capture bytes, never the stitched candidate doc.
+                '_capture_sha256': hashlib.sha256(capture.encode('utf-8')).hexdigest()}
         # Candidate contexts are the binding text; a bounded slice of the
         # original capture is retained as body for the reviewed body gate.
         extracted = candidate
@@ -393,8 +397,11 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
             prepared = {'publication_observation': None}
         obs = prepared.get('publication_observation')
         claim = None
+        hash_bound = None
         if isinstance(obs, dict) and obs.get('value'):
             claim = {'value': obs['value'], 'precision': obs.get('precision')}
+            hash_bound = (obs.get('content_sha256')
+                          == hashlib.sha256(capture.encode('utf-8')).hexdigest())
         label = row.get('label')
         # Date agreement in BOTH directions: an instant observation for a day
         # label is recovery of that day (more precise), not a mismatch.
@@ -438,6 +445,7 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
                                          if isinstance(obs, dict) else obs),
                          'filter_accepted': bool(ok),
                          'filter_reasons': [x['reason'] for x in why],
+                         'hash_bound': hash_bound, 'capture_sha256': capture_hash,
                          'correct': bool(correct), 'result': result})
     return {'totals': dict(totals),
             'per_publisher': {d: dict(a) for d, a in sorted(per_publisher.items())},

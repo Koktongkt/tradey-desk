@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 from time import monotonic
@@ -17,8 +18,11 @@ from urllib.parse import urlsplit
 from publication_observation import validate_observation, evaluate_publication
 
 RECOVERY_BUDGET_SECONDS = 90
+# M1 (fix round 6): candidate-recovery admissions share the same per-run
+# ten-page fair-binding ceiling as model-path admissions.
+RECOVERY_PAGE_LIMIT = 10
 RECOVERY_REASONS = frozenset({'cache_hit','refetched','fetch_failed','invalid_page',
-    'recovered_day','recovered_instant','parser_unknown','hard_refusal','stale_source',
+    'recovered_day','recovered_instant','recovered_page_limit','parser_unknown','hard_refusal','stale_source',
     'success','unknown','missing_member','duplicate_member','invalid_member',
     'inadmissible_publication','existing_observation','page_limit','duplicate_url',
     'input_limit','timeout','command_unavailable','worker_unavailable','worker_exit',
@@ -77,9 +81,13 @@ def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
     Pages whose captured text exceeds the 6000-char transport bound were
     previously unservable. The bounded candidate-context document (never a
     fixed header slice) is the canonical interpretation text; the original
-    capture text remains the source of record on the unchanged page. Only a
-    locally validated observation that passes the same publisher/freshness
-    filter is returned — no model, no refetch, no fabricated dates.
+    capture text remains the source of record on the unchanged page. I2 (fix
+    round 6): the recovered observation's content_sha256 binds the ORIGINAL
+    capture bytes (the hash/witness basis) via the `_capture_sha256` capture
+    basis recorded here; the stitched candidate document is interpretation
+    input only and is never the hash basis. Only a locally validated
+    observation that passes the same publisher/freshness filter is returned —
+    no model, no refetch, no fabricated dates.
     """
     from publication_observation import date_candidate_text, prepare_publication_evidence
     text = page.get('text')
@@ -92,8 +100,13 @@ def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
     if not candidate:
         return None
     candidate_page = {k: v for k, v in page.items()
-                      if k not in ('publication_observation', '_publication_body_text')}
+                      if k not in ('publication_observation', '_publication_body_text',
+                                   '_capture_sha256')}
     candidate_page['text'] = candidate
+    # I2: provenance binding — the observation's hash basis is the original
+    # capture bytes, computed here over locally held capture text (never
+    # accepted from an external page field).
+    candidate_page['_capture_sha256'] = hashlib.sha256(text.encode('utf-8')).hexdigest()
     # Candidate contexts are the interpretation/binding text; a bounded slice
     # of the original capture is retained as body so the reviewed body-minimum
     # gate judges real captured content, never metadata alone.
@@ -212,6 +225,7 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
         return result, [{'id':'batch','reason':'timeout'}]
     accepted_urls = {p['url'] for p in accepted if isinstance(p.get('url'),str)}
     checked_updates = {}
+    recovered_pages = 0
     for i, p in enumerate(result):
         if expired():
             note(i, 'timeout'); break
@@ -246,10 +260,16 @@ def recover_publications(candidates: list[dict], pages: list[dict], accepted: li
         if isinstance(text, str) and len(text) > 6000:
             # Beyond the transport text bound this page was previously
             # unservable; bounded date-candidate extraction recovers it
-            # deterministically before any scoped transport work.
+            # deterministically before any scoped transport work. M1 (fix
+            # round 6): these deterministic admissions count against the same
+            # per-run ten-page fair-binding ceiling as model-path admissions.
+            if recovered_pages >= RECOVERY_PAGE_LIMIT:
+                note(i, 'recovered_page_limit')
+                continue
             prepared = candidate_recovery_page(p, now=utc_now(), filter_pages=filter_pages)
             if prepared is not None and not expired():
                 result[i] = prepared
+                recovered_pages += 1
                 state.observations[url] = dict(prepared['publication_observation'])
                 note(i, 'recovered_day' if prepared['publication_precision'] == 'day'
                      else 'recovered_instant')

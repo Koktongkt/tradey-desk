@@ -304,6 +304,49 @@ class RecoveryTests(unittest.TestCase):
         self.model.assert_not_called()
         self.assertNotIn('publication_observation', updated[0])
 
+    def test_review_i2_recovered_observation_hash_binds_original_capture(self):
+        # I2 (fix round 6): the recovered observation's content_sha256 commits
+        # the ORIGINAL capture bytes (the hash/witness basis), never the
+        # stitched candidate document, which is interpretation input only.
+        deep = ('<html><head><title>Results</title></head><body>'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '<meta property="article:published_time" content="2026-10-01T08:00:00-04:00">'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '</body></html>')
+        p = dict(page('https://issuer.example/x'), text=deep)
+        prepared = recovery.candidate_recovery_page(
+            p, now=NOW, filter_pages=radar.filter_evidence)
+        self.assertIsNotNone(prepared)
+        obs = prepared['publication_observation']  # type: ignore[index]
+        import hashlib
+        self.assertEqual(obs['content_sha256'],
+                         hashlib.sha256(deep.encode('utf-8')).hexdigest())
+        self.assertNotEqual(obs['content_sha256'],
+                            hashlib.sha256(prepared['text'].encode('utf-8')).hexdigest())
+        # The stored observation still validates against the recovered page and
+        # freshness evaluation runs on the same text basis as before.
+        self.assertTrue(pub.validate_observation(prepared, obs))
+        ok, _ = radar.filter_evidence([prepared], now=NOW)
+        self.assertTrue(ok)
+
+    def test_review_m1_candidate_recovery_shares_ten_page_ceiling(self):
+        # M1 (fix round 6): candidate-recovery admissions count against the same
+        # per-run ten-page fair-binding ceiling as model-path admissions.
+        deep = ('<html><head><title>Results</title></head><body>'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '<meta property="article:published_time" content="2026-10-01T08:00:00-04:00">'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '</body></html>')
+        pages = [dict(page(f'https://issuer{i}.example/x'), text=deep)
+                 for i in range(12)]
+        updated, notes = self.run_recovery(pages=pages)
+        self.model.assert_not_called(); self.fetch.assert_not_called()
+        reasons = [d['reason'] for d in notes]
+        recovered = reasons.count('recovered_instant') + reasons.count('recovered_day')
+        self.assertEqual(recovered, 10)
+        self.assertEqual(reasons.count('recovered_page_limit'), 2)
+        self.assertEqual(sum(1 for p in updated if 'publication_observation' in p), 10)
+
 class RecoveryWiringTests(unittest.TestCase):
     def setUp(self):
         root=Path(__file__).resolve().parents[1]/'test_artifacts/publication-hybrid/task4'

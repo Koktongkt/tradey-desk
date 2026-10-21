@@ -574,6 +574,52 @@ class DateCandidateTests(unittest.TestCase):
             pub.date_candidate_text(capture, budget=10000)
         self.assertEqual(pub.date_candidate_text('no signals at all'), '')
 
+    def test_review_i1_non_publication_date_metas_are_refused(self):
+        # I1 (fix round 6): a meta name carrying a non-publication semantic
+        # category is never a publication candidate, even when it contains a
+        # bare 'date' token. The list is the reviewer repro plus the fail-closed
+        # near-miss 'publication-update-date' (an update-semantics name that
+        # also contains 'publication'; refusal is preferred when semantics are
+        # mixed). Each name must produce no metadata context, no candidate
+        # fragment and no observation.
+        refused = ('event-date', 'start-date', 'deadline-date', 'updated-date',
+                   'saildate', 'release-date', 'publication-update-date')
+        for name in refused:
+            capture = (f'<html><head><meta name="{name}" content="2026-10-01">'
+                       f'</head><body><p>Body text without dates.</p></body></html>')
+            page = {'url': self.URL, 'returned_url': self.URL,
+                    'title': 'Article', 'text': capture}
+            self.assertEqual(pub._contexts(page), [], name)
+            self.assertEqual(pub.date_candidate_text(capture), '', name)
+            prepared = pub.prepare_publication_evidence(page, extracted_text=capture)
+            self.assertIsNone(prepared.get('publication_observation'), name)
+        # Positive control: a clear publication root without a non-publication
+        # semantic category is still recognized.
+        keep = ('<html><head><meta name="publication-date" content="2026-10-01">'
+                '</head><body><p>Body text without dates.</p></body></html>')
+        page = {'url': self.URL, 'returned_url': self.URL, 'title': 'Article', 'text': keep}
+        self.assertTrue(pub._contexts(page))
+        self.assertNotEqual(pub.date_candidate_text(keep), '')
+
+    def test_review_m2_single_quoted_and_unquoted_meta_candidates(self):
+        # M2 (fix round 6): attribute quoting style is recall-only; single
+        # quoted and unquoted publication metas/time tags are candidates, while
+        # a refused semantic name stays refused in every quoting style.
+        single = ("<meta property='article:published_time' "
+                  "content='2026-10-01T08:00:00-04:00'>")
+        bare = '<meta name=pubdate content=2026-10-01>'
+        single_time_open = "<time itemprop='datePublished' datetime='2026-10-01'>"
+        single_time = single_time_open + 'Oct 1</time>'
+        capture = (f'<html><head>{single}{bare}</head><body>{single_time}'
+                   '<p>Body text without dates.</p></body></html>')
+        candidate = pub.date_candidate_text(capture)
+        self.assertIn(single, candidate)
+        self.assertIn(bare, candidate)
+        self.assertIn(single_time_open, candidate)
+        refused_single = "<meta name='event-date' content='2026-10-01'>"
+        refused_bare = '<meta name=saildate content=2026-10-01>'
+        self.assertEqual(pub.date_candidate_text(refused_single + refused_bare), '')
+
 
 if __name__ == '__main__':
     unittest.main()

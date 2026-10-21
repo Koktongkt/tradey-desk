@@ -72,6 +72,23 @@ _DAY_WITH_ZONE = re.compile(r'(\d{4}-\d{2}-\d{2})Z')
 # a publish/date root is a candidate. Unrelated names (e.g. og:updated_time)
 # are not, and a non-date content still fails the structured gate below.
 _PUBLISH_ROOT = re.compile(r'publish|date\b|pubdate', re.I)
+# Non-publication semantic categories (I1, fix round 6): a meta name carrying
+# one of these is never a publication candidate, even when it also contains a
+# bare 'date' token — real publication metadata does not carry these words, so
+# any hit is fail-closed. Each exclusion is a semantic category, not a vendor:
+# event (event dates), update/modified (update timestamps), deadline,
+# start/end (schedule boundaries), expire (expiry), sail (cruise sailings),
+# release (product/release notes), review (review dates). Substring matching
+# is deliberate so compound names ('saildate', 'updated-date') are caught.
+_PUBLISH_META_EXCLUDE = re.compile(
+    r'event|update|modified|deadline|start|end|expire|sail|release|review', re.I)
+
+
+def _publish_meta(key: object) -> bool:
+    """True only when a meta key is a publication root with no excluded
+    non-publication semantic category."""
+    return (isinstance(key, str) and _PUBLISH_ROOT.search(key) is not None
+            and _PUBLISH_META_EXCLUDE.search(key) is None)
 # AP-style place dateline: 'PLACE — DATE' with a digit-free place prefix. The
 # date must be followed by another dash or end the line, so period labels
 # ('Quarter ended - June 30, 2025, as compared...') are never datelines.
@@ -114,6 +131,15 @@ def _page_valid(page):
 
 
 def _hash(page):
+    # I2 (fix round 6): a page may carry an explicit capture-hash basis
+    # (`_capture_sha256`, a 64-hex digest of the ORIGINAL capture bytes set
+    # only by internal candidate recovery). It is provenance binding only —
+    # it changes which bytes content_sha256 commits, never which contexts or
+    # support text an observation must bind to, which always come from
+    # page['text']. Pages without the field hash their own text unchanged.
+    basis = page.get('_capture_sha256') if isinstance(page, dict) else None
+    if isinstance(basis, str) and re.fullmatch(r'[0-9a-f]{64}', basis):
+        return basis
     return hashlib.sha256(page['text'].encode('utf-8')).hexdigest()
 
 
@@ -243,7 +269,7 @@ class _RetainedHTML(HTMLParser):
             self.script = []
             self.script_tag = self.get_starttag_text() if self.ld else ''
         key = (attrs.get('property') or attrs.get('name') or attrs.get('itemprop'))
-        if tag == 'meta' and isinstance(key, str) and _PUBLISH_ROOT.search(key):
+        if tag == 'meta' and _publish_meta(key):
             self.metadata.append(attrs.get('content', ''))
             self.witnesses.append(self.get_starttag_text())
         if tag == 'time' and attrs.get('itemprop') == 'datePublished':
@@ -407,6 +433,17 @@ def _contexts(page):
     return contexts
 
 
+def _attr_value(tag: str, names: str) -> str | None:
+    """Read an attribute value in double-quoted, single-quoted or unquoted
+    form (M2, fix round 6; recall-only — quoting style carries no meaning)."""
+    match = re.search(
+        r'\b(?:' + names + r')[ \t]*=[ \t]*'
+        r'(?:"([^"]*)"|\'([^\']*)\'|([^\s>\'"]+))', tag, re.I)
+    if match is None:
+        return None
+    return next((group for group in match.groups() if group is not None), None)
+
+
 def date_candidate_text(text: str, *, budget: int = _MAX_CANDIDATE_BUDGET) -> str:
     """Bounded stitched document of date-candidate contexts from a raw capture.
 
@@ -441,20 +478,16 @@ def date_candidate_text(text: str, *, budget: int = _MAX_CANDIDATE_BUDGET) -> st
             fragments.append((match.start(), fragment))
     for match in re.finditer(r'<meta\b[^>]*>', text, re.I):
         tag = match.group()
-        key_match = re.search(
-            r'(?:property|name|itemprop)[ \t]*=[ \t]*"([^"]*)"', tag, re.I)
-        if not key_match or not _PUBLISH_ROOT.search(key_match.group(1)):
+        key = _attr_value(tag, 'property|name|itemprop')
+        if not _publish_meta(key):
             continue
-        content_match = re.search(r'\bcontent[ \t]*=[ \t]*"([^"]*)"', tag, re.I)
-        if not content_match:
-            continue
-        raw_content = html.unescape(content_match.group(1)).strip()
+        raw_content = html.unescape(_attr_value(tag, 'content') or '').strip()
         day_zone = _DAY_WITH_ZONE.fullmatch(raw_content)
         if day_zone or _DATE.fullmatch(raw_content):
             fragments.append((match.start(), tag))
     for match in re.finditer(r'<time\b[^>]*>', text, re.I):
         tag = match.group()
-        if re.search(r'itemprop[ \t]*=[ \t]*"datePublished"', tag, re.I):
+        if _attr_value(tag, 'itemprop') == 'datePublished':
             fragments.append((match.start(), tag))
     parser = _RetainedHTML()
     try:
