@@ -381,10 +381,12 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
         agg['representations'] += 1
         candidate = date_candidate_text(capture, budget=budget)
         page = {'url': row['page']['url'], 'title': row['page'].get('title'),
-                'text': candidate,
-                # I2 mirror: the recovered observation's hash basis is the
-                # original capture bytes, never the stitched candidate doc.
-                '_capture_sha256': hashlib.sha256(capture.encode('utf-8')).hexdigest()}
+                'text': candidate}
+        # I2 mirror: the recovered observation's hash basis is the original
+        # capture bytes, never the stitched candidate doc. N1 (final
+        # whole-branch review): passed via the fail-closed `capture_sha256`
+        # parameter — a `_capture_sha256` page key is no longer trusted.
+        capture_hash = hashlib.sha256(capture.encode('utf-8')).hexdigest()
         # Candidate contexts are the binding text; a bounded slice of the
         # original capture is retained as body for the reviewed body gate.
         extracted = candidate
@@ -392,7 +394,8 @@ def evaluate_date_candidates(dataset, *, base_dir=None, budget=8192, max_chars=6
             extracted = candidate + '\n' + capture[:max_chars - len(candidate) - 1]
         try:
             prepared = prepare_publication_evidence(page, extracted_text=extracted,
-                                                    max_chars=max_chars)
+                                                    max_chars=max_chars,
+                                                    capture_sha256=capture_hash)
         except ValueError:
             prepared = {'publication_observation': None}
         obs = prepared.get('publication_observation')

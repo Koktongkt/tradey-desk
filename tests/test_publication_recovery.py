@@ -329,6 +329,29 @@ class RecoveryTests(unittest.TestCase):
         ok, _ = radar.filter_evidence([prepared], now=NOW)
         self.assertTrue(ok)
 
+    def test_review_n1_recovery_ignores_injected_capture_sha256_field(self):
+        # N1 (final whole-branch review): an attacker-injected `_capture_sha256`
+        # on the page dict is never inherited; the recovered observation's
+        # provenance digest is recomputed locally over the original capture.
+        deep = ('<html><head><title>Results</title></head><body>'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '<meta property="article:published_time" content="2026-10-01T08:00:00-04:00">'
+                + '<p>Filler paragraph with no dates at all.</p>' * 130
+                + '</body></html>')
+        p = dict(page('https://issuer.example/x'), text=deep,
+                 _capture_sha256='e' * 64)
+        prepared = recovery.candidate_recovery_page(
+            p, now=NOW, filter_pages=radar.filter_evidence)
+        self.assertIsNotNone(prepared)
+        obs = prepared['publication_observation']  # type: ignore[index]
+        import hashlib
+        self.assertNotEqual(obs['content_sha256'], 'e' * 64)
+        self.assertEqual(obs['content_sha256'],
+                         hashlib.sha256(deep.encode('utf-8')).hexdigest())
+        self.assertEqual(prepared.get('_capture_sha256'),
+                         hashlib.sha256(deep.encode('utf-8')).hexdigest())
+        self.assertTrue(pub.validate_observation(prepared, obs))
+
     def test_review_m1_candidate_recovery_shares_ten_page_ceiling(self):
         # M1 (fix round 6): candidate-recovery admissions count against the same
         # per-run ten-page fair-binding ceiling as model-path admissions.

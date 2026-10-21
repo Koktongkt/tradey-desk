@@ -105,8 +105,11 @@ def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
     candidate_page['text'] = candidate
     # I2: provenance binding — the observation's hash basis is the original
     # capture bytes, computed here over locally held capture text (never
-    # accepted from an external page field).
-    candidate_page['_capture_sha256'] = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    # accepted from an external page field). N1 (final whole-branch review):
+    # the digest reaches prepare_publication_evidence via the fail-closed
+    # `capture_sha256` parameter, because a `_capture_sha256` key on an
+    # incoming page dict is now always stripped as attacker-controllable.
+    capture_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
     # Candidate contexts are the interpretation/binding text; a bounded slice
     # of the original capture is retained as body so the reviewed body-minimum
     # gate judges real captured content, never metadata alone.
@@ -114,11 +117,16 @@ def candidate_recovery_page(page: dict, *, now, filter_pages: Callable,
     if len(extracted) + 1 < 6000:
         extracted = candidate + '\n' + text[:6000 - len(candidate) - 1]
     try:
-        prepared = prepare_publication_evidence(candidate_page, extracted_text=extracted)
+        prepared = prepare_publication_evidence(candidate_page,
+                                                extracted_text=extracted,
+                                                capture_sha256=capture_hash)
     except ValueError:
         return None
     if not isinstance(prepared.get('publication_observation'), dict):
         return None
+    # The prepared page carries the locally computed capture digest so cache
+    # persistence and later re-validation stay internally consistent (I2).
+    prepared['_capture_sha256'] = capture_hash
     ok, _ = filter_pages([prepared], now=now)
     return prepared if ok else None
 

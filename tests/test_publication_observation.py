@@ -5,7 +5,8 @@ from pathlib import Path
 
 import publication_observation as pub
 from publication_observation import (build_observation, evaluate_publication,
-                                     normalize_support, validate_observation)
+                                     normalize_support, prepare_publication_evidence,
+                                     validate_observation)
 
 NOW = dt.datetime(2026, 10, 21, 16, 30, tzinfo=dt.timezone.utc)
 
@@ -619,6 +620,59 @@ class DateCandidateTests(unittest.TestCase):
         refused_single = "<meta name='event-date' content='2026-10-01'>"
         refused_bare = '<meta name=saildate content=2026-10-01>'
         self.assertEqual(pub.date_candidate_text(refused_single + refused_bare), '')
+
+    def test_review_n1_standard_path_ignores_injected_capture_sha256(self):
+        # N1 (final whole-branch review): `_capture_sha256` on a standard page
+        # dict is attacker-controllable and must never become the provenance
+        # digest. prepare_publication_evidence strips it; only the recovery
+        # path, which computes it locally over hash-verified capture bytes,
+        # may set it.
+        import hashlib
+        body = 'Company revenue and operating cash flow increased. ' * 300
+        raw = {'url': 'https://example.test/article', 'title': 'Quarterly results',
+               'text': ('<header><h1>Quarterly results</h1><p>October 21, 2026</p>'
+                        '</header><article>' + body + '</article>'),
+               '_capture_sha256': 'a' * 64}
+        page = prepare_publication_evidence(raw, extracted_text=body)
+        observation = page.get('publication_observation')
+        self.assertIsInstance(observation, dict)
+        self.assertNotEqual(observation['content_sha256'], 'a' * 64)
+        self.assertNotIn('_capture_sha256', page)
+        self.assertEqual(observation['content_sha256'],
+                         hashlib.sha256(page['text'].encode('utf-8')).hexdigest())
+        self.assertTrue(validate_observation(page, observation))
+
+    def test_review_n1_prepare_rejects_invalid_capture_sha256_param(self):
+        # The recovery-path opt-in is fail-closed: a non-64-hex trusted basis
+        # raises instead of silently falling back to the page text.
+        with self.assertRaises(ValueError):
+            prepare_publication_evidence(page_for('2026-10-21'),
+                                         extracted_text='Quarterly results',
+                                         capture_sha256='nothex')
+
+    def test_review_n1_recovery_param_binds_locally_computed_capture(self):
+        # The recovery path keeps working: the trusted param (the locally
+        # computed ORIGINAL capture digest) is committed as content_sha256,
+        # while an attacker-supplied field on the same page dict is ignored.
+        import hashlib
+        capture = ('<html><head><title>Quarterly results</title></head><body>'
+                   '<p>Filler paragraph with no dates at all.</p>' * 130
+                   + '<meta property="article:published_time" content="2026-10-21T08:00:00-04:00">'
+                   + '<p>Filler paragraph with no dates at all.</p>' * 130
+                   + '</body></html>')
+        raw = {'url': 'https://example.test/article', 'title': 'Quarterly results',
+               'text': capture, '_capture_sha256': 'f' * 64}
+        page = prepare_publication_evidence(
+            raw, extracted_text=capture[:6000],
+            capture_sha256=hashlib.sha256(capture.encode('utf-8')).hexdigest())
+        observation = page.get('publication_observation')
+        self.assertIsInstance(observation, dict)
+        self.assertNotEqual(observation['content_sha256'], 'f' * 64)
+        self.assertEqual(observation['content_sha256'],
+                         hashlib.sha256(capture.encode('utf-8')).hexdigest())
+        self.assertEqual(page.get('_capture_sha256'),
+                         hashlib.sha256(capture.encode('utf-8')).hexdigest())
+        self.assertTrue(validate_observation(page, observation))
 
 
 if __name__ == '__main__':

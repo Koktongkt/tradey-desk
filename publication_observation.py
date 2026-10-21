@@ -607,17 +607,30 @@ def validate_observation(page: dict, observation: object) -> bool:
 
 
 def prepare_publication_evidence(page: dict, *, extracted_text: str,
-                                 max_chars: int = 6000) -> dict:
+                                 max_chars: int = 6000,
+                                 capture_sha256: str | None = None) -> dict:
     """Project captured evidence without losing known conflicts or exact precision.
 
     The processing bound is independent of transport limits. An invalid marker
     blocks legacy fallback when captured claims cannot be faithfully projected.
-    External observation/body fields are never construction authority.
+    External observation/body fields are never construction authority. N1
+    (final whole-branch review): `_capture_sha256` on an incoming page dict is
+    attacker-controllable and is stripped — never trusted as the provenance
+    basis. Only the internal recovery path may set the digest, by passing it
+    via the fail-closed `capture_sha256` parameter after computing it locally
+    over hash-verified original capture bytes.
     """
     if type(max_chars) is not int or not 1 <= max_chars <= 6000:
         raise ValueError('max_chars must be within 1..6000')
+    if capture_sha256 is not None and (
+            not isinstance(capture_sha256, str)
+            or not re.fullmatch(r'[0-9a-f]{64}', capture_sha256)):
+        raise ValueError('capture_sha256 must be a 64-hex digest')
     result = {k: v for k, v in page.items()
-              if k not in ('publication_observation', '_publication_body_text')}
+              if k not in ('publication_observation', '_publication_body_text',
+                           '_capture_sha256')}
+    if capture_sha256 is not None:
+        result['_capture_sha256'] = capture_sha256
     body = extracted_text[:max_chars]
     result.update(text=body, _publication_body_text=body)
     if not _page_valid(page):
