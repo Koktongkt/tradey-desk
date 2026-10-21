@@ -22,6 +22,10 @@ TIERS = ("fast", "scenario", "full")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Install before discovery/imports, independently of manifest/module ordering.
+from offline_test_guard import install as install_offline_guard  # noqa: E402
+install_offline_guard()
+
 from sqlite_ledger import DEFAULT_STREAMS as OPERATIONAL_ROOT_FILES  # noqa: E402 - ROOT must be on sys.path
 
 

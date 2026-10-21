@@ -2,6 +2,7 @@
  "version": 1,
  "layers": {
   "fast": [
+   "test_000_offline_boundary",
    "test_broker_bridge",
    "test_broker_credentials",
    "test_broker_mcp_bridge",

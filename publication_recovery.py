@@ -30,13 +30,17 @@ def utc_now():
 
 
 def preserve_cached_refusal(page: dict, cached: dict) -> dict:
-    """A new fetch must change the canonical witness to escape a known refusal."""
+    """Retain any invalid-present refusal only on the identical canonical capture.
+
+    A proof miss on a different capture is not a current-stage refusal. Valid
+    cached observations instead follow the ordinary replay/freshness checks.
+    """
     if (isinstance(cached, dict) and 'publication_observation' in cached
-            and cached['publication_observation'] is None
+            and not validate_observation(cached, cached['publication_observation'])
             and cached.get('url') == page.get('url')
             and cached.get('returned_url',cached.get('url')) == page.get('returned_url',page.get('url'))
             and cached.get('text') == page.get('text')):
-        return dict(page, publication_observation=None)
+        return dict(page, publication_observation=cached['publication_observation'])
     return page
 
 

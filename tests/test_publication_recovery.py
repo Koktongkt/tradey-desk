@@ -104,19 +104,33 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(updated[0]['publication_observation'],cached['publication_observation'])
         self.assertEqual(json.loads(self.cache.read_text())[p['url']]['checked_at'],'2026-10-21T15:00:00Z')
 
-    def test_content_url_version_and_tampered_proof_cache_miss(self):
-        for mutation in ('text','url','returned_url','parser_version','support'):
+    def test_different_capture_cache_proof_miss_remains_model_eligible(self):
+        # Cache proof mismatch is not a refusal on a genuinely different capture.
+        for mutation in ('text','url','returned_url'):
             with self.subTest(mutation=mutation):
                 self.state=recovery.RecoveryState()
                 p=self.pages[0];cached=dict(p,publication_observation=observation(p))
                 if mutation in ('text','url'):cached[mutation]+='changed'
-                elif mutation=='returned_url':cached[mutation]='https://tampered.example/x'
-                else:cached['publication_observation'][mutation]='tampered'
+                else:cached[mutation]='https://tampered.example/x'
                 self.write_cache(cached)
                 updated,_=self.run_recovery(pages=[p])
                 self.assertTrue(pub.validate_observation(updated[0],updated[0]['publication_observation']))
                 self.assertEqual(self.model.call_args.args[0][0]['text'],p['text'])
-        self.assertEqual(self.model.call_count,5)
+        self.assertEqual(self.model.call_count,3)
+
+    def test_invalid_cached_proof_on_identical_capture_is_a_hard_refusal(self):
+        p=self.pages[0]
+        for mutation in ('parser_version','support'):
+            with self.subTest(mutation=mutation):
+                self.state=recovery.RecoveryState()
+                self.model.reset_mock()
+                invalid=dict(observation(p),**{mutation:'tampered'})
+                self.write_cache(dict(p,publication_observation=invalid))
+                updated,notes=self.run_recovery(pages=[p])
+                self.assertEqual(updated[0]['publication_observation'],invalid)
+                self.model.assert_not_called();self.fetch.assert_not_called()
+                self.assertEqual(radar.filter_evidence(updated,now=NOW)[0],[])
+                self.assertIn('hard_refusal',[n['reason'] for n in notes])
 
     def test_unknown_is_not_durable_negative_cache(self):
         p=self.pages[0];self.write_cache(p)
@@ -333,6 +347,72 @@ class RecoveryWiringTests(unittest.TestCase):
         fetch.assert_called_once()
         self.assertIsNone(got[0]['publication_observation'])
         self.assertEqual(radar.filter_evidence(got)[0],[])
+
+    def test_identical_refetch_preserves_every_invalid_present_refusal_through_recovery(self):
+        p=page('https://issuer.example/x')
+        valid=observation(p)
+        self.assertIsNotNone(valid)
+        assert valid is not None
+        markers=[None, {'version':'invalid'}, dict(valid,support='tampered'),
+                 dict(valid,parser_version='old'), 'malformed', [], False]
+        for marker in markers:
+            with self.subTest(marker=marker):
+                cache=self.root/'cache.json'
+                cache.write_text(json.dumps({p['url']:{'checked_at':NOW.isoformat(),
+                    'page':dict(p,publication_observation=marker)}}))
+                model=Mock(side_effect=lambda pages,**kw:({q['url']:observation(q) for q in pages},[]))
+                with patch.object(radar,'fetch_source',return_value=p) as fetch:
+                    got=radar.gather_evidence([p['url']],cache_path=cache)
+                fetch.assert_called_once()
+                with patch.object(recovery,'utc_now',return_value=NOW):
+                    updated,_=recovery.recover_publications([{'urls':[p['url']]}],got,[],
+                        state=recovery.RecoveryState(),overall_deadline=recovery.monotonic()+100,
+                        downstream_reserve=0,cache_path=cache,fetcher=Mock(),interpreter=model)
+                model.assert_not_called()
+                self.assertIn('publication_observation',got[0])
+                self.assertEqual(got[0]['publication_observation'],marker)
+                self.assertEqual(updated[0]['publication_observation'],marker)
+                self.assertEqual(radar.filter_evidence(updated,now=NOW)[0],[])
+                self.assertEqual(json.loads(cache.read_text())[p['url']]['page']['publication_observation'],marker)
+
+    def test_valid_cached_proof_gathers_without_refetch_or_model_and_keeps_check_time(self):
+        p=page('https://issuer.example/x')
+        cached=dict(p,publication_observation=observation(p))
+        stamp=dt.datetime.now(dt.timezone.utc).isoformat()
+        cache=self.root/'cache.json'
+        cache.write_text(json.dumps({p['url']:{'checked_at':stamp,'page':cached}}))
+        with patch.object(radar,'fetch_source') as fetch:
+            got=radar.gather_evidence([p['url']],cache_path=cache)
+        fetch.assert_not_called()
+        model=Mock()
+        with patch.object(recovery,'utc_now',return_value=NOW):
+            updated,_=recovery.recover_publications([{'urls':[p['url']]}],got,[],
+                state=recovery.RecoveryState(),overall_deadline=recovery.monotonic()+100,
+                downstream_reserve=0,cache_path=cache,fetcher=Mock(),interpreter=model)
+        model.assert_not_called()
+        self.assertEqual(updated,[cached])
+        self.assertTrue(pub.validate_observation(updated[0],updated[0]['publication_observation']))
+        self.assertEqual(len(radar.filter_evidence(updated,now=NOW)[0]),1)
+        self.assertEqual(json.loads(cache.read_text())[p['url']]['checked_at'],stamp)
+
+    def test_changed_authentic_refetch_can_resolve_invalid_cached_provenance(self):
+        p=page('https://issuer.example/x')
+        fresh=dict(p,text=p['text']+' Authentic new capture.')
+        cache=self.root/'cache.json'
+        cache.write_text(json.dumps({p['url']:{'checked_at':NOW.isoformat(),
+            'page':dict(p,publication_observation={'version':'invalid'})}}))
+        with patch.object(radar,'fetch_source',return_value=fresh) as fetch:
+            got=radar.gather_evidence([p['url']],cache_path=cache)
+        fetch.assert_called_once()
+        self.assertNotIn('publication_observation',got[0])
+        model=Mock(side_effect=lambda pages,**kw:({q['url']:observation(q) for q in pages},[]))
+        with patch.object(recovery,'utc_now',return_value=NOW):
+            updated,_=recovery.recover_publications([{'urls':[p['url']]}],got,[],
+                state=recovery.RecoveryState(),overall_deadline=recovery.monotonic()+100,
+                downstream_reserve=0,cache_path=cache,fetcher=Mock(),interpreter=model,refetch_urls=set())
+        model.assert_called_once()
+        self.assertTrue(pub.validate_observation(updated[0],updated[0]['publication_observation']))
+        self.assertEqual(len(radar.filter_evidence(updated,now=NOW)[0]),1)
 
     def test_direct_cache_checked_at_is_actual_completion_not_collection_start(self):
         class Clock(dt.datetime):
