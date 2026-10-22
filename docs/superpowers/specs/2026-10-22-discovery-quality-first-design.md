@@ -5,7 +5,7 @@ Base: `19ca9522c387ea55c5a1ddd1c32623ad303a08e5`; research behavior at `2694236`
 
 ## 1. Agreed intent and first increment
 
-The user approved following the historical audit's recommendations and measuring improvement before committing to a full research overhaul. Start with discovery/search selection and its existing focused-retrieval handoff. Preserve all six lanes and existing configured providers. Do not claim search coverage or qualifications improve merely because control moves into code.
+The user approved following the historical audit's recommendations and measuring improvement before committing to a full research overhaul. The ultimate goal is greater reliability of producing a fully qualified, evidence-backed candidate for the unchanged autotrader to independently decide whether to trade. More search results or provisional leads alone do not satisfy that goal; a legitimate downstream HOLD or policy/risk rejection remains valid. Start with discovery/search selection and its existing focused-retrieval handoff. Preserve all six lanes and existing configured providers. Do not claim search coverage or qualifications improve merely because control moves into code.
 
 This is an architectural change to discovery ownership, not permission to rewrite execution, introduce a new feed or change safety policy. Discovery remains the first increment. The user also requested an LLM fallback when deterministic extraction fails; section3F now specifies that follow-up extraction/publication increment. It is part of this design direction, not silently included in discovery implementation or treated as already deployed. Broad rescue redesign remains separate. Known downstream failures stay visible; discovery work alone cannot establish end-to-end recovery.
 
