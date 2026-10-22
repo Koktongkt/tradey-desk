@@ -59,6 +59,7 @@
    "test_order_notifications",
    "test_pending_capacity",
    "test_pipeline",
+   "test_dashboard_mcp",
    "test_public_dashboard",
    "test_reconciliation_cli",
    "test_release_blockers",
