@@ -18,6 +18,8 @@
    "test_radar_notifications",
    "test_repair_nul_jsonl",
    "test_research_budget",
+   "test_discovery_collection",
+   "test_discovery_process",
    "test_research_timestamp",
    "test_runtime_paths",
    "test_extraction_compat",

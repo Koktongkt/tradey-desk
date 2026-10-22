@@ -39,7 +39,7 @@
 - [ ] Run guarded baseline full/raw once, expecting1532 each and zero skips/failures/errors. Stop on unexplained failure.
 - [ ] Freeze private historical inventory and audited calls/records/outcomes from production `test_artifacts/six-lane-historical-audit-20261022T005728Z/`; verify37 sessions,225 calls,2250 records,34 production/three diagnostic IDs. Preserve their original role/date uncertainty and cohort boundaries.
 
-### Task1: Six-lane collector and supervised worker
+### Task 1: Six-lane collector and supervised worker
 
 **Files:** create `discovery_collection.py`, `discovery_worker.py`, `discovery_process.py`; create `tests/test_discovery_collection.py`, `tests/test_discovery_process.py`; classify tests in `tests/test_manifest.json`.
 
@@ -52,7 +52,7 @@
 - [ ] Strict JSON/request-response bounds: request32KiB, provider response256KiB per lane, aggregate response2MiB, stderr16KiB. Validate encoded bytes before spawn, multiplex stdin/stdout under one deadline, classify overflow explicitly. Retain original bounded records privately; cap admission at ten per lane. No output truncation silently becoming success.
 - [ ] Run targeted tests GREEN and `git diff --check`; commit only code/tests/manifest.
 
-### Task2: Tool-free selector, source binding and continuity
+### Task 2: Tool-free selector, source binding and continuity
 
 **Files:** create `discovery_selection.py`, `discovery_history.py`; create `tests/test_discovery_selection.py`, `tests/test_discovery_history.py`.
 
@@ -66,7 +66,7 @@
 - [ ] Fit all result IDs into a selector projection capped64KiB encoded; bound per-record visible title/excerpt and mark clipping/context-limit explicitly. Preserve originals for binding and evaluation. Do not manufacture omitted result content.
 - [ ] Run targeted tests GREEN, register manifest entries and commit.
 
-### Task3: Integrate opt-in discovery and the unchanged research funnel
+### Task 3: Integrate opt-in discovery and the unchanged research funnel
 
 **Files:** create `discovery_pipeline.py`; modify only discovery dispatch in `alpha_radar.live_research`; create `tests/test_discovery_pipeline.py`; update existing discovery tests only where the opt-in contract requires it.
 
@@ -78,7 +78,7 @@
 - [ ] Integration fixtures must exercise actual downstream source receipt validation and `prepare_candidate`, with network/model outputs mocked and state isolated before imports. A valid fixture must reach a final qualified dossier artifact; failed source, earnings or intake fixtures must remain blocked. A callback returning its input is not sufficient proof.
 - [ ] Ensure new diagnostics are private and best-effort except the existing mandatory research-persistence contract; output/error tokens remain compatible with scheduler parsing. Commit GREEN stable bytes.
 
-### Task4: Reproducible offline comparison and results review
+### Task 4: Reproducible offline comparison and results review
 
 **Files:** create `scripts/evaluate_discovery_quality.py`, `tests/test_discovery_evaluation.py`; create `docs/discovery-quality-evaluation.md`.
 
