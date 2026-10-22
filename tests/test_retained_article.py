@@ -16,6 +16,18 @@ class RetainedArticleTests(unittest.TestCase):
         import retained_article as m
         return m
 
+    def test_markdown_header_scope_is_metadata_not_first_body_paragraph(self):
+        m=self.api()
+        for block in ['Narrative text.\nPublished: October 21, 2026',
+                      'Related story\nPublished: October 21, 2026',
+                      'Published: October 21, 2026\nMore body narrative.',
+                      BODY+'\n\nPublished: October 21, 2026']:
+            with self.subTest(block=block[:50]):
+                self.assertEqual(m.visible_header_text(m.retain_article(PAGE,f'# {TITLE}\n\n{block}\n\n{BODY}')),'')
+        for block in ['Published: October 21, 2026','| Published | October 21, 2026 |']:
+            page=m.retain_article(PAGE,f'# {TITLE}\n\n{block}\n\n{BODY}')
+            self.assertEqual(m.visible_header_text(page),block)
+
     def test_full_representation_survives_bounded_projection(self):
         m=self.api();p=m.retain_article(PAGE,RAW)
         self.assertEqual(m.original_text(p),RAW)

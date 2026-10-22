@@ -36,6 +36,25 @@ class RetainedRecoveryTests(unittest.TestCase):
         for raw,support in cases:
             with self.subTest(raw=raw[:80]):self.assertEqual(self.interpret([retain_article(PAGE,raw)],support=support)[0],{})
 
+    def test_review_unheaded_body_dates_cannot_gain_header_authority(self):
+        from research_extraction import _project
+        from extraction_worker import project_row
+        from retained_article import publication_witnesses,visible_header_text
+        url='https://issuer.example/news/results';title='Example company results'
+        body='The company reported higher sales and raised its full-year operating outlook. '
+        for prefix,label in [('Related story: prior quarter results\n','Published: '),
+                             ('','Published: '),('Other article metadata\n','Publication date: ')]:
+            with self.subTest(prefix=prefix,label=label):
+                raw='# '+title+'\n\n'+body*70+'\n\n'+prefix+label+'October 21, 2026\n\n'+body*60
+                row=_project({'url':url,'title':title,'content':raw},url,6000,retain_capture=True)
+                page=radar.validate_structured_page(url,project_row(row,guarded_location=True))
+                self.assertIsNotNone(page);self.assertNotIn('October 21',page['text'])
+                self.assertEqual(publication_witnesses(page),[])
+                found,notes,_=self.interpret([page],support=label+'October 21, 2026')
+                updated=recovery._attach(page,found.get(url),now=NOW)
+                self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+                self.assertNotIn('October 21',visible_header_text(page))
+
     def test_review_projection_cannot_launder_nested_date(self):
         raw=f'# {TITLE}\n\n## Event details\n{SUPPORT}\n\n{BODY}'
         projection=f'# {TITLE}\nPublished: October 21, 2026\n{BODY}'

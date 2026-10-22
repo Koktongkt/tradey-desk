@@ -176,7 +176,17 @@ def publication_witnesses(page):
 def visible_header_text(page):
     parts=_html_parts(page)
     if parts is not None:return parts[2]
-    return _article(page) or ''
+    article=_article(page)
+    if article is None:return ''
+    # Markdown has no DOM ancestors. Authorize only a bounded first metadata
+    # block directly under the exact headline, never arbitrary intro/body prose.
+    header=re.split(r'\n\s*\n',article.strip(),maxsplit=1)[0]
+    if len(header)>2000 or _UNSAFE_RELATION.search(header):return ''
+    lines=[line.strip() for line in header.splitlines() if line.strip()]
+    if lines and all(line.startswith('|') and line.endswith('|') for line in lines):return header
+    publication=r'(?:published(?:\s+on)?|publication(?:\s+date)?)\s*[:：]?\s+[^\n]+'
+    if lines and all(re.fullmatch(publication,line,re.I) for line in lines):return header
+    return ''
 
 
 def body_context(page):
