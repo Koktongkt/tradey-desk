@@ -154,39 +154,43 @@ def _article(page):
     # Only the current article's direct header/intro scope is witnessed. A nested
     # section may describe a different event/article even if its date says Published.
     article=re.split(r'^#{1,6}\s+',article,flags=re.M)[0]
+    # An explicit unheaded recommendation label closes the current article too.
+    # Preserve the full original separately for conflict/refusal validation.
+    article=re.split(r'^[ \t]*(?:\*\*|__)?(?:related\s+(?:story|stories|article|articles|news|content|companies)|recommended\s+(?:story|stories|articles|reading)|more\s+news|you\s+may\s+also\s+like)\b',article,maxsplit=1,flags=re.I|re.M)[0]
     return article
+
+
+_PUBLICATION_ROW=re.compile(r'\s*\|\s*(?:published(?:\s+on)?|publication(?:\s+date)?)\s*\|\s*[^|\n]{4,150}\s*\|\s*',re.I)
+
+
+def _markdown_header(page):
+    """One positive-authority scope shared by legacy contexts and witnesses."""
+    article=_article(page)
+    if article is None:return ''
+    header=re.split(r'\n\s*\n',article.strip(),maxsplit=1)[0]
+    if len(header)>2000 or _UNSAFE_RELATION.search(header):return ''
+    lines=[line.strip() for line in header.splitlines() if line.strip()]
+    # Unknown table rows are not header authority: they may describe another
+    # article or event. Do not infer publication ownership from an isolated row.
+    separator=r'\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|'
+    if (lines and any(_PUBLICATION_ROW.fullmatch(line) for line in lines)
+            and all(_PUBLICATION_ROW.fullmatch(line) or re.fullmatch(separator,line) for line in lines)):
+        return header
+    publication=r'(?:published(?:\s+on)?|publication(?:\s+date)?)\s*[:：]?\s+[^\n]+'
+    if lines and all(re.fullmatch(publication,line,re.I) for line in lines):return header
+    return ''
 
 
 def publication_witnesses(page):
     parts=_html_parts(page)
     if parts is not None:return parts[0]
-    article=_article(page)
-    if article is None:return []
-    # Header-only definition/table relations with an explicit publication role.
-    # A body paragraph, nearby event date, update or related story never qualifies.
-    header=re.split(r'\n\s*\n(?=[^\s|#])',article.strip(),maxsplit=1)[0]
-    if len(header)>2000:return []
-    result=[]
-    for line in header.splitlines():
-        if (re.fullmatch(r'\s*\|\s*(?:published(?:\s+on)?|publication(?:\s+date)?)\s*\|\s*[^|\n]{4,150}\s*\|\s*',line,re.I)
-                and not _UNSAFE_RELATION.search(line)):result.append(line.strip())
-    return result
+    header=_markdown_header(page)
+    return [line.strip() for line in header.splitlines() if _PUBLICATION_ROW.fullmatch(line)]
 
 
 def visible_header_text(page):
     parts=_html_parts(page)
-    if parts is not None:return parts[2]
-    article=_article(page)
-    if article is None:return ''
-    # Markdown has no DOM ancestors. Authorize only a bounded first metadata
-    # block directly under the exact headline, never arbitrary intro/body prose.
-    header=re.split(r'\n\s*\n',article.strip(),maxsplit=1)[0]
-    if len(header)>2000 or _UNSAFE_RELATION.search(header):return ''
-    lines=[line.strip() for line in header.splitlines() if line.strip()]
-    if lines and all(line.startswith('|') and line.endswith('|') for line in lines):return header
-    publication=r'(?:published(?:\s+on)?|publication(?:\s+date)?)\s*[:：]?\s+[^\n]+'
-    if lines and all(re.fullmatch(publication,line,re.I) for line in lines):return header
-    return ''
+    return parts[2] if parts is not None else _markdown_header(page)
 
 
 def body_context(page):

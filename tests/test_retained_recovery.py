@@ -55,6 +55,31 @@ class RetainedRecoveryTests(unittest.TestCase):
                 self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
                 self.assertNotIn('October 21',visible_header_text(page))
 
+    def test_review_table_witnesses_share_the_same_header_boundary(self):
+        from retained_article import publication_witnesses,visible_header_text
+        blocks=['Narrative results.\n'+SUPPORT,'Related story: prior quarter results\n'+SUPPORT,
+                '| Related story | Prior quarter results |\n'+SUPPORT,'Narrative results.\n\n'+SUPPORT,
+                '| Prior article | Older report |\n'+SUPPORT]
+        for block in blocks:
+            with self.subTest(block=block):
+                page=retain_article(PAGE,f'# {TITLE}\n\n{block}\n\n{BODY}')
+                found,_,_=self.interpret([page]);updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
+                self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+                self.assertEqual(publication_witnesses(page),[]);self.assertEqual(visible_header_text(page),'')
+
+    def test_review_omitted_related_table_rejects_with_and_without_retention(self):
+        from research_extraction import _project
+        from extraction_worker import project_row
+        raw=('# Navigation\n\n'+('Home Products Investors Company newsroom navigation. '*90)+
+             f'\n\n# {TITLE}\n\n{BODY}\nRelated story: prior quarter results\n{SUPPORT}\n\n{BODY*15}')
+        row=_project({'url':PAGE['url'],'title':TITLE,'content':raw},PAGE['url'],6000,retain_capture=True)
+        page=radar.validate_structured_page(PAGE['url'],project_row(row,guarded_location=True))
+        self.assertIsNotNone(page);self.assertNotIn('October 21',page['text'])
+        for retained in (True,False):
+            candidate=page if retained else {k:v for k,v in page.items() if k not in ('_retained_article','_capture_status')}
+            found,_,_=self.interpret([candidate]);updated=recovery._attach(candidate,found.get(PAGE['url']),now=NOW)
+            self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+
     def test_review_projection_cannot_launder_nested_date(self):
         raw=f'# {TITLE}\n\n## Event details\n{SUPPORT}\n\n{BODY}'
         projection=f'# {TITLE}\nPublished: October 21, 2026\n{BODY}'
@@ -63,6 +88,8 @@ class RetainedRecoveryTests(unittest.TestCase):
     def test_review_related_body_cannot_be_selected_as_article_body(self):
         other='An unrelated issuer reports a different transaction and revised guidance. '*8
         for raw,support in [(RAW+'\n\n## Related companies\n\n'+other,SUPPORT),
+            (RAW+'\n\nRelated story: another issuer\n\n'+other,SUPPORT),
+            (RAW+'\n\n**Related story:** another issuer\n\n'+other,SUPPORT),
             (f'<article><h1>{TITLE}</h1><dl><dt>Published</dt><dd>October 21, 2026</dd></dl><section aria-label="Related story"><h2>Other issuer</h2><p>{other}</p></section></article>','<dt>Published</dt><dd>October 21, 2026</dd>')]:
             with self.subTest(raw=raw[:80]):self.assertEqual(self.interpret([retain_article(PAGE,raw)],support=support,body=other.strip())[0],{})
 
