@@ -384,6 +384,112 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.errors(await self.extract(), 'provider_error')
         self.assertNotIn('PRIVATE', json.dumps(await self.extract()))
 
+    async def test_exact_duplicate_content_counts_once_after_original_validation(self):
+        text = BODY * 70
+        self.responses['primary'] = [row(content=text, raw_content=text)]
+        self.assertGreater(len(json.dumps({'results': self.responses['primary']}).encode()), 100000)
+        out = await self.extract()
+        result = out['results'][0]
+        self.assertIsNone(result['error'])
+        self.assertLessEqual(len(result['content']), 6000)
+        self.assertNotIn('raw_content', result)
+        self.assertEqual([c[0] for c in self.calls], ['primary'])
+        # Owned transport keeps the complete original only inside its unchanged
+        # optional capture budget; the public projection is never that original.
+        owned = json.loads(await self.d.extract_owned_tool([URL]))['results'][0]
+        import retained_article
+        wire = {'url': URL, 'title': owned['title'], 'text': owned['content'],
+                '_retained_article': owned.get('_retained_article')}
+        self.assertEqual(retained_article.original_text(wire), text)
+        # Exercise the real worker projection and its exact serialized stdout
+        # representation, not just the dispatcher's public tool envelope.
+        delivered = await worker.extract({'version': 1, 'url': URL})
+        self.assertEqual(delivered['status'], 'ok')
+        self.assertEqual(retained_article.original_text(delivered['page']), text)
+        stdout = json.dumps(delivered, ensure_ascii=True, separators=(',', ':')) + '\n'
+        self.assertLessEqual(len(stdout.encode()), 100000)
+
+    async def test_failed_rows_cannot_use_duplicate_folding_to_admit_rescue(self):
+        text = BODY * 70
+        self.responses['primary'] = [row(content=text, raw_content=text, error='429 Too many requests')]
+        self.responses['exa'] = [row()]
+        self.errors(await self.extract(), 'output_limit')
+        self.assertEqual([c[0] for c in self.calls], ['primary'])
+
+    async def test_duplicate_folding_keeps_all_other_bytes_and_batch_cap(self):
+        text = BODY * 70
+        for extra in ({'raw_content': text + ' '},
+                      {'raw_content': text, 'unknown': 'x' * 100001},
+                      {'raw_content': text, 'metadata': {'unknown': 'x' * 100001}},
+                      {'raw_content': text, 'other_alias': text}):
+            with self.subTest(fields=tuple(extra)):
+                self.calls.clear()
+                self.responses['primary'] = [row(content=text, **extra)]
+                self.errors(await self.extract(), 'output_limit')
+                self.assertEqual(len(self.calls), 1)
+        # Several individually deliverable rows still share the same 100KB cap.
+        self.responses['primary'] = [row(u, content=text, raw_content=text) for u in (URL, OTHER)]
+        self.errors(await self.extract([URL, OTHER]), 'output_limit')
+
+    async def test_duplicate_folding_does_not_hide_original_invalid_extensions(self):
+        text = BODY * 70
+        for extra in ({'unknown': float('nan')}, {'unknown': object()},
+                      {'metadata': {'unknown': float('inf')}},
+                      {'publication': {}}, {'extraction_location': {}},
+                      {'success': 0}, {'status': None}, {'error': False}):
+            with self.subTest(fields=tuple(extra)):
+                self.calls.clear()
+                self.responses['primary'] = [{**row(content=text, raw_content=text), **extra}]
+                reason = ('url_mismatch' if 'extraction_location' in extra else
+                          'output_limit' if any(k in extra for k in ('success', 'status', 'error')) else
+                          'malformed_response')
+                self.errors(await self.extract(), reason)
+                self.assertEqual(len(self.calls), 1)
+
+    async def test_duplicate_folding_preserves_refusal_and_full_original_conflicts(self):
+        text = BODY * 70
+        for extra, reason in (({'sourceURL': OTHER}, 'url_mismatch'),
+                              ({'metadata': {'sourceURL': OTHER}}, 'url_mismatch'),
+                              ({'blocked_by_policy': True, 'error': 'Blocked by website policy'}, 'output_limit'),
+                              ({'publication': provider_publication(1791979200),
+                                'extraction_location': {'version': 1, 'requested_url': URL, 'returned_url': URL}},
+                               'output_limit')):
+            with self.subTest(fields=tuple(extra)):
+                self.calls.clear()
+                # Publication conflict is outside both bounded projection ends.
+                original = text[:30000] + '\nPublished: October 13, 2026\n' + text[30000:]
+                self.responses['primary'] = [{**row(content=original, raw_content=original), **extra}]
+                if 'publication' in extra:
+                    validated = self.d._project(self.responses['primary'][0], URL, 6000, validation_only=True)
+                    self.assertEqual(validated['reason'], 'malformed_response')
+                self.errors(await self.extract(), reason)
+                self.assertEqual(len(self.calls), 1)
+        self.responses['primary'] = [row(content='# Access denied\n' + text,
+                                         raw_content='# Access denied\n' + text)]
+        self.errors(await self.extract(), 'output_limit')
+
+    async def test_duplicate_folding_does_not_mutate_original_provider_rows(self):
+        original = row(content=BODY * 70, raw_content=BODY * 70)
+        async def direct(*args, **kwargs):
+            return [original]
+        before = copy.deepcopy(original)
+        with patch.object(compat, 'primary', side_effect=direct):
+            self.assertIsNone((await self.extract())['results'][0]['error'])
+        self.assertEqual(original, before)
+
+    async def test_duplicate_folding_does_not_raise_optional_capture_cap(self):
+        text = BODY * 105
+        self.responses['primary'] = [row(content=text, raw_content=text)]
+        public = (await self.extract())['results'][0]
+        self.assertIsNone(public['error'])
+        self.assertNotIn('_retained_article', public)
+        owned = json.loads(await self.d.extract_owned_tool([URL]))['results'][0]
+        self.assertIsNone(owned['error'])
+        self.assertEqual(owned['_capture_status'], 'capacity')
+        self.assertNotIn('_retained_article', owned)
+        import retained_article
+        self.assertIsNone(retained_article.original_text({'url': URL, 'text': owned['content']}))
+
     async def test_oversized_envelope_rejected_before_projection(self):
         self.responses['primary'] = [row(metadata={'large': 'x' * 100001})]
         self.errors(await self.extract(), 'output_limit')

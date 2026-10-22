@@ -54,4 +54,4 @@ class GapRetrievalTests(unittest.TestCase):
         from focused_search import search_prompt
         p=search_prompt([{'symbol':'ABC','event_date':'2026-10-21','catalyst':'results','urls':['https://issuer.example/announcement']}])
         self.assertIn('seed_publishers_unverified',p);self.assertIn('same company-event',p)
-        self.assertIn('exactly three',p)
+        self.assertIn('at most five calls total',p)

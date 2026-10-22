@@ -1721,7 +1721,7 @@ class FocusedRetrievalRerankTests(unittest.TestCase):
         ])
         self.assertIn("AAA",prompt);self.assertIn("BBB",prompt)
         self.assertIn("primary",prompt);self.assertIn("independent",prompt);self.assertIn("wire",prompt)
-        self.assertIn("web_search exactly three times in parallel",prompt)
+        self.assertIn("one dedicated web_search call per TARGET in parallel",prompt)
         self.assertIn("retrieval targets, not quotas",prompt)
 
     def test_attested_focused_manifest_retains_all_25_bindings_without_domain_normalization(self):

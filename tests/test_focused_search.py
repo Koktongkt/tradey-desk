@@ -165,15 +165,15 @@ def main():
     child=subprocess.check_output([sys.executable,'-c','import os; print(dict(os.environ))'],text=True)
     assert 'TRADEY_FOCUSED_CAPTURE' not in child
     assert TOOLSETS['search']['tools'] == ['web_search']
-    for i in range(3):
+    for i in range(5):
         assert registry.dispatch('web_search', {'query': 'query-'+str(i), 'limit': 17}) == result
-    assert len(seen)==3
+    assert len(seen)==5
     # Registry projects exceptions to JSON, so exercise its actual installed
     # wrapped handler to assert the admission exception before tool dispatch.
-    try: entry.handler({'query':'fourth'})
+    try: entry.handler({'query':'sixth'})
     except SearchProtocolError: pass
-    else: raise AssertionError('fourth invocation admitted')
-    assert seen==[('query-'+str(i),17) for i in range(3)]
+    else: raise AssertionError('sixth invocation admitted')
+    assert seen==[('query-'+str(i),17) for i in range(5)]
     print('bootstrap-search-ok')
 fd=int(os.environ[FD_ENV])
 with patch.object(cli,'main',main), patch.object(web,'web_search_tool',provider):
@@ -240,12 +240,12 @@ class ReceiptTests(unittest.TestCase):
             self.assertNotIn(SNIPPET, receipt.urls)
             self.assertNotIn('https://news.example/14', receipt.urls)
 
-    def test_three_call_admission_before_await_thread_safe(self):
+    def test_five_call_admission_before_await_thread_safe(self):
         search = module()
         import concurrent.futures
         import threading
         entered = []
-        gate = threading.Barrier(3)
+        gate = threading.Barrier(5)
         async def original(value):
             entered.append(value)
             await asyncio.to_thread(gate.wait, 3)
@@ -253,13 +253,13 @@ class ReceiptTests(unittest.TestCase):
         with tempfile.TemporaryFile() as channel:
             recorder = search.SearchRecorder(channel.fileno(), 'a'*64)
             wrapped = recorder.wrap(original)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                futures = [pool.submit(asyncio.run, wrapped(i)) for i in range(4)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [pool.submit(asyncio.run, wrapped(i)) for i in range(6)]
                 outcomes = []
                 for future in futures:
                     try: outcomes.append(future.result(timeout=5))
                     except search.SearchProtocolError: outcomes.append('rejected')
-            self.assertEqual(len(entered), 3)
+            self.assertEqual(len(entered), 5)
             self.assertEqual(outcomes.count('rejected'), 1)
             recorder.complete()
             self.assertEqual(len(search.read_search_capture(channel.fileno(), 'a'*64).urls), 0)
@@ -269,7 +269,7 @@ class ReceiptTests(unittest.TestCase):
         artifact = {'version': 2, 'nonce': 'a'*64, 'complete': True, 'calls': []}
         bad = [dict(artifact, nonce='b'*64), dict(artifact, complete=False),
                dict(artifact, version=1), dict(artifact, calls=[{'urls': [], 'checked_at': 'invalid'}]),
-               dict(artifact, calls=[{}]*4)]
+               dict(artifact, calls=[{'urls': [], 'checked_at': '2026-10-20T00:00:00+00:00'}]*6)]
         with tempfile.TemporaryFile() as channel:
             for value in bad:
                 os.ftruncate(channel.fileno(), 0)
@@ -340,7 +340,7 @@ class ManifestTests(unittest.TestCase):
 
 
 class QueryContractTests(unittest.TestCase):
-    """The three shared searches must stay company-specific and date-bounded."""
+    """Five dedicated searches stay company-specific and date-bounded."""
 
     def test_prompt_requires_company_specific_date_bounded_queries(self):
         search = module()
@@ -349,14 +349,14 @@ class QueryContractTests(unittest.TestCase):
              'event_date': '2026-10-20'},
             {'symbol': 'B', 'urls': ['https://seed.example/b'], 'catalyst': 'Cat B',
              'event_date': '2026-10-21'}])
-        # Call budget and lane orientation are unchanged.
-        self.assertIn('call web_search exactly three times in parallel', prompt.lower())
+        # Five-call ceiling with source categories as soft retrieval goals.
+        self.assertIn('one dedicated web_search call per target', prompt.lower())
         for lane in ('primary', 'independent', 'wire'):
             self.assertIn(lane, prompt.lower())
-        # Dilution bound: no multi-company OR queries beyond two company-events.
-        self.assertIn('each query must cover at most two target company-events', prompt.lower())
-        # Full-coverage requirement across the three queries.
-        self.assertIn('every target company-event must appear in at least one query', prompt.lower())
+        # No multi-company query dilution.
+        self.assertIn('never combine different companies in one query', prompt.lower())
+        # Full candidate coverage within the approved five-call ceiling.
+        self.assertIn('at most five calls total', prompt.lower())
         # Exact-date pairing and freshness: suppress stale articles.
         self.assertIn('pair each covered symbol with its exact event_date', prompt.lower())
         self.assertIn('stale', prompt.lower())

@@ -212,7 +212,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
 
     def test_focused_prompt_finishes_after_parallel_search_without_extraction(self):
         prompt=alpha_radar.focused_retrieval_prompt([{"symbol":"AAA"},{"symbol":"BBB"}])
-        for fragment in ("web_search exactly three times in parallel", "No extraction tools are available",
+        for fragment in ("one dedicated web_search call per TARGET in parallel", "No extraction tools are available",
                          "Make no further searches", "up to five unique alternatives per symbol and 25 bindings total"):
             self.assertIn(fragment,prompt)
         self.assertNotIn("web_extract",prompt)

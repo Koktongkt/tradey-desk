@@ -66,9 +66,23 @@ def _envelope(rows):
     return raw
 
 
-def _size(rows):
+def _size(rows, *, validation_only=False, fold_duplicates=()):
     try:
+        # Serialize every original extension first: duplicate accounting never
+        # hides invalid JSON types, nonfinite values, or recursive structures.
         raw = json.dumps({'results': rows}, ensure_ascii=True, allow_nan=False, separators=(',', ':'))
+        if validation_only:
+            return
+        if fold_duplicates:
+            # Caller has validated original declarations, locations, publication
+            # and full content. Only exact recognized text aliases may fold;
+            # unknown extensions and nonidentical raw_content still count fully.
+            rows = [{k: v for k, v in row.items()
+                     if not (k == 'raw_content' and type(v) is str
+                             and index in fold_duplicates
+                             and type(row.get('content')) is str and v == row['content'])}
+                    for index, row in enumerate(rows)]
+            raw = json.dumps({'results': rows}, ensure_ascii=True, allow_nan=False, separators=(',', ':'))
         if len(raw.encode('utf-8')) > MAX_ENVELOPE_BYTES:
             raise _Failure('output_limit')
     except (TypeError, ValueError, RecursionError, UnicodeError):
@@ -85,7 +99,7 @@ async def _bind(rows, originals, normalized, deadline):
     if (not isinstance(rows, list) or len(rows) != len(originals)
             or not all(isinstance(r, dict) for r in rows)):
         raise _Failure('malformed_response')
-    _size(rows)  # Bound the full untrusted envelope before dropping extensions.
+    _size(rows, validation_only=True)  # Validate every original extension's JSON.
     bound = {}
     for row in rows:
         returned = row.get('url')
@@ -151,7 +165,7 @@ def _truncate(content, limit):
     return content[:head] + marker + content[-(available - head):] + footer
 
 
-def _project(row, original, limit, *, retain_capture=False):
+def _project(row, original, limit, *, retain_capture=False, validation_only=False):
     # Lazy import prevents the eventual worker -> dispatcher dependency cycling.
     from extraction_worker import declaration_failure
     if isinstance(row, compat._TransportFailure):
@@ -190,6 +204,8 @@ def _project(row, original, limit, *, retain_capture=False):
             or publication_conflicts(extensions.get('publication'), article or visible,
                                      day_only=precision == 'day' if article else True)):
         return _error(original, 'malformed_response')
+    if validation_only:
+        return {}
     result={'url': row['url'], 'title': title[:200], 'content': _truncate(content, limit),
             'error': None, **extensions}
     if not retain_capture:return result
@@ -251,6 +267,14 @@ async def _extract_tool(urls: list, format: str | None = None, char_limit: int |
 
         async def consume(rows):
             rows = await _bind(rows, originals, normalized, deadline)
+            # Complete full-original validation for every row before duplicate
+            # accounting or bounded public/private projection. Do not mutate the
+            # originals: refusal/rate-limit gates below still inspect those rows.
+            valid = [_project(r, u, char_limit, validation_only=True)
+                     for r, u in zip(rows, originals)]
+            # Error/refusal rows retain their full original byte cost: folding
+            # must never turn a previous capacity refusal into rescue admission.
+            _size(rows, fold_duplicates={i for i, result in enumerate(valid) if not result})
             projected = [_project(r, u, char_limit,retain_capture=retain_capture) for r, u in zip(rows, originals)]
             _remaining(deadline)
             _size(projected)
