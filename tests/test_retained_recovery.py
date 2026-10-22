@@ -100,6 +100,16 @@ class RetainedRecoveryTests(unittest.TestCase):
                 updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
                 self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
 
+    def test_review_nested_markup_punctuation_is_not_an_ownership_escape(self):
+        import string
+        from retained_article import valid_body_passage
+        other='An unrelated issuer reports a different transaction and revised guidance. '*8
+        for marker in string.punctuation:
+            for role,expected in [('Related',False),('Operating results',True)]:
+                with self.subTest(marker=marker,role=role):
+                    page=retain_article(PAGE,RAW+'\n\n> '+marker+' '+role+'\n\n'+other)
+                    self.assertEqual(valid_body_passage(page,other.strip()),expected)
+
     def test_review_nested_containers_preserve_recommendation_boundaries(self):
         from itertools import product
         from retained_article import valid_body_passage,original_text
@@ -126,7 +136,9 @@ class RetainedRecoveryTests(unittest.TestCase):
         other='An unrelated issuer reports a different transaction and revised guidance. '*8
         for label in ['Recommended','**Recommended**','Recommended article','Related story: another issuer',
                       '1. > Related','- [ ] Recommended',
-                      '| Related coverage | Other issuer |\n| --- | --- |']:
+                      '| Related coverage | Other issuer |\n| --- | --- |',
+                      '> ## Related','1. ## Related','- ### Recommended',
+                      '> - ## **Related coverage**','> ![Related](https://publisher.example/icon.png)']:
             with self.subTest(label=label):
                 raw=('# Navigation\n\n'+('Home Products Investors Company newsroom navigation. '*90)+
                      f'\n\n# {TITLE}\n\n{SUPPORT}\n\n{BODY*12}\n\n{label}\n\n{other}')

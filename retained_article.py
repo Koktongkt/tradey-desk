@@ -150,7 +150,7 @@ def _recommendation_boundary(line):
         # Each iteration consumes a nonempty token. Excessive nesting is
         # ambiguous ownership and terminates scope rather than gaining authority.
         for _ in range(32):
-            token=re.match(r'(?:>\s*|[-+]\s*|\d+[.)]\s*|\[[ xX]?\]\s*|\[)',label)
+            token=re.match(r'(?:\d+[.)\]]\s*|\[\s*[xX]?\s*\]\s*|[^\w\s]+\s*)',label)
             if token is None:break
             label=label[token.end():].lstrip()
         else:return True
