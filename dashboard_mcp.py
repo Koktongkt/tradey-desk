@@ -143,7 +143,7 @@ async def native_publish(args: dict | None, deadline: float, *, existing_id: str
     parsed=urlsplit(cfg.get('url',''))
     if parsed.scheme!='https' or parsed.netloc!='mcp.vercel.com' or cfg.get('auth')!='oauth' or cfg.get('enabled') is False or any(cfg.get(k) for k in ('headers','env','command')):
         raise Rejected('config')
-    cfg.update(sampling={'enabled':False},connect_timeout=25,timeout=25)
+    cfg.update(sampling={'enabled':False},elicitation={'enabled':False},connect_timeout=25,timeout=25)
     server=await asyncio.wait_for(_connect_server('vercel',cfg),min(30,max(.001,deadline-time.monotonic())))
     try:
         tools={t.name:t.model_dump(by_alias=True) for t in server._tools}

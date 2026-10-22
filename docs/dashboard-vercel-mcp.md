@@ -24,7 +24,8 @@ previous shim target `cron/dashboard.sh`.
   build 90 seconds; one MCP worker 90 seconds; worker 85-second absolute budget,
   connect up to 30 seconds, individual RPC up to 25 seconds of remaining budget.
 - Deterministic Python/batch shell, no LLM agent/prompt payload, MCP sampling
-  disabled. No trading/research calls added. The normal existing public build is
+  and elicitation explicitly disabled in the adapter-local connection override.
+  No global Hermes configuration/core change. No trading/research calls added. The normal existing public build is
   reused unchanged (including its existing read-only portfolio refresh).
 - Installed Hermes runtime discovered through `hermes --print-runtime-command`;
   existing bootstrap, `MCPServerTask` connection and OAuth lifecycle are reused.
@@ -49,27 +50,39 @@ previous shim target `cron/dashboard.sh`.
   `run_cycle` schedule/deployment decision-audit rows; structural deployment
   diagnostics replace those logs for this opt-in path.
 
-## Verification and outstanding concern
+## Verification and retained first-smoke incident
 
 Evidence is in ignored `test_artifacts/dashboard-mcp/` (private permissions).
 Fresh-worker read-only control authenticated against the exact target and found
 239 native MCP tools, including inline-files deployment capability.
 
-Exactly one production mutation was sent. It created
-`dpl_GLq9BJ5J6W2mXbrMqQHnZNvy9nwD`. The initial worker returned a generic failure
-because native Vercel API tools wrap data as `result.deployment`, rather than the
-flat fixture shape. No duplicate create was attempted. Read-only MCP inspection
-identified that envelope and nested `project.id`; regression tests and adapter
-normalization were corrected. The corrected adapter's read-only verification
-returned this exact ID, correct project, production, READY and
-`tradey-desk-psi.vercel.app` alias membership. A second production create was
-**not** performed; successful cold create-through-final-receipt on the final
-revision is therefore not claimed. Review this residual before cron activation.
+The **first** production smoke created
+`dpl_GLq9BJ5J6W2mXbrMqQHnZNvy9nwD` but returned a generic worker failure:
+native Vercel API tools wrap data as `result.deployment`, rather than the flat
+fixture shape. No duplicate create was attempted. Read-only MCP inspection
+identified that envelope and nested `project.id`; normalization was corrected.
+The corrected adapter's read-only verification subsequently found that exact ID,
+correct project, production, READY and `tradey-desk-psi.vercel.app` membership.
+Original failed smoke evidence is retained; read-only recovery was not a cold
+create-through-receipt success.
 
-All three published artifacts returned HTTP 200 on the production alias and
-matched their staging SHA-256 hashes. The immutable deployment URL is protected
-and returned a different authentication page; no protection/bypass settings were
-changed. Alias membership plus alias artifact hashes are the verified live path.
+After the callback fix, one expressly authorized final-adapter-revision smoke
+created `dpl_DqR9dnJK9zNf2oWNC8eMVKd2cvjm`. Its real worker and helper both exited
+0, with an owner-only final receipt. Native calls were list-projects, exactly
+one CREATE, two same-ID GETs and alias listing; the second GET was READY for the
+fixed project/production, with the expected alias. No create retry occurred.
+`fix1-native-envelopes.json` retains credential-free native result envelopes
+before normalization, bound to adapter and staged-manifest SHA-256 provenance.
+The regression replays these actual CREATE/GET/alias envelopes through the final
+native adapter and normalizer using a stub session, asserting one CREATE,
+same-ID/project/target/READY/alias and a private receipt; offline tests do not
+connect to MCP. No manual normalization was used to turn the live worker green.
+
+All three final-smoke artifacts returned HTTP 200 on the production alias with
+SHA-256 equal to their staged files (`fix1-http-verification.json`,
+`fix1-smoke-manifest.json`). During the first smoke the immutable deployment URL
+returned a protection page; protection/bypass settings were not changed.
+Alias membership plus alias artifact hashes remain the verified live path.
 
 The smoke build called only `public_dashboard.build_data`/`html_template`, reusing
 an already-sanitized portfolio snapshot from the current public dashboard and
@@ -85,9 +98,9 @@ Run from this worktree, not production:
 export HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1
 export TRADEY_UNPATCHED_ROOT=/home/hermes/apps/hermes/projects/tradey-desk/test_artifacts/focused-coverage-25/task6-unpatched-runtime
 . /home/hermes/apps/hermes/projects/tradey-desk/.worktrees/focused-coverage-25/test_artifacts/focused-coverage-25/tpy.sh
-tpy -m unittest discover -s tests -p test_dashboard_mcp.py -v
-tpy -m unittest discover -s tests -v
-tpy tests/run_tests.py full
+tpy -c "import sys; sys.path.insert(0,'tests'); import offline_test_guard as g; g.install(); import unittest; unittest.main(module='test_dashboard_mcp',argv=['tests','-v'])"
+tpy -c "import sys; sys.path.insert(0,'tests'); import offline_test_guard as g; g.install(); import runpy; sys.argv=['tests/run_tests.py','full']; runpy.run_path('tests/run_tests.py',run_name='__main__')"
+tpy -c "import sys; sys.path.insert(0,'tests'); import offline_test_guard as g; g.install(); import unittest; unittest.main(module=None,argv=['tests','discover','-s','tests','-v'])"
 ```
 
 Fixture prerequisites: existing installed committed dependency environment (no
@@ -95,21 +108,36 @@ install), existing pinned unpatched runtime at SHA
 `d923a5eb487a17c0a68801bba9ef0f56c81040a8`, ignored
 `test_artifacts/project-extraction/`, and a source-only copy of the existing
 `task6-baseline-835c56c` fixture beneath this worktree's
-`test_artifacts/focused-coverage-25/`. No operational/private data copied.
+`test_artifacts/focused-coverage-25/`. Also required are the parent-provisioned
+25 immutable files enumerated/hash-bound by `fixture-provision-parent.json`:
+`publication-hybrid-validation/dataset.json`, its 22 referenced original captures
+(including r07), and the retained ADVFN/GNW incident pages beneath
+`recovery-fair-handoff/`. The native replay requires private
+`dashboard-mcp/fix1-native-envelopes.json`, SHA-256
+`cd597723d18a0f2ebadfc7ec34477b8c7e9417bab96008f4e4f21272ad98c927`.
+Missing replay evidence fails rather than skipping. No operational data/DBs,
+credentials or private runtime configuration were copied.
 
 - Initial isolated pipeline baseline: 52 tests passed.
-- New adapter/entrypoint tests: 13 passed (including real guardian/outer output
-  filtering, payload encoding/exclusions/links/caps, auth/unknown response,
-  no-duplicate create, cross-project failure, failed state, timeout, READY,
-  read-only resume and private receipt retention).
-- Raw discovery: 1531 tests, 0 failures/errors, 4 skips.
-- Full supported runner: 1531 tests, 0 failures/errors, 4 skips.
-- Both full outputs: expected blocked local control 1; unexpected actual Hermes
-  attempts 0; unexpected local controls 0. Existing real-PID guard cleanup and
-  outer-timeout fixtures passed.
-- The first unprepared full run failed on missing ignored fixtures/environment
-  and missing new test-manifest classification; those were corrected before the
-  two clean final full runs. See retained original log for distinction.
+- Initial adapter tests: 13; final focused gate: **14 passed, zero skips**.
+  The new mocked connection test was first observed failing on enabled
+  elicitation (`fix1-red.log`, exit 1), then passed after the adapter-only fix.
+  The prior synthetic envelope test now replays the saved native response.
+- Before provisioning, raw/full each passed 1531 with four private-fixture skips;
+  those historical results were not the zero-skip release gate.
+- Final supported full: **1532 tests, 0 failures/errors/skips**, exit 0
+  (`fix1-full.log`); final raw discovery: **1532 tests, 0 failures/errors/skips**,
+  exit 0 (`fix1-raw.log`). Both first post-fix release runs passed.
+- Both full/raw outer guards were installed before discovery/imports. Final
+  counters: expected blocked local control 1, unexpected actual Hermes attempts 0,
+  unexpected local controls 0. Nested intentionally failing controls are expected;
+  real-PID guardian cleanup/outer-timeout fixtures passed. The tripwire is not a
+  general network sandbox; the native-connection tests use stub modules/sessions.
+- Original unprepared full-run failure (missing ignored fixtures/environment and
+  missing initial test-manifest classification) remains retained separately.
+- Final smoke worker/helper/outer exit 0 and HTTP hashes are recorded separately
+  from offline release runs. `fix1-report.md` and before/after manifests document
+  isolation, exact hashes, fixture prerequisites and command exits.
 
 No cron/shim, production source branch, Hermes core/config/gateway, provider,
 research/broker settings, or enabled/trading-mode settings were changed.

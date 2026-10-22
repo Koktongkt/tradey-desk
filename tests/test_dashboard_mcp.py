@@ -106,9 +106,64 @@ class PublishTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls,['list_projects','create_deployment'])
 
 class NativeTests(unittest.TestCase):
+    def test_native_connection_disables_interactive_callbacks(self):
+        import sys
+        from types import ModuleType
+        m=load();seen=[]
+        config={'url':'https://mcp.vercel.com','auth':'oauth','sampling':{'enabled':True},'elicitation':{'enabled':True}}
+        async def connect(name,cfg):
+            seen.append(name)
+            self.assertEqual(cfg['sampling'],{'enabled':False})
+            self.assertEqual(cfg['elicitation'],{'enabled':False})
+            raise m.Rejected('config')  # No native session or approval/provider code runs.
+        cfgmod=ModuleType('hermes_cli.config');cfgmod.load_config=lambda:{'mcp_servers':{'vercel':config,'other':{}}}
+        discovery=ModuleType('tools.mcp_tool_discovery');discovery._connect_server=connect
+        with patch.dict(sys.modules,{'hermes_cli.config':cfgmod,'tools.mcp_tool_discovery':discovery}):
+            with self.assertRaises(m.Rejected):
+                asyncio.run(m.native_publish(None,time.monotonic()+1))
+        self.assertEqual(seen,['vercel'])
+        self.assertTrue(config['sampling']['enabled'])
+        self.assertTrue(config['elicitation']['enabled'])
+
     def test_native_wrapped_deployment_envelope(self):
+        import hashlib
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from unittest.mock import AsyncMock
+        import dashboard_mcp_entry as entry
         m=load()
-        self.assertEqual(m.decode_result({'content':[{'type':'text','text':json.dumps({'result':{'deployment':{'id':'dpl_fixture','project':{'id':m.PROJECT},'target':'production','readyState':'READY'}}})}]}),{'id':'dpl_fixture','project':{'id':m.PROJECT},'target':'production','readyState':'READY'})
+        fixture=ROOT/'test_artifacts/dashboard-mcp/fix1-native-envelopes.json'
+        raw=fixture.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),'cd597723d18a0f2ebadfc7ec34477b8c7e9417bab96008f4e4f21272ad98c927')
+        bundle=json.loads(raw);provenance=bundle['provenance']
+        self.assertEqual(provenance['adapter_sha256'],'430b0d10ea77f14373806c7f0d4918f7043ba2610d0909acb9ff5cda9c92b9df')
+        self.assertEqual((provenance['team'],provenance['project'],provenance['target']),(m.TEAM,m.PROJECT,'production'))
+        rows=iter(bundle['responses']);calls=[]
+        async def call(name,args):
+            row=next(rows);self.assertEqual(row['tool'],name);calls.append((name,args))
+            self.assertEqual(args['teamId'],m.TEAM)
+            if name=='get_deployment':self.assertEqual(args['idOrUrl'],'dpl_DqR9dnJK9zNf2oWNC8eMVKd2cvjm')
+            return SimpleNamespace(model_dump=lambda **kw:row['envelope'])
+        schema={'inputSchema':{'properties':{'requestBody':{'properties':{'files':{'data':{},'encoding':{}}}}}}}
+        tools=[SimpleNamespace(name=n,model_dump=lambda **kw:schema) for n in ('list_projects','create_deployment','get_deployment','list_deployment_aliases')]
+        server=SimpleNamespace(_tools=tools,session=SimpleNamespace(call_tool=call),shutdown=AsyncMock())
+        async def connect(name,cfg):
+            self.assertEqual(name,'vercel')
+            self.assertEqual(cfg['sampling'],{'enabled':False})
+            self.assertEqual(cfg['elicitation'],{'enabled':False})
+            return server
+        cfgmod=ModuleType('hermes_cli.config');cfgmod.load_config=lambda:{'mcp_servers':{'vercel':{'url':'https://mcp.vercel.com','auth':'oauth'}}}
+        discovery=ModuleType('tools.mcp_tool_discovery');discovery._connect_server=connect
+        with patch.dict(sys.modules,{'hermes_cli.config':cfgmod,'tools.mcp_tool_discovery':discovery}),patch('asyncio.sleep',new=AsyncMock()):
+            result=asyncio.run(m.native_publish({'teamId':m.TEAM,'requestBody':{'project':m.PROJECT,'target':'production','files':[]}},time.monotonic()+5))
+        self.assertEqual([n for n,_ in calls],['list_projects','create_deployment','get_deployment','get_deployment','list_deployment_aliases'])
+        self.assertEqual(result,{'id':'dpl_DqR9dnJK9zNf2oWNC8eMVKd2cvjm','projectId':m.PROJECT,'target':'production','readyState':'READY','alias':'tradey-desk-psi.vercel.app'})
+        server.shutdown.assert_awaited_once()
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);entry.save_receipt(root,result)
+            receipt,=(root/'private/dashboard_deploy_diagnostics').glob('mcp-receipt-*.json')
+            self.assertEqual(json.loads(receipt.read_text()),result)
+            self.assertEqual(receipt.stat().st_mode & 0o777,0o600)
 
     def test_mcp_response_json_and_auth_are_sanitized(self):
         m=load()
