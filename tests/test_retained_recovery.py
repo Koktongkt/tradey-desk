@@ -90,7 +90,8 @@ class RetainedRecoveryTests(unittest.TestCase):
         labels=['Recommended','**Recommended**','Recommended article','Related','**Related**',
                 'Recommendation','Recommendations','Related products','> **Recommended articles**',
                 '[Related](https://publisher.example/other)','<strong>Recommended</strong>',
-                '__Related__','- Recommended','1. Related','More stories','More from this publisher']
+                '__Related__','- Recommended','1. Related','More stories','More from this publisher',
+                '> '*40+'Ambiguous deeply nested material']
         for label in labels:
             with self.subTest(label=label):
                 raw=RAW+'\n\n'+label+'\n\n'+other
@@ -99,11 +100,33 @@ class RetainedRecoveryTests(unittest.TestCase):
                 updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
                 self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
 
+    def test_review_nested_containers_preserve_recommendation_boundaries(self):
+        from itertools import product
+        from retained_article import valid_body_passage,original_text
+        other='An unrelated issuer reports a different transaction and revised guidance. '*8
+        containers=['> {}','- {}','1. {}','- [ ] {}','- [x] {}']
+        for first,second,label in product(containers,containers,['Related','Recommended article']):
+            wrapped=first.format(second.format(label))
+            raw=RAW+'\n\n'+wrapped+'\n\n'+other;page=retain_article(PAGE,raw)
+            with self.subTest(label=wrapped):
+                self.assertFalse(valid_body_passage(page,other.strip()))
+                self.assertEqual(original_text(page),raw)
+        for label in ['1. > Related','- [ ] Recommended',
+                      '| Related coverage | Other issuer |\n| --- | --- |',
+                      '| Links | Recommended article |\n| --- | --- |']:
+            with self.subTest(transport_label=label):
+                page=retain_article(PAGE,RAW+'\n\n'+label+'\n\n'+other)
+                found,_,_=self.interpret([page],body=other.strip())
+                updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
+                self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+
     def test_review_transport_recommendation_labels_reject_foreign_body(self):
         from research_extraction import _project
         from extraction_worker import project_row
         other='An unrelated issuer reports a different transaction and revised guidance. '*8
-        for label in ['Recommended','**Recommended**','Recommended article','Related story: another issuer']:
+        for label in ['Recommended','**Recommended**','Recommended article','Related story: another issuer',
+                      '1. > Related','- [ ] Recommended',
+                      '| Related coverage | Other issuer |\n| --- | --- |']:
             with self.subTest(label=label):
                 raw=('# Navigation\n\n'+('Home Products Investors Company newsroom navigation. '*90)+
                      f'\n\n# {TITLE}\n\n{SUPPORT}\n\n{BODY*12}\n\n{label}\n\n{other}')

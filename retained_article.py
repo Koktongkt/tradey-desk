@@ -140,6 +140,24 @@ def _html_parts(page):
     return parser.witnesses,'\n\n'.join(parser.body),raw[parser.h1_end:end] if parser.h1_end is not None else ''
 
 
+def _recommendation_boundary(line):
+    """Recognize label families independently of nested Markdown containers."""
+    plain=re.sub(r'<[^>]+>',' ',html.unescape(line))
+    plain=re.sub(r'[*_~`]','',plain)
+    # Inspect every table cell, not just a particular column/pipe count.
+    for cell in plain.split('|'):
+        label=cell.lstrip()
+        # Each iteration consumes a nonempty token. Excessive nesting is
+        # ambiguous ownership and terminates scope rather than gaining authority.
+        for _ in range(32):
+            token=re.match(r'(?:>\s*|[-+]\s*|\d+[.)]\s*|\[[ xX]?\]\s*|\[)',label)
+            if token is None:break
+            label=label[token.end():].lstrip()
+        else:return True
+        if re.match(r'(?:related|recommend(?:ed|ations?)|more\s+(?:news|stories|from)|you\s+may\s+also\s+like)\b',label,re.I):return True
+    return False
+
+
 def _article(page):
     """Strict Markdown article structure; no inferred structure on flat text."""
     raw=original_text(page)
@@ -154,14 +172,11 @@ def _article(page):
     # Only the current article's direct header/intro scope is witnessed. A nested
     # section may describe a different event/article even if its date says Published.
     article=re.split(r'^#{1,6}\s+',article,flags=re.M)[0]
-    # Treat recommendation-label families as boundaries, not a list of exact
-    # suffixes. Normalize label markup only; retain the original bytes untouched.
+    # All body/header consumers share this owned scope; the full original stays
+    # available separately for document-global conflict and refusal checks.
     offset=0
     for line in article.splitlines(keepends=True):
-        label=re.sub(r'<[^>]+>',' ',html.unescape(line))
-        label=re.sub(r'^[\s>*_~`+\-\[]*(?:\d+[.)]\s*)?','',label)
-        label=re.sub(r'[*_~`]','',label)
-        if re.match(r'(?:related|recommend(?:ed|ations?)|more\s+(?:news|stories|from)|you\s+may\s+also\s+like)\b',label,re.I):
+        if _recommendation_boundary(line):
             article=article[:offset];break
         offset+=len(line)
     return article
