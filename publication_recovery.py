@@ -176,7 +176,9 @@ def choose_recovery_pages(candidates: list[dict], pages: list[dict], accepted: l
             except (ValueError, TypeError):continue
             if p.get('error'):continue
             _, notes = filter_pages([p], now=utc_now())
-            if not notes or notes[0].get('reason') != 'source_freshness_unknown':
+            from retained_article import body_context
+            body_recoverable=(notes and notes[0].get('reason')=='article_body_missing' and len(body_context(p).strip())>=80)
+            if not notes or (notes[0].get('reason') != 'source_freshness_unknown' and not body_recoverable):
                 continue
             if not isinstance(p.get('text'), str) or not 0 < len(p['text']) <= 6000:
                 continue
@@ -204,12 +206,27 @@ def choose_recovery_pages(candidates: list[dict], pages: list[dict], accepted: l
 
 
 def _attach(page, observation, *, now):
+    from retained_article import valid_body_passage,original_text,rebind_article
+    body=None
+    if isinstance(observation,dict) and set(observation)=={'observation','body_support'}:
+        body=observation['body_support']
+        if not valid_body_passage(page,body):return None
+        observation=observation['observation']
+    if 'publication_observation' in page and not validate_observation(page,page['publication_observation']):return None
     if not validate_observation(page, observation):
         return None
     updated = dict(page, publication_observation=dict(observation),
                    published_at=observation['value'],
                    publication_precision='day' if observation['precision'] == 'day' else 'second',
                    publication_basis=observation['basis'])
+    if body is not None:
+        raw=original_text(page)
+        updated.update(text=body,_publication_body_text=body)
+        updated=rebind_article(page,updated)
+        from publication_observation import build_observation
+        rebuilt=build_observation(updated,**{k:observation[k] for k in ('value','precision','basis','support','location')})
+        if rebuilt is None:return None
+        updated['publication_observation']=rebuilt
     return updated if evaluate_publication(updated, now=now)[0] else None
 
 

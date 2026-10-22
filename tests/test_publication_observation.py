@@ -159,15 +159,18 @@ class PublicationObservationTests(unittest.TestCase):
         page['publication_observation'] = observe(page, '2026-10-22')
         self.assertEqual(evaluate_publication(page, now=shifted_now), (True, None))
 
-    def test_module_imports_only_stdlib(self):
+    def test_publication_validation_dependency_closure_is_stdlib(self):
         import ast
         from pathlib import Path
         import sys
         import publication_observation
-        tree = ast.parse(Path(publication_observation.__file__).read_text())
-        imported = [node.module.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        imported += [alias.name.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
-        self.assertTrue(set(imported) <= sys.stdlib_module_names)
+        import retained_article
+        for module in (publication_observation,retained_article):
+            tree=ast.parse(Path(module.__file__).read_text())
+            imported=[node.module.split('.')[0] for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)]
+            imported += [alias.name.split('.')[0] for node in ast.walk(tree) if isinstance(node,ast.Import) for alias in node.names]
+            allowed=sys.stdlib_module_names|({'retained_article'} if module is publication_observation else set())
+            self.assertTrue(set(imported)<=allowed)
 
     def test_malformed_metadata_and_bounded_contexts(self):
         for text in ['<meta property="datePublished" content>',

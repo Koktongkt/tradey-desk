@@ -784,6 +784,8 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
         if publisher_domain(final_url)!=publisher_domain(url) or (final_url!=url and not is_safe_public_url(final_url)):
             raise UnsafeURLTarget("cross_publisher_redirect")
         body=r.read(2_000_000).decode("utf-8",errors="replace")
+        headers=getattr(r,'headers',{})
+        capture_headers={k:v for k,v in [('content-type',headers.get('Content-Type')),('last-modified',headers.get('Last-Modified'))] if isinstance(v,str)}
     title=""
     m=re.search(r"<title[^>]*>(.*?)</title>",body,re.IGNORECASE|re.DOTALL)
     if m:title=re.sub(r"\s+"," ",m.group(1)).strip()[:200]
@@ -804,13 +806,14 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     projected=prepare_publication_evidence(page,extracted_text=text)
     if conflict:projected.update(published_at=None,publication_observation=None)
     from retained_article import retain_article
-    return retain_article(projected,body)
+    return retain_article(projected,body,reported_metadata=capture_headers)
 
 
 GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
 # Per-thread detail channel preserves the legacy injected fetcher signature.
 _extraction_attempt:ContextVar[dict|None]=ContextVar("extraction_attempt",default=None)
 _research_run_id:ContextVar[str|None]=ContextVar("research_run_id",default=None)
+_gap_directed:ContextVar[bool]=ContextVar('radar_gap_directed',default=False)
 
 
 def correlated_research_run(function):
@@ -819,8 +822,10 @@ def correlated_research_run(function):
     def wrapped(*args,**kwargs):
         import uuid
         token=_research_run_id.set(uuid.uuid4().hex)
+        cfg=args[0] if args else kwargs.get('cfg',{})
+        gap_token=_gap_directed.set(isinstance(cfg,dict) and cfg.get('gap_retrieval_enabled') is True)
         try:return function(*args,**kwargs)
-        finally:_research_run_id.reset(token)
+        finally:_research_run_id.reset(token);_gap_directed.reset(gap_token)
     return wrapped
 
 
@@ -917,10 +922,10 @@ def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,faile
     if returned!=url:result_page["returned_url"]=returned
     from publication_observation import prepare_publication_evidence
     projected=prepare_publication_evidence(result_page,extracted_text=body)
-    from retained_article import original_text,retain_article
+    from retained_article import original_text,rebind_article
     original=original_text(page) if page.get('location_provenance')=='uncached_dispatch' else None
-    if original is not None:return retain_article(projected,original)
-    if page.get('_capture_status') in ('capacity','missing','invalid'):projected['_capture_status']=page['_capture_status']
+    if original is not None:return rebind_article(page,projected)
+    if page.get('_capture_status') in ('capacity','missing','invalid','incomplete'):projected['_capture_status']=page['_capture_status']
     return projected
 
 
@@ -1630,9 +1635,17 @@ def sec_edgar_filing_url(symbol:str,event_date:str,urlopen=urllib.request.urlope
 def gateway_rescue_url(
     symbol:str,catalyst:str,run=subprocess.run,deadline:float|None=None,
     role:str="independent",strict_provider:bool=False,
+    event_date:str|None=None,attempted:set|None=None,accepted_domains:set|None=None,
 )->str|None:
     """Return one source URL from the requested independent or wire lane."""
     if role not in GATEWAY_RESCUE_PROMPTS:return None
+    if _gap_directed.get():
+        from gap_retrieval import search_gap,GapContainmentError
+        try:
+            return search_gap(symbol,catalyst,event_date,role=role,attempted=attempted or set(),
+                accepted_domains=accepted_domains or set(),deadline=deadline if deadline is not None else monotonic()+GATEWAY_RESCUE_TIMEOUT_SECONDS)
+        except GapContainmentError as error:raise ResearchFailure('research_rescue_containment_unconfirmed') from error
+        except OSError as error:return _gateway_provider_failure(strict_provider,error)
     prompt=GATEWAY_RESCUE_PROMPTS[role].format(symbol=symbol,catalyst=str(catalyst)[:300])
     cmd=research_subprocess_command("web",max_turns=2,run_budget=45)
     try:
@@ -1696,9 +1709,12 @@ def _post_fetch_rescue_steps(
         })
     def candidate_rescue_url(role:str)->str|None:
         try:
+            gap_options=({'event_date':str(candidate.get('event_date') or ''),'attempted':set(attempted),'accepted_domains':domains()}
+                if _gap_directed.get() else {})
             return gateway_rescue_url(
                 str(candidate.get("symbol") or ""),str(candidate.get("catalyst") or ""),
                 deadline=deadline,role=role,strict_provider=True,
+                **gap_options,
             )
         except ResearchFailure as error:
             if error.code!="research_rescue_unavailable":raise

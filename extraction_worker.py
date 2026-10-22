@@ -86,13 +86,13 @@ def project_row(row, guarded_location=False):
     page = {'url': url, 'title': title[:200], 'text': content[:6000], **extensions}
     if guarded_location:
         page['location_provenance'] = 'uncached_dispatch'
-        from retained_article import original_text,retain_article
+        from retained_article import original_text,rebind_article
         wire={'url':url,'title':title[:200],'text':row.get('content'),
               '_retained_article':row.get('_retained_article')}
         original=original_text(wire)
         if original is not None:
-            page=retain_article(page,original)
-        elif row.get('_capture_status') in ('capacity','missing','invalid'):
+            page=rebind_article(wire,page)
+        elif row.get('_capture_status') in ('capacity','missing','invalid','incomplete'):
             page['_capture_status']=row['_capture_status']
     return {'version': 1, 'status': 'ok', 'page': page}
 

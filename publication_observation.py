@@ -559,10 +559,27 @@ def build_observation(page: dict, *, value: str, precision: str, basis: str,
     return observation if validate_observation(page, observation) else None
 
 
+def binding_contexts(page):
+    """Legacy contexts plus independently bound, retained article witnesses."""
+    contexts=_contexts(page)
+    from retained_article import original_text,publication_witnesses
+    raw=original_text(page)
+    if raw is not None:
+        original={k:v for k,v in page.items() if k not in ('_retained_article','_capture_sha256','publication_observation')}
+        original['text']=raw
+        contexts+=_contexts(original)
+        for witness in publication_witnesses(page):
+            for _,date,_ in _dates(witness):contexts.append(('llm_grounded',witness,date))
+    return contexts
+
+
 def validate_observation(page: dict, observation: object) -> bool:
     """Check schema AND retained publication evidence; not origin authenticity."""
     if not _page_valid(page) or not isinstance(observation, dict) or set(observation) != _KEYS:
         return False
+    from retained_article import original_text
+    original=original_text(page)
+    if '_retained_article' in page and original is None:return False
     o = observation
     if (type(o['version']) is not int or o['version'] != OBSERVATION_VERSION
             or o['parser_version'] != PARSER_VERSION
@@ -579,7 +596,7 @@ def validate_observation(page: dict, observation: object) -> bool:
     support = normalize_support(o['support'])
     if parsed is None or not support or _UNSAFE_QUOTE.search(o['support']):
         return False
-    contexts = _contexts(page)
+    contexts = binding_contexts(page)
     # All retained publication roles participate in conflict detection, regardless
     # of which quote/basis was selected. Updates/events never become candidates.
     days = {candidate for _, _, candidate in contexts if not isinstance(candidate, dt.datetime)}
@@ -600,7 +617,7 @@ def validate_observation(page: dict, observation: object) -> bool:
         if support not in normalized and normalized not in support:
             continue
         # Quote must actually contain the supported date, not merely the heading.
-        if (support in normalize_support(page['text'])
+        if (support in normalize_support(original if original is not None else page['text'])
                 and any(_same_claim(parsed, date) for _, date, _ in _dates(o['support']))):
             return True
     return False

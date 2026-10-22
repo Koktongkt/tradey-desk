@@ -69,7 +69,7 @@ class ProbeTests(unittest.TestCase):
         for result, detail in cases:
             with self.subTest(detail=detail):
                 report = probe.run_probe(['https://example.com/a', 'https://example.com/b'],
-                    'worker', runner=lambda url, mode: (result, detail) if url.endswith('/a') else (success, complete))
+                    'worker', runner=lambda url, mode: (result, detail) if url.endswith('/a') else ({**success,'page':{**success['page'],'url':url}}, complete))
                 self.assertIsNone(report['request_count'])
                 self.assertFalse(report['rows'][0]['request_count_complete'])
                 self.assertEqual(len(report['rows'][0]['attempts']), 1)

@@ -194,7 +194,7 @@ def _project(row, original, limit, *, retain_capture=False):
             'error': None, **extensions}
     if not retain_capture:return result
     from retained_article import retain_article
-    owned=retain_article({'url':result['url'],'title':result['title'],'text':result['content']},row['content'])
+    owned=retain_article({'url':result['url'],'title':result['title'],'text':result['content']},row['content'],reported_metadata=row.get('metadata'))
     result.update({k:v for k,v in owned.items() if k in ('_retained_article','_capture_status')})
     # Retention is optional; it never converts a full-envelope overflow to success.
     if len(json.dumps({'results':[result]},ensure_ascii=True).encode())>MAX_ENVELOPE_BYTES:

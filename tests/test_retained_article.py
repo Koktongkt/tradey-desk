@@ -54,6 +54,33 @@ class RetainedArticleTests(unittest.TestCase):
         self.assertFalse(m.valid_body_passage(p,'The stock will certainly rise.'))
         self.assertFalse(m.valid_body_passage(p,'| Published | October 21, 2026 |'))
 
+    def test_html_definition_relation_and_article_body_are_bound(self):
+        m=self.api()
+        raw=f'<html><article><h1>{TITLE}</h1><dl><dt>Published</dt><dd>October 21, 2026</dd></dl><p>{BODY}</p><aside><p>Not the article body. </p></aside></article></html>'
+        p=m.retain_article(PAGE,raw)
+        self.assertTrue(m.publication_witnesses(p));self.assertTrue(m.valid_body_passage(p,BODY.strip()))
+        for changed in (raw.replace('Published','Updated'),raw.replace(TITLE,'Related article'),raw.replace('<dl>','<aside><dl>').replace('</dl>','</dl></aside>')):
+            self.assertEqual(m.publication_witnesses(m.retain_article(PAGE,changed)),[])
+
+    def test_provider_truncated_original_never_claims_complete(self):
+        m=self.api();p=m.retain_article(PAGE,RAW+'\n─── [TRUNCATED] Full text omitted.')
+        self.assertIsNone(m.original_text(p));self.assertEqual(p['_capture_status'],'incomplete')
+
+    def test_mixed_event_or_nested_navigation_date_has_no_witness(self):
+        m=self.api()
+        for raw in (RAW.replace('October 21, 2026','Event date October 21, 2026'),f'<article><h1>{TITLE}</h1><dl><dt>Published</dt><dd><aside>October 21, 2026</aside></dd></dl><p>{BODY}</p></article>'):
+            self.assertEqual(m.publication_witnesses(m.retain_article(PAGE,raw)),[])
+
+    def test_provider_metadata_is_retained_as_hint_not_publication_authority(self):
+        m=self.api()
+        import inspect
+        self.assertIn('reported_metadata',inspect.signature(m.retain_article).parameters)
+        raw=f'# {TITLE}\n\n{BODY}'
+        p=m.retain_article(PAGE,raw,reported_metadata={'datePublished':'2026-10-21','sourceURL':PAGE['url']})
+        self.assertEqual(p['_retained_article']['reported_metadata']['datePublished'],'2026-10-21')
+        import publication_observation as obs
+        self.assertIsNone(obs.build_observation(p,value='2026-10-21',precision='day',basis='llm_grounded',support='2026-10-21',location='provider report'))
+
     def test_dispatch_worker_normalizer_preserve_same_original(self):
         m=self.api()
         from research_extraction import _project
