@@ -1808,13 +1808,28 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     """
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
     overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
-    try:
-        with timed_research_stage("discovery"):
-            scout=subprocess.run(discovery_command(),input=discovery_prompt(cfg),capture_output=True,text=True,timeout=min(DISCOVERY_TIMEOUT_SECONDS,overall_deadline-monotonic()),cwd=ROOT)
-    except subprocess.TimeoutExpired:
-        raise ResearchFailure("research_scout_timeout")
-    if scout.returncode: raise ResearchFailure("research_scout_unavailable")
-    scout_candidates,scout_diagnostic=scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)
+    if cfg.get('discovery_v2_enabled',False) is True:
+        from discovery_pipeline import discover,DiscoveryFailure
+        try:
+            with timed_research_stage('discovery'):
+                scout_candidates,scout_diagnostic=discover(
+                    cfg,now=dt.datetime.now(dt.timezone.utc),
+                    deadline=min(monotonic()+DISCOVERY_TIMEOUT_SECONDS,overall_deadline-FOCUSED_DOWNSTREAM_RESERVE_SECONDS),
+                    history_path=ROOT/'private'/'discovery_v2'/'history.json',
+                    artifact_dir=ROOT/'private'/'discovery_v2'/'runs',
+                    command_factory=lambda:research_subprocess_command('bot_room',max_turns=1,run_budget=45),
+                )
+        except DiscoveryFailure as error:
+            if error.reason.endswith('timeout'):raise ResearchFailure('research_scout_timeout') from error
+            raise ResearchFailure('research_scout_unavailable') from error
+    else:
+        try:
+            with timed_research_stage("discovery"):
+                scout=subprocess.run(discovery_command(),input=discovery_prompt(cfg),capture_output=True,text=True,timeout=min(DISCOVERY_TIMEOUT_SECONDS,overall_deadline-monotonic()),cwd=ROOT)
+        except subprocess.TimeoutExpired:
+            raise ResearchFailure("research_scout_timeout")
+        if scout.returncode: raise ResearchFailure("research_scout_unavailable")
+        scout_candidates,scout_diagnostic=scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)
     try:record_scout_diagnostic(scout_diagnostic)
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     if not scout_candidates:

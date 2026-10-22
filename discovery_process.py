@@ -18,8 +18,8 @@ def failed(reason,code=1):
     return subprocess.CompletedProcess([],code,json.dumps({'version':1,'status':'error','reason':reason}),'')
 
 
-def run_process(command,input:bytes,*,deadline:float,cwd:Path):
-    if not isinstance(input,bytes) or len(input)>MAX_INPUT:return failed('input_limit')
+def run_process(command,input:bytes,*,deadline:float,cwd:Path,max_input_bytes:int=MAX_INPUT):
+    if max_input_bytes not in (MAX_INPUT,65536) or not isinstance(input,bytes) or len(input)>max_input_bytes:return failed('input_limit')
     if monotonic()>=deadline:return failed('timeout',124)
     try:payload=input.decode('utf-8')
     except UnicodeError:return failed('invalid_request')
