@@ -30,6 +30,23 @@ class RetainedRecoveryTests(unittest.TestCase):
         found,notes=model.interpret_publications(pages,deadline=time.monotonic()+2,command_factory=lambda:['offline'],runner=runner,now=NOW)
         return found,notes,calls
 
+    def test_review_nested_sections_cannot_supply_article_publication(self):
+        cases=[(f'# {TITLE}\n\n## Event details\n{SUPPORT}\n\n{BODY}',SUPPORT),
+            (f'<article><h1>{TITLE}</h1><section aria-label="Related story"><h2>Other company announcement</h2><dl><dt>Published</dt><dd>October 21, 2026</dd></dl></section><p>{BODY}</p></article>','<dt>Published</dt><dd>October 21, 2026</dd>')]
+        for raw,support in cases:
+            with self.subTest(raw=raw[:80]):self.assertEqual(self.interpret([retain_article(PAGE,raw)],support=support)[0],{})
+
+    def test_review_projection_cannot_launder_nested_date(self):
+        raw=f'# {TITLE}\n\n## Event details\n{SUPPORT}\n\n{BODY}'
+        projection=f'# {TITLE}\nPublished: October 21, 2026\n{BODY}'
+        self.assertEqual(self.interpret([retain_article({**PAGE,'text':projection},raw)],support='October 21, 2026')[0],{})
+
+    def test_review_related_body_cannot_be_selected_as_article_body(self):
+        other='An unrelated issuer reports a different transaction and revised guidance. '*8
+        for raw,support in [(RAW+'\n\n## Related companies\n\n'+other,SUPPORT),
+            (f'<article><h1>{TITLE}</h1><dl><dt>Published</dt><dd>October 21, 2026</dd></dl><section aria-label="Related story"><h2>Other issuer</h2><p>{other}</p></section></article>','<dt>Published</dt><dd>October 21, 2026</dd>')]:
+            with self.subTest(raw=raw[:80]):self.assertEqual(self.interpret([retain_article(PAGE,raw)],support=support,body=other.strip())[0],{})
+
     def test_unrecognized_layout_proposal_reaches_actual_source_filter(self):
         page=retain_article(PAGE,RAW);self.assertEqual(observation._contexts(PAGE),[])
         found,notes,calls=self.interpret([page]);self.assertIn(page['url'],found)
@@ -64,6 +81,39 @@ class RetainedRecoveryTests(unittest.TestCase):
             delivered,notes=recovery.recover_publications(candidates,pages,[],state=recovery.RecoveryState(),overall_deadline=time.monotonic()+200,downstream_reserve=0,cache_path=Path(d)/'cache.json',fetcher=lambda *a,**k:(_ for _ in ()).throw(AssertionError('no fetch')),interpreter=interpret,publisher=radar.publisher_domain,filter_pages=radar.filter_evidence,allow_model=True)
         accepted,_=radar.filter_evidence(delivered,now=NOW)
         self.assertEqual(len(accepted),2);self.assertEqual(len(calls),1)
+
+    def test_review_known_publication_body_repair_preserves_proof_one_batch(self):
+        for kind in ('observation','instant'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                raw=RAW if kind=='observation' else RAW.replace('October 21, 2026','2026-10-21T14:00:00Z')
+                page=retain_article({**PAGE,'text':'Menu only.'},raw)
+                if kind=='observation':
+                    proof=observation.build_observation(page,value='2026-10-21',precision='day',basis='llm_grounded',support=SUPPORT,location='header')
+                    self.assertIsNotNone(proof);page['publication_observation']=proof
+                else:page.update(published_at='2026-10-21T14:00:00Z',publication_precision='second')
+                self.assertEqual(radar.filter_evidence([page],now=NOW)[1][0]['reason'],'article_body_missing')
+                calls=[]
+                def interpret(selected,*,deadline):
+                    def runner(command,*,input,deadline):
+                        wire=json.loads(input);calls.append(wire)
+                        return subprocess.CompletedProcess([],0,json.dumps({'version':1,'results':[{'id':r['id'],'body_support':BODY.strip()} for r in wire['pages']]}),'')
+                    return model.interpret_publications(selected,deadline=deadline,command_factory=lambda:['offline'],runner=runner,now=NOW)
+                result,notes=recovery.recover_publications([{'symbol':'ABC','urls':[page['url']]}],[page],[],state=recovery.RecoveryState(),overall_deadline=time.monotonic()+200,downstream_reserve=0,cache_path=Path(d)/'cache.json',fetcher=lambda *a,**k:(_ for _ in ()).throw(AssertionError('no fetch')),interpreter=interpret,publisher=radar.publisher_domain,filter_pages=radar.filter_evidence)
+                self.assertEqual(len(calls),1);self.assertEqual(len(radar.filter_evidence(result,now=NOW)[0]),1)
+                self.assertEqual(result[0]['_publication_body_text'],BODY.strip())
+                if kind=='observation':
+                    for field in ('value','precision','basis','support','location'):self.assertEqual(result[0]['publication_observation'][field],proof[field])
+                else:
+                    self.assertNotIn('publication_observation',result[0]);self.assertEqual(result[0]['published_at'],page['published_at']);self.assertEqual(result[0]['publication_precision'],'second')
+
+    def test_review_body_only_preserves_hard_refusals_and_stale_dates(self):
+        for extra,raw in [({'publication_observation':None,'published_at':'2026-10-21T14:00:00Z'},RAW),
+                ({'published_at':'2025-01-01T14:00:00Z'},RAW),
+                ({'published_at':'2026-10-21T14:00:00Z'},RAW.replace(TITLE,'Different article'))]:
+            page=retain_article({**PAGE,'text':'Menu only.',**extra},raw)
+            selected=recovery.choose_recovery_pages([{'symbol':'ABC','urls':[page['url']]}],[page],[],publisher=radar.publisher_domain,filter_pages=radar.filter_evidence)
+            self.assertEqual(selected,[])
+            self.assertIsNone(recovery._attach(page,{'body_support':BODY.strip()},now=NOW))
 
     def test_missing_body_capture_can_reach_same_existing_recovery_batch(self):
         page=retain_article({**PAGE,'text':'Menu only.'},RAW)

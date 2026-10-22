@@ -326,8 +326,8 @@ class InterpreterTests(unittest.TestCase):
         import publication_interpreter as interpreter
         clock = [1.0]; factories = []
         prepare = interpreter._prepare_request
-        def slow_prepare(*args):
-            result = prepare(*args); clock[0] = 11.0; return result
+        def slow_prepare(*args,**kwargs):
+            result = prepare(*args,**kwargs); clock[0] = 11.0; return result
         with patch.object(interpreter, 'monotonic', side_effect=lambda:clock[0]), patch.object(interpreter, '_prepare_request', side_effect=slow_prepare):
             found, diag = interpreter.interpret_publications([page()], deadline=10,
                 command_factory=lambda:factories.append(1), runner=lambda *a,**kw:None, now=NOW)

@@ -559,15 +559,18 @@ def build_observation(page: dict, *, value: str, precision: str, basis: str,
     return observation if validate_observation(page, observation) else None
 
 
-def binding_contexts(page):
+def binding_contexts(page,*,strict_header=False):
     """Legacy contexts plus independently bound, retained article witnesses."""
     contexts=_contexts(page)
-    from retained_article import original_text,publication_witnesses
+    from retained_article import original_text,publication_witnesses,visible_header_text
     raw=original_text(page)
     if raw is not None:
         original={k:v for k,v in page.items() if k not in ('_retained_article','_capture_sha256','publication_observation')}
         original['text']=raw
-        contexts+=_contexts(original)
+        header=normalize_support(visible_header_text(page))
+        if strict_header:contexts=[(basis,context,date) for basis,context,date in contexts if basis=='structured_metadata' or normalize_support(context) in header]
+        contexts += [(basis,context,date) for basis,context,date in _contexts(original)
+                     if basis=='structured_metadata' or normalize_support(context) in header]
         for witness in publication_witnesses(page):
             for _,date,_ in _dates(witness):contexts.append(('llm_grounded',witness,date))
     return contexts
@@ -596,7 +599,7 @@ def validate_observation(page: dict, observation: object) -> bool:
     support = normalize_support(o['support'])
     if parsed is None or not support or _UNSAFE_QUOTE.search(o['support']):
         return False
-    contexts = binding_contexts(page)
+    contexts = binding_contexts(page,strict_header=o['basis']=='llm_grounded')
     # All retained publication roles participate in conflict detection, regardless
     # of which quote/basis was selected. Updates/events never become candidates.
     days = {candidate for _, _, candidate in contexts if not isinstance(candidate, dt.datetime)}

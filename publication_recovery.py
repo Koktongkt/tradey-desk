@@ -22,7 +22,7 @@ RECOVERY_BUDGET_SECONDS = 90
 # ten-page fair-binding ceiling as model-path admissions.
 RECOVERY_PAGE_LIMIT = 10
 RECOVERY_REASONS = frozenset({'cache_hit','refetched','fetch_failed','invalid_page',
-    'recovered_day','recovered_instant','recovered_page_limit','parser_unknown','hard_refusal','stale_source',
+    'recovered_day','recovered_instant','recovered_body','body_recovery_pending','recovered_page_limit','parser_unknown','hard_refusal','stale_source',
     'success','unknown','missing_member','duplicate_member','invalid_member',
     'inadmissible_publication','existing_observation','page_limit','duplicate_url',
     'input_limit','timeout','command_unavailable','worker_unavailable','worker_exit',
@@ -168,8 +168,11 @@ def choose_recovery_pages(candidates: list[dict], pages: list[dict], accepted: l
         for url in urls:
             if expired():break
             p = by_url.get(url)
-            if p is None or url in accepted_urls or 'publication_observation' in p or _known_instant(p):
-                continue  # Present-invalid is a non-overridable ingestion refusal.
+            if p is None or url in accepted_urls:continue
+            from publication_interpreter import body_repair_needed
+            body_only=body_repair_needed(p) and evaluate_publication(p,now=utc_now())[0]
+            if 'publication_observation' in p and not validate_observation(p,p['publication_observation']):continue
+            if ('publication_observation' in p or _known_instant(p)) and not body_only:continue
             try:
                 locations = [urlsplit(p.get(k, url)) for k in ('url', 'returned_url')]
                 if any(u.scheme not in ('http','https') or not u.hostname for u in locations):continue
@@ -208,14 +211,20 @@ def choose_recovery_pages(candidates: list[dict], pages: list[dict], accepted: l
 def _attach(page, observation, *, now):
     from retained_article import valid_body_passage,original_text,rebind_article
     body=None
-    if isinstance(observation,dict) and set(observation)=={'observation','body_support'}:
+    body_only=isinstance(observation,dict) and set(observation)=={'body_support'}
+    if body_only:
+        from publication_interpreter import body_repair_needed
+        body=observation['body_support']
+        if not body_repair_needed(page) or not evaluate_publication(page,now=now)[0] or not valid_body_passage(page,body):return None
+        observation=page.get('publication_observation')
+    elif isinstance(observation,dict) and set(observation)=={'observation','body_support'}:
         body=observation['body_support']
         if not valid_body_passage(page,body):return None
         observation=observation['observation']
     if 'publication_observation' in page and not validate_observation(page,page['publication_observation']):return None
-    if not validate_observation(page, observation):
+    if not (body_only and observation is None) and not validate_observation(page, observation):
         return None
-    updated = dict(page, publication_observation=dict(observation),
+    updated = dict(page) if body_only else dict(page, publication_observation=dict(observation),
                    published_at=observation['value'],
                    publication_precision='day' if observation['precision'] == 'day' else 'second',
                    publication_basis=observation['basis'])
@@ -224,9 +233,10 @@ def _attach(page, observation, *, now):
         updated.update(text=body,_publication_body_text=body)
         updated=rebind_article(page,updated)
         from publication_observation import build_observation
-        rebuilt=build_observation(updated,**{k:observation[k] for k in ('value','precision','basis','support','location')})
-        if rebuilt is None:return None
-        updated['publication_observation']=rebuilt
+        if observation is not None:
+            rebuilt=build_observation(updated,**{k:observation[k] for k in ('value','precision','basis','support','location')})
+            if rebuilt is None:return None
+            updated['publication_observation']=rebuilt
     return updated if evaluate_publication(updated, now=now)[0] else None
 
 
@@ -340,6 +350,9 @@ def _recover_publications(candidates: list[dict], pages: list[dict], accepted: l
     indices = {p['url']:i for i,p in enumerate(result) if isinstance(p.get('url'),str)}
     for p in bound:
         i = indices[p['url']]; url = p['url']
+        from publication_interpreter import body_repair_needed
+        if body_repair_needed(p) and evaluate_publication(p,now=utc_now())[0]:
+            note(i,'body_recovery_pending');continue
         note(i,'parser_unknown')
         if state.attempted_model:break
         if expired():note(i,'timeout');break
@@ -397,14 +410,15 @@ def _recover_publications(candidates: list[dict], pages: list[dict], accepted: l
         selected_urls = {p['url'] for p in selected}
         for i, p in enumerate(result):
             if expired(): note(i, 'timeout'); break
-            if not isinstance(p.get('url'),str) or p['url'] not in selected_urls or 'publication_observation' in p:
+            if not isinstance(p.get('url'),str) or p['url'] not in selected_urls:
                 continue
             updated = _attach(p, observations.get(p.get('url')), now=utc_now())
             if updated is not None and filter_pages([updated], now=utc_now())[0]:
                 if expired(): note(i, 'timeout'); break
                 result[i] = updated
-                state.observations[p['url']] = dict(updated['publication_observation'])
-                note(i, 'recovered_day' if updated['publication_precision']=='day' else 'recovered_instant')
+                if isinstance(updated.get('publication_observation'),dict):state.observations[p['url']] = dict(updated['publication_observation'])
+                body_only=isinstance(observations.get(p['url']),dict) and set(observations[p['url']])=={'body_support'}
+                note(i, 'recovered_body' if body_only else 'recovered_day' if updated['publication_precision']=='day' else 'recovered_instant')
     # Persist successes only on the exact cached capture, retaining its check time.
     # A failed/unknown model result never creates a negative cache entry.
     changed = False

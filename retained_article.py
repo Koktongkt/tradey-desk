@@ -74,32 +74,49 @@ class _ArticleHTML(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.raw=raw;self.title=_normal(title);self.stack=[];self.articles=0
         self.h1=[];self.h1_count=0;self.heading=False;self.body_started=False
+        self.header_closed=False;self.body_closed=False;self.blocked_depths=[]
+        self.h1_end=None;self.header_stop=None
         self.label=[];self.dt_start=None;self.dt_end=None;self.pair=False
         self.paragraph=None;self.body=[];self.witnesses=[]
         self.lines=[0]
         for line in raw.splitlines(keepends=True):self.lines.append(self.lines[-1]+len(line))
     def _position(self):
         row,col=self.getpos();return self.lines[row-1]+col
-    def eligible(self):return 'article' in self.stack and not any(t in self.stack for t in ('nav','aside','footer','script','style'))
+    def eligible(self):
+        if 'article' not in self.stack or self.blocked_depths:return False
+        inner=self.stack[len(self.stack)-1-self.stack[::-1].index('article')+1:]
+        return not any(t in inner for t in ('nav','aside','footer','script','style','section','h2','h3','h4','h5','h6'))
     def handle_starttag(self,tag,attrs):
+        nested='article' in self.stack
         if tag=='article':self.articles+=1
         self.stack.append(tag)
+        if nested:
+            if tag in ('p','section','h2','h3','h4','h5','h6') and self.heading and self.header_stop is None:self.header_stop=self._position()
+            if tag in ('section','h2','h3','h4','h5','h6'):self.header_closed=True
+            if tag in ('h2','h3','h4','h5','h6'):self.body_closed=True
+            if any((k in ('class','id','aria-label') and isinstance(v,str) and re.search(r'related|recommended|event[-_ ]?detail|navigation|more[-_ ]news',v,re.I))
+                    or (k=='role' and v in ('region','complementary','navigation','article')) for k,v in attrs):
+                self.blocked_depths.append(len(self.stack));self.header_closed=True
+                self.pair=False
+                if self.header_stop is None:self.header_stop=self._position()
         if not self.eligible():return
         if tag=='h1':self.h1=[];self.h1_count+=1
-        elif tag=='p' and self.heading:self.body_started=True;self.paragraph=[]
-        elif tag=='dt' and self.heading and not self.body_started:
+        elif tag=='p' and self.heading and not self.body_closed:self.body_started=True;self.paragraph=[]
+        elif tag=='dt' and self.heading and not self.body_started and not self.header_closed:
             self.dt_start=self._position();self.label=[];self.dt_end=None
-        elif tag=='dd' and self.heading and not self.body_started:
+        elif tag=='dd' and self.heading and not self.body_started and not self.header_closed:
             self.pair=(self.dt_end is not None and not self.raw[self.dt_end:self._position()].strip()
                        and bool(re.fullmatch(r'published(?:\s+on)?|publication(?:\s+date)?',_normal(''.join(self.label)),re.I)))
     def handle_data(self,data):
         if not self.eligible():return
         if 'h1' in self.stack:self.h1.append(data)
         if 'dt' in self.stack:self.label.append(data)
-        if self.paragraph is not None and 'p' in self.stack:self.paragraph.append(data)
+        if self.paragraph is not None and 'p' in self.stack and not self.body_closed:self.paragraph.append(data)
     def handle_endtag(self,tag):
         if self.eligible():
-            if tag=='h1':self.heading=_normal(''.join(self.h1))==self.title
+            if tag=='h1':
+                self.heading=_normal(''.join(self.h1))==self.title
+                self.h1_end=self.raw.find('>',self._position())+1
             elif tag=='dt':self.dt_end=self.raw.find('>',self._position())+1
             elif tag=='dd' and self.pair and self.dt_start is not None:
                 end=self.raw.find('>',self._position())+1;span=self.raw[self.dt_start:end]
@@ -109,6 +126,7 @@ class _ArticleHTML(HTMLParser):
                 self.body.append(''.join(self.paragraph));self.paragraph=None
         if tag in self.stack:
             index=len(self.stack)-1-self.stack[::-1].index(tag);self.stack=self.stack[:index]
+            self.blocked_depths=[depth for depth in self.blocked_depths if depth<=len(self.stack)]
 
 
 def _html_parts(page):
@@ -118,7 +136,8 @@ def _html_parts(page):
     try:parser.feed(raw);parser.close()
     except Exception:return None
     if parser.articles!=1 or parser.h1_count!=1 or not parser.heading or 'article' in parser.stack:return None
-    return parser.witnesses,'\n\n'.join(parser.body)
+    end=parser.header_stop if parser.header_stop is not None else len(raw)
+    return parser.witnesses,'\n\n'.join(parser.body),raw[parser.h1_end:end] if parser.h1_end is not None else ''
 
 
 def _article(page):
@@ -132,8 +151,9 @@ def _article(page):
     h=matching[0]
     stop=next((x.start() for x in headings if x.start()>h.start()),len(raw))
     article=raw[h.end():stop]
-    # Explicit section boundaries are not publication or body authority.
-    article=re.split(r'^#{1,6}\s+(?:related|recommended|navigation|more news|footer)\b',article,flags=re.M|re.I)[0]
+    # Only the current article's direct header/intro scope is witnessed. A nested
+    # section may describe a different event/article even if its date says Published.
+    article=re.split(r'^#{1,6}\s+',article,flags=re.M)[0]
     return article
 
 
@@ -151,6 +171,12 @@ def publication_witnesses(page):
         if (re.fullmatch(r'\s*\|\s*(?:published(?:\s+on)?|publication(?:\s+date)?)\s*\|\s*[^|\n]{4,150}\s*\|\s*',line,re.I)
                 and not _UNSAFE_RELATION.search(line)):result.append(line.strip())
     return result
+
+
+def visible_header_text(page):
+    parts=_html_parts(page)
+    if parts is not None:return parts[2]
+    return _article(page) or ''
 
 
 def body_context(page):
