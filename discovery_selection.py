@@ -72,7 +72,15 @@ def admit_selection(text:str,collection:dict,*,now:dt.datetime)->tuple[list[dict
     except (ValueError,TypeError):audit['reason']='collection_schema_rejected';return [],audit
     audit['dispositions']={k:{'status':'unaccounted','reason':'not_retained'} for k in source}
     try:obj=strict_json_loads(text)
-    except (ValueError,TypeError,RecursionError):audit['reason']='invalid_json';return [],audit
+    except (ValueError,TypeError,RecursionError):
+        # A fenced markdown wrapper is transport, not payload: admit only when the
+        # extracted fence body passes this same strict parser. Everything else,
+        # including text outside the fence, stays invalid_json.
+        fenced=re.fullmatch(r'```(?:json)?\s*\n(.*?)\n?```\s*',text,re.DOTALL) if isinstance(text,str) else None
+        try:obj=strict_json_loads(fenced.group(1)) if fenced else None
+        except (ValueError,TypeError,RecursionError):obj=None
+        if obj is None:
+            audit['reason']='invalid_json';return [],audit
     if not isinstance(obj,dict) or set(obj)!={'candidates','exclusions'} or not isinstance(obj['candidates'],list) or len(obj['candidates'])>100 or not isinstance(obj['exclusions'],list) or len(obj['exclusions'])>120:return [],audit
     cutoff=now.astimezone(dt.timezone.utc).date()-dt.timedelta(days=7)
     if isinstance(collection.get('event_cutoff'),str):

@@ -81,3 +81,21 @@ class SelectionTests(unittest.TestCase):
         m=self.api();c,a=m.admit_selection('{"candidates":[],"exclusions":[]}',collection(),now=NOW)
         self.assertEqual(a['reason'],'no_discovered_candidate')
         c,a=m.admit_selection('bad',collection(),now=NOW);self.assertEqual(a['reason'],'invalid_json')
+
+    def test_markdown_fenced_json_is_admitted_with_identical_strict_validation(self):
+        m=self.api()
+        fenced='```json\n'+proposal()+'\n```'
+        c,a=m.admit_selection(fenced,collection(),now=NOW)
+        self.assertEqual(a['reason'],'discovery_candidates_ready');self.assertEqual(a['parsed_candidate_count'],1)
+        c2,a2=m.admit_selection('```\n'+proposal()+'\n```',collection(),now=NOW)
+        self.assertEqual(c2,c);self.assertEqual(a2['reason'],a['reason'])
+        # Same payload with a fence is never treated as empty: audit must not say invalid_json.
+        self.assertNotEqual(a['reason'],'invalid_json')
+        # Fenced malformed/invalid payloads stay rejected exactly like unfenced ones.
+        for text in ('```json\nbad\n```','```json\n'+json.dumps({'candidates':[]})+'\n```',
+                     'text before ```json\n'+proposal()+'\n``` after'):
+            c3,a3=m.admit_selection(text,collection(),now=NOW)
+            self.assertEqual(c3,[],text[:30])
+        # Interior tampering keeps row-level rejections: fence stripping cannot launder bindings.
+        c4,a4=m.admit_selection('```json\n'+proposal(result_id='invented')+'\n```',collection(),now=NOW)
+        self.assertEqual(c4,[]);self.assertEqual(len(a4['row_outcomes']),1)
