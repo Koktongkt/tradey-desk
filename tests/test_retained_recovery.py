@@ -85,6 +85,35 @@ class RetainedRecoveryTests(unittest.TestCase):
         projection=f'# {TITLE}\nPublished: October 21, 2026\n{BODY}'
         self.assertEqual(self.interpret([retain_article({**PAGE,'text':projection},raw)],support='October 21, 2026')[0],{})
 
+    def test_review_recommendation_labels_never_authorize_foreign_body(self):
+        other='An unrelated issuer reports a different transaction and revised guidance. '*8
+        labels=['Recommended','**Recommended**','Recommended article','Related','**Related**',
+                'Recommendation','Recommendations','Related products','> **Recommended articles**',
+                '[Related](https://publisher.example/other)','<strong>Recommended</strong>',
+                '__Related__','- Recommended','1. Related','More stories','More from this publisher']
+        for label in labels:
+            with self.subTest(label=label):
+                raw=RAW+'\n\n'+label+'\n\n'+other
+                page=retain_article(PAGE,raw)
+                found,_,_=self.interpret([page],body=other.strip())
+                updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
+                self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+
+    def test_review_transport_recommendation_labels_reject_foreign_body(self):
+        from research_extraction import _project
+        from extraction_worker import project_row
+        other='An unrelated issuer reports a different transaction and revised guidance. '*8
+        for label in ['Recommended','**Recommended**','Recommended article','Related story: another issuer']:
+            with self.subTest(label=label):
+                raw=('# Navigation\n\n'+('Home Products Investors Company newsroom navigation. '*90)+
+                     f'\n\n# {TITLE}\n\n{SUPPORT}\n\n{BODY*12}\n\n{label}\n\n{other}')
+                row=_project({'url':PAGE['url'],'title':TITLE,'content':raw},PAGE['url'],6000,retain_capture=True)
+                page=radar.validate_structured_page(PAGE['url'],project_row(row,guarded_location=True))
+                self.assertIsNotNone(page)
+                found,_,_=self.interpret([page],body=other.strip())
+                updated=recovery._attach(page,found.get(PAGE['url']),now=NOW)
+                self.assertFalse(updated and radar.filter_evidence([updated],now=NOW)[0])
+
     def test_review_related_body_cannot_be_selected_as_article_body(self):
         other='An unrelated issuer reports a different transaction and revised guidance. '*8
         for raw,support in [(RAW+'\n\n## Related companies\n\n'+other,SUPPORT),

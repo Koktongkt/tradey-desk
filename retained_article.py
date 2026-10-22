@@ -154,9 +154,16 @@ def _article(page):
     # Only the current article's direct header/intro scope is witnessed. A nested
     # section may describe a different event/article even if its date says Published.
     article=re.split(r'^#{1,6}\s+',article,flags=re.M)[0]
-    # An explicit unheaded recommendation label closes the current article too.
-    # Preserve the full original separately for conflict/refusal validation.
-    article=re.split(r'^[ \t]*(?:\*\*|__)?(?:related\s+(?:story|stories|article|articles|news|content|companies)|recommended\s+(?:story|stories|articles|reading)|more\s+news|you\s+may\s+also\s+like)\b',article,maxsplit=1,flags=re.I|re.M)[0]
+    # Treat recommendation-label families as boundaries, not a list of exact
+    # suffixes. Normalize label markup only; retain the original bytes untouched.
+    offset=0
+    for line in article.splitlines(keepends=True):
+        label=re.sub(r'<[^>]+>',' ',html.unescape(line))
+        label=re.sub(r'^[\s>*_~`+\-\[]*(?:\d+[.)]\s*)?','',label)
+        label=re.sub(r'[*_~`]','',label)
+        if re.match(r'(?:related|recommend(?:ed|ations?)|more\s+(?:news|stories|from)|you\s+may\s+also\s+like)\b',label,re.I):
+            article=article[:offset];break
+        offset+=len(line)
     return article
 
 
