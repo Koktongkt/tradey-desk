@@ -59,6 +59,7 @@
    "test_candidate_alternatives",
    "test_discovery_pipeline",
    "test_discovery_evaluation",
+   "test_discovery_state",
    "test_focused_pipeline",
    "test_focused_handoff",
    "test_rescue_fairness",

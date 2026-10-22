@@ -5,6 +5,7 @@ Status: implemented opt-in on the isolated design/discovery-quality-first branch
 ## What is implemented
 
 - A bounded, six-concurrent-lane code-owned search worker using the existing configured search dispatcher, with typed lane errors and provider receipts.
+- A bounded auxiliary state worker isolating all history/archive I/O behind the same pidfd/subreaper guardian. Post-selector admission, each history write, the archive write and the healthy-empty/failure finish paths are checked against the original absolute deadline; expired work raises persistence/selector timeouts instead of returning successful candidates. Unconfirmed state containment stops research rather than degrading to a benign auxiliary failure.
 - One tool-free selector, source-ID/quote binding, provisional event-state labels, explicit per-row exclusions/rejections and a bounded64KiB model projection.
 - Safe private cross-scan observed-story context (not a ticker blacklist or qualified-dossier reuse rule).
 - An opt-in `discovery_v2_enabled` branch in existing research. Default legacy behavior and all evidence, qualification and execution gates are unchanged.
@@ -41,7 +42,7 @@ Use the existing no-install dependency setup. Prepend the existing Tradey bridge
 
 Install `tests/offline_test_guard.py` before any test imports. Private helpers and logs are under `test_artifacts/discovery-quality-first/`; immutable prior publication corpus, retained incident captures, pinned baseline sources and the native-MCP replay fixture are test prerequisites. Missing private evidence fails; tests must not silently skip.
 
-Run targeted tests through `focused.sh`, full/raw through `suite.sh`, and actual offline evaluation through `evaluate.sh`. The evaluator CLI accepts `--inventory`, `--results`, `--labels`, `--out` and optional `--integration-fixtures`; output must be under a private test_artifacts directory and never overwrites existing proof files.
+Run targeted tests through `focused.sh`, full/raw through `suite.sh`, and actual offline evaluation through `evaluate.sh`. The evaluator CLI accepts `--inventory`, `--results`, `--labels`, `--out` and optional `--integration-fixtures`; output must be under a private test_artifacts directory and never overwrites existing proof files. Focused deadline/containment regressions include a monitored slow-fsync history write at every admission position and a blocked FIFO read; each bounded timeout reaps the supervised state worker.
 
 ## Decisions and limits for final review
 

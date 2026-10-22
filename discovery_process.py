@@ -19,7 +19,7 @@ def failed(reason,code=1):
 
 
 def run_process(command,input:bytes,*,deadline:float,cwd:Path,max_input_bytes:int=MAX_INPUT):
-    if max_input_bytes not in (MAX_INPUT,65536) or not isinstance(input,bytes) or len(input)>max_input_bytes:return failed('input_limit')
+    if max_input_bytes not in (MAX_INPUT,65536,4*1024*1024) or not isinstance(input,bytes) or len(input)>max_input_bytes:return failed('input_limit')
     if monotonic()>=deadline:return failed('timeout',124)
     try:payload=input.decode('utf-8')
     except UnicodeError:return failed('invalid_request')

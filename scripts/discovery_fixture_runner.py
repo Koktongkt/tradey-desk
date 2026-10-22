@@ -35,6 +35,11 @@ def run_cases(spec,out):
     sys.addaudithook(guard)
     import alpha_radar as r
     import discovery_pipeline as discovery
+    from discovery_state import execute as execute_state
+    def fixture_state(action,**kw):
+        request={'version':1,'action':action,'history_path':str(Path(kw['history_path']).absolute()),'artifact_dir':str(Path(kw['artifact_dir']).absolute()),'now':kw['now'].isoformat(),'deadline':kw['deadline']}
+        if action=='persist':request.update(candidates=kw.get('candidates',[]),capture=kw.get('capture',{}))
+        return execute_state(request)
     result={}
     for case in spec['cases']:
         root=out/'integration'/case/'test_artifacts';root.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -48,6 +53,7 @@ def run_cases(spec,out):
         cfg={'discovery_v2_enabled':True,'min_price_usd':1,'max_position_usd':500,'focused_retrieval_enabled':True}
         with contextlib.ExitStack() as stack:
             for target,name,value in [(r,'ROOT',root),(r,'configured_default_model',lambda:('offline','offline'))]:stack.enter_context(patch.object(target,name,value))
+            stack.enter_context(patch.object(discovery,'request_state',side_effect=fixture_state))
             stack.enter_context(patch.object(discovery,'run_collection',return_value=collection))
             stack.enter_context(patch.object(discovery,'run_selector',return_value=subprocess.CompletedProcess([],0,select,'')))
             stack.enter_context(patch.object(r,'focused_retrieval',return_value={'ABC':urls}))

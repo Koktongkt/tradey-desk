@@ -23,6 +23,38 @@ class PipelineTests(unittest.TestCase):
         with cm:
             return m.discover({},now=NOW,deadline=(clock[0]+165 if clock else time.monotonic()+165),history_path=root/'private/history.json',artifact_dir=root/'private/runs',command_factory=lambda:['not-a-live-model'],selector_runner=runner or (lambda *a,**kw:subprocess.CompletedProcess([],0,proposal(),'')))
 
+    def test_admission_expiry_skips_all_persistence_and_success(self):
+        m=self.api();clock=[100.0];writes=[]
+        original=m.admit_selection
+        def admit(*a,**kw):
+            value=original(*a,**kw);clock[0]=300.;return value
+        def state(action,**kw):
+            if action=='persist':writes.append('persist')
+            return {'status':'ok','history':{'entries':[]}}
+        with tempfile.TemporaryDirectory() as d,patch.object(m,'monotonic',side_effect=lambda:clock[0]),patch.object(m,'admit_selection',side_effect=admit),patch.object(m,'request_state',side_effect=state):
+            with self.assertRaises(m.DiscoveryFailure):self.invoke(m,Path(d),clock=clock)
+            self.assertEqual(writes,[])
+
+    def test_healthy_empty_persistence_expiry_never_returns_success(self):
+        m=self.api();clock=[100.0];empty=collection();empty['lanes'][0]['records']=[]
+        def save(*a,**kw):clock[0]=300.;return {'status':'ok','artifact_status':'persisted'}
+        with tempfile.TemporaryDirectory() as d,patch.object(m,'monotonic',side_effect=lambda:clock[0]),patch.object(m,'request_state',side_effect=save):
+            with self.assertRaises(m.DiscoveryFailure):self.invoke(m,Path(d),result=empty,clock=clock)
+
+    def test_unconfirmed_state_containment_stops_research(self):
+        m=self.api();calls=[]
+        def state(*a,**kw):calls.append(1);return {'status':'error','reason':'containment_unconfirmed'}
+        with tempfile.TemporaryDirectory() as d,patch.object(m,'request_state',side_effect=state):
+            with self.assertRaises(m.DiscoveryFailure) as err:self.invoke(m,Path(d))
+            self.assertEqual(err.exception.reason,'state_containment_unconfirmed');self.assertEqual(len(calls),1)
+
+    def test_failure_archive_expiry_preserves_original_failure(self):
+        m=self.api();clock=[100.0];calls=[]
+        def save(*a,**kw):calls.append(1);clock[0]=300.;return {'status':'error','reason':'timeout'}
+        with tempfile.TemporaryDirectory() as d,patch.object(m,'monotonic',side_effect=lambda:clock[0]),patch.object(m,'request_state',side_effect=save):
+            with self.assertRaises(m.DiscoveryFailure) as err:self.invoke(m,Path(d),result={'version':1,'status':'error'},clock=clock)
+            self.assertEqual(err.exception.reason,'collection_unavailable');self.assertEqual(len(calls),1)
+
     def test_one_tool_free_selector_no_search_turns(self):
         m=self.api();calls=[]
         with tempfile.TemporaryDirectory() as d:
