@@ -1,13 +1,13 @@
 # Discovery quality first: measured six-lane research improvement
 
-Status: design for user review; no implementation, live probe or rollout approved by this document itself.
+Status: updated design for user review, including a bounded LLM extraction-fallback contract; no implementation, live probe or rollout approved by this document itself.
 Base: `19ca9522c387ea55c5a1ddd1c32623ad303a08e5`; research behavior at `2694236`.
 
 ## 1. Agreed intent and first increment
 
 The user approved following the historical audit's recommendations and measuring improvement before committing to a full research overhaul. Start with discovery/search selection and its existing focused-retrieval handoff. Preserve all six lanes and existing configured providers. Do not claim search coverage or qualifications improve merely because control moves into code.
 
-This is an architectural change to discovery ownership, not permission to rewrite execution, introduce a new feed or change safety policy. Subsequent publication-context and rescue redesign are separate increments. Their known failures remain visible; discovery work alone cannot establish end-to-end recovery.
+This is an architectural change to discovery ownership, not permission to rewrite execution, introduce a new feed or change safety policy. Discovery remains the first increment. The user also requested an LLM fallback when deterministic extraction fails; section3F now specifies that follow-up extraction/publication increment. It is part of this design direction, not silently included in discovery implementation or treated as already deployed. Broad rescue redesign remains separate. Known downstream failures stay visible; discovery work alone cannot establish end-to-end recovery.
 
 ### Alternatives
 
@@ -67,6 +67,21 @@ The 34 production discovery-bearing fires produced 15 system failures, 11 empty 
 - Annotate repeated unchanged stories so the selector can allocate attention elsewhere; do not ban the ticker or suppress an event solely because it was previously rejected. New disclosures/outcome changes must remain discoverable.
 - Do not alter qualified-dossier reuse/spending rules. This history is research context, not execution permission or a new ticker cooldown.
 
+### F. Bounded LLM extraction fallback (follow-up increment)
+
+The fallback interprets content that was actually fetched. It is not another agent-controlled fetch or search path.
+
+1. Code performs bounded acquisition and standard article-body/publication extraction first, preserving the original capture, requested/returned URL identity, header/metadata structure and a locally computed content hash before flattening.
+2. If substantive content exists but standard parsing cannot interpret its layout, retain it in an unresolved-capture pool. It remains unaccepted evidence; an unfamiliar layout alone must not discard the capture before fallback admission.
+3. One tool-free LLM interpretation pass may propose extracted body passages, publication value/precision and relevant event facts. Every proposed field includes support from the retained original and its article/header association. Body extraction is grounded passage selection, not generated article text or an investment summary. Retrieved instructions are untrusted data, never executable instructions.
+4. No LLM fallback can replace a failed fetch, missing response bytes, login/CAPTCHA shell or provider error with recalled content. Those paths retain typed acquisition/body failures and use existing alternative routes or sources. If available content cannot fit the existing safe request limits, abstain with an explicit capacity reason rather than enlarge the limits or silently remove conflicting evidence.
+5. Code validates capture/URL binding, supporting passages, article association, publication-versus-event/update roles, conflicts and precision against the original capture. Model confidence and a matching date string alone cannot establish publication. Retain day-only precision when that is all the evidence supports; never invent a timezone or weaken an established exact instant.
+6. Validation must not require the old parser to have already recognized the same layout or date context. Use an independently specified evidence-witness contract over original header/metadata/body spans. The follow-up plan must define and adversarially test that contract before implementation; removing the old predicate without an equivalent grounding check is not an acceptable fix. Invalid-present provenance refusals remain non-overridable.
+7. Interpret body and publication fields together within the existing run-level one-shot interpretation allowance, not an extra model batch layered on top of publication recovery. Preparation, startup, I/O, validation and persistence debit the same cumulative90-second recovery budget, the same overall deadline and existing page/input/output ceilings. If that opportunity is spent, remaining cases abstain or use deterministic alternatives; no recursive repair or model relay.
+8. Only validated outputs enter the existing body/freshness/domain gates. Preserve exact original-capture provenance and immutable receipts; a bounded model-visible excerpt never becomes the authority. Unknown fields remain unknown and the two-publisher requirement stays unchanged.
+
+This contract applies to the follow-up extraction/publication increment. Its sequencing and witness schema need their own implementation-plan detail; discovery's tool-free selector does not extract pages or acquire this fallback's authority.
+
 ## 4. Budgets and boundaries
 
 - Overall research active690s / outer720s; execution freshness600s; publication recovery90s and approved deterministic10/model10 combined20 ceiling unchanged.
@@ -82,6 +97,8 @@ The 34 production discovery-bearing fires produced 15 system failures, 11 empty 
 Use the complete frozen37-session inventory and all2250 records. Pre-register labels for a bounded reviewed subset: fresh announcements with older quarter-ends, future legal deadlines in old releases, index/newsroom URLs, acceptance vs approval, scheduled vs completed events, duplicates and all nine overlength cases. Labels retain unknowns and source roles; do not relabel to improve acceptance.
 
 Run deterministic admission/role-binding and mocked-selector boundary tests over this corpus. Replay can prove loss accounting and rejection integrity. It cannot prove a new query would have found different historical results or prove current model performance without a separately authorized bounded model evaluation.
+
+For the follow-up fallback, freeze a separate original-capture corpus with ordinary parser successes, unfamiliar but valid layouts and adversarial cases. Require a positive case where deterministic parsing fails but a grounded interpretation validates without the original layout recognizer. Negative cases include wrong-article metadata, update/event dates, conflicting publication claims, exact-to-day loss, invented timezone/body text, navigation/login shells, forged capture hashes and prior hard refusals. Measure body recovery, publication interpretation, false acceptance, precision loss and final two-publisher bundle completion separately. Wire-only captures without originals cannot establish full-original validation success. Use mocked model proposals for offline boundary tests; real model accuracy requires its separately budgeted evaluation.
 
 Require: every input accounted for, exact source binding, no silent loss, no model event label promoted to verified truth by the handoff, ordinary empty outcomes distinct from incomplete transport/phase failures, no clock/limit regressions, no network/provider calls during offline tests. Separately score unsupported event-state claims against the pre-labelled subset; exact excerpt matching alone cannot prove semantic correctness.
 
@@ -108,10 +125,10 @@ No production rollout, scheduler change, live search/model evaluation or new rec
 ## 7. Explicitly deferred
 
 - Broad new feed acquisition/provider migration or full market-inventory integration.
-- Publication-context/model-validation boundary redesign and rescue-phase replacement.
+- Extraction/publication fallback implementation is deferred to the follow-up increment defined in section3F; its witness schema and integration plan are not approved by a discovery-only implementation plan. Broader rescue-phase replacement remains outside this first increment.
 - Execution/reviewer/risk changes, dossier-spending/cooldown changes, or enlarged budgets.
 - Shared Hermes modifications, instrumentation or gateway restart.
 
 ## Review requested
 
-Approve this first-increment scope and evaluation boundaries before an implementation plan is prepared. The plan will separate historical replay, implementation validation and optional bounded live comparison; deployment approval is not implied by design approval.
+Review this updated discovery-first scope, the section3F follow-up fallback contract and evaluation boundaries before implementation planning. Plans must keep the two increments explicit and separate historical replay, implementation validation and optional bounded live comparison; deployment approval is not implied by design approval.
