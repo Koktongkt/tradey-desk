@@ -8,6 +8,8 @@
   "entry_expiry_policy": "new_intents_session_close_v1",
   "max_position_usd": 500,
   "focused_retrieval_enabled": true,
+  "discovery_v2_enabled": true,
+  "gap_retrieval_enabled": true,
   "allow_fractional_shares": false,
   "min_price_usd": 1,
   "min_average_volume": 500000,
