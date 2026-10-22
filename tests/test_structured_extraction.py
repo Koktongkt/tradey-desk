@@ -35,7 +35,7 @@ class StructuredExtractionTests(unittest.TestCase):
         async def dispatch(urls, format=None, char_limit=None, *, deadline=None):
             observed.append(deadline - time.monotonic())
             return json.dumps({'results': [{'url': URL, 'content': BODY}]})
-        with patch.object(project, 'extract_tool', dispatch):
+        with patch.object(project, 'extract_owned_tool', dispatch):
             for timeout in (0.5, 60):
                 out = asyncio.run(worker.extract({'version': 1, 'url': URL, 'timeout_seconds': timeout}))
                 self.assertEqual(out['status'], 'ok')
@@ -45,7 +45,7 @@ class StructuredExtractionTests(unittest.TestCase):
         for reason in ('timeout', 'unsafe_url', 'url_mismatch', 'output_limit'):
             async def failure(*args, **kwargs):
                 return json.dumps({'results': [{'url': URL, 'error': reason, 'reason': reason}]})
-            with patch.object(project, 'extract_tool', failure):
+            with patch.object(project, 'extract_owned_tool', failure):
                 self.assertEqual(asyncio.run(worker.extract({'version': 1, 'url': URL}))['reason'], reason)
             self.assertEqual(asyncio.run(worker.extract({'version': 1, 'url': URL}, failure))['reason'], 'provider_error')
 

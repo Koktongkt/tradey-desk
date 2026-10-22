@@ -151,7 +151,7 @@ def _truncate(content, limit):
     return content[:head] + marker + content[-(available - head):] + footer
 
 
-def _project(row, original, limit):
+def _project(row, original, limit, *, retain_capture=False):
     # Lazy import prevents the eventual worker -> dispatcher dependency cycling.
     from extraction_worker import declaration_failure
     if isinstance(row, compat._TransportFailure):
@@ -190,8 +190,16 @@ def _project(row, original, limit):
             or publication_conflicts(extensions.get('publication'), article or visible,
                                      day_only=precision == 'day' if article else True)):
         return _error(original, 'malformed_response')
-    return {'url': row['url'], 'title': title[:200], 'content': _truncate(content, limit),
+    result={'url': row['url'], 'title': title[:200], 'content': _truncate(content, limit),
             'error': None, **extensions}
+    if not retain_capture:return result
+    from retained_article import retain_article
+    owned=retain_article({'url':result['url'],'title':result['title'],'text':result['content']},row['content'])
+    result.update({k:v for k,v in owned.items() if k in ('_retained_article','_capture_status')})
+    # Retention is optional; it never converts a full-envelope overflow to success.
+    if len(json.dumps({'results':[result]},ensure_ascii=True).encode())>MAX_ENVELOPE_BYTES:
+        result.pop('_retained_article',None);result['_capture_status']='capacity'
+    return result
 
 
 def _policy_refusal(rows):
@@ -200,8 +208,8 @@ def _policy_refusal(rows):
                for r in rows)
 
 
-async def extract_tool(urls: list, format: str | None = None, char_limit: int | None = None,
-                       *, deadline: float | None = None) -> str:
+async def _extract_tool(urls: list, format: str | None = None, char_limit: int | None = None,
+                       *, deadline: float | None = None, retain_capture=False) -> str:
     """Return a bounded JSON tool envelope, without shared caches or nested rescue."""
     format = 'markdown' if format is None else format
     char_limit = DEFAULT_EXTRACT_CHARS if char_limit is None else char_limit
@@ -243,7 +251,7 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
 
         async def consume(rows):
             rows = await _bind(rows, originals, normalized, deadline)
-            projected = [_project(r, u, char_limit) for r, u in zip(rows, originals)]
+            projected = [_project(r, u, char_limit,retain_capture=retain_capture) for r, u in zip(rows, originals)]
             _remaining(deadline)
             _size(projected)
             return rows, projected
@@ -285,3 +293,13 @@ async def extract_tool(urls: list, format: str | None = None, char_limit: int | 
         return fail('timeout')
     except Exception:
         return fail('provider_error')
+
+
+async def extract_tool(urls,format=None,char_limit=None,*,deadline=None):
+    """Public/model contract: no private retained captures in responses."""
+    return await _extract_tool(urls,format,char_limit,deadline=deadline)
+
+
+async def extract_owned_tool(urls,format=None,char_limit=None,*,deadline=None):
+    """Private worker-only contract; never installed as a model tool handler."""
+    return await _extract_tool(urls,format,char_limit,deadline=deadline,retain_capture=True)

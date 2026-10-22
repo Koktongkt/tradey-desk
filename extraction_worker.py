@@ -86,6 +86,14 @@ def project_row(row, guarded_location=False):
     page = {'url': url, 'title': title[:200], 'text': content[:6000], **extensions}
     if guarded_location:
         page['location_provenance'] = 'uncached_dispatch'
+        from retained_article import original_text,retain_article
+        wire={'url':url,'title':title[:200],'text':row.get('content'),
+              '_retained_article':row.get('_retained_article')}
+        original=original_text(wire)
+        if original is not None:
+            page=retain_article(page,original)
+        elif row.get('_capture_status') in ('capacity','missing','invalid'):
+            page['_capture_status']=row['_capture_status']
     return {'version': 1, 'status': 'ok', 'page': page}
 
 
@@ -97,7 +105,7 @@ async def extract(request, dispatch=None):
     try:
         controlled = dispatch is None
         if controlled:
-            from research_extraction import extract_tool
+            from research_extraction import extract_owned_tool as extract_tool
             timeout = request.get('timeout_seconds', 30)
             if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
                 return error('invalid_request')
@@ -158,7 +166,7 @@ async def extract_batch(request: dict, dispatch: Callable | None = None) -> dict
     controlled = dispatch is None
     try:
         if controlled:
-            from research_extraction import extract_tool
+            from research_extraction import extract_owned_tool as extract_tool
             raw = await extract_tool(urls, format='markdown', char_limit=6000,
                                      deadline=monotonic() + min(request.get('timeout_seconds', 30), 30))
         else:

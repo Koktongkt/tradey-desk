@@ -803,7 +803,8 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     from publication_observation import prepare_publication_evidence
     projected=prepare_publication_evidence(page,extracted_text=text)
     if conflict:projected.update(published_at=None,publication_observation=None)
-    return projected
+    from retained_article import retain_article
+    return retain_article(projected,body)
 
 
 GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
@@ -871,7 +872,7 @@ def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,faile
     page=result.get("page")
     if (result.get("status")!="ok" or set(result)!={"version","status","page"}
         or not isinstance(page,dict) or not {"url","title","text"} <= set(page)
-        or set(page)-{"url","title","text","location_provenance","publication","extraction_location"}
+        or set(page)-{"url","title","text","location_provenance","publication","extraction_location","_retained_article","_capture_status"}
         or ("location_provenance" in page and page["location_provenance"]!="uncached_dispatch")):
         return failed("malformed_response")
     returned=page.get("url")
@@ -915,7 +916,12 @@ def validate_structured_page(url:str,result:Any,*,deadline:float|None=None,faile
     if published:result_page["publication_precision"]=precision
     if returned!=url:result_page["returned_url"]=returned
     from publication_observation import prepare_publication_evidence
-    return prepare_publication_evidence(result_page,extracted_text=body)
+    projected=prepare_publication_evidence(result_page,extracted_text=body)
+    from retained_article import original_text,retain_article
+    original=original_text(page) if page.get('location_provenance')=='uncached_dispatch' else None
+    if original is not None:return retain_article(projected,original)
+    if page.get('_capture_status') in ('capacity','missing','invalid'):projected['_capture_status']=page['_capture_status']
+    return projected
 
 
 def is_related_publication_heading(line:str)->bool:

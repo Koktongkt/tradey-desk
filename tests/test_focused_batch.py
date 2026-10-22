@@ -91,7 +91,7 @@ class BatchWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(urls, URLS)
             self.assertEqual(kwargs, {'format': 'markdown', 'char_limit': 6000, 'deadline': 130.0})
             return json.dumps({'results': [row(u) for u in urls]})
-        with patch('research_extraction.extract_tool', side_effect=extract) as dispatch, \
+        with patch('research_extraction.extract_owned_tool', side_effect=extract) as dispatch, \
              patch.object(worker, 'monotonic', return_value=100.0):
             out = await worker.extract_batch(request(timeout=90))
         self.assertEqual(out['status'], 'ok')
@@ -100,7 +100,7 @@ class BatchWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_controlled_redacted_admission_failure_keeps_typed_reason(self):
         async def extract(*args, **kwargs):
             return json.dumps({'results': [row('', content='', error='unsafe_url', reason='unsafe_url') for _ in URLS]})
-        with patch('research_extraction.extract_tool', side_effect=extract):
+        with patch('research_extraction.extract_owned_tool', side_effect=extract):
             self.assertEqual(await worker.extract_batch(request()),
                              {'version': 2, 'status': 'error', 'reason': 'unsafe_url'})
 
@@ -210,7 +210,7 @@ class BatchEntryTests(unittest.TestCase):
 import json, research_extraction as d
 async def offline(urls, **kwargs):
     return json.dumps({'results':[{'url':u,'title':'Article','content':'Article body','error':None} for u in urls]})
-d.extract_tool = offline
+d.extract_owned_tool = offline
 '''
         command[-1] = prefix + probe + '\n' + command[-1][len(prefix):]
         out = subprocess.run(command, input=payload, capture_output=True, timeout=10)
