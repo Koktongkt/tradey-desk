@@ -20,6 +20,8 @@
    "test_research_budget",
    "test_discovery_collection",
    "test_discovery_process",
+   "test_discovery_selection",
+   "test_discovery_history",
    "test_research_timestamp",
    "test_runtime_paths",
    "test_extraction_compat",
