@@ -62,9 +62,11 @@ exchange holidays or early closes: entry validation uses the broker's regular
 calendar and rechecks the current clock at every validation stage. A swing
 order's next-session expiry never authorizes submission after today's close.
 The opening consumer follows 09:00 ET premarket research; later consumers
-follow radar's :00/:20/:40 starts by fifteen minutes, leaving five nominal
-minutes after the ten-minute research cutoff. This is not a scheduling-latency
-guarantee. Each cycle still requires
+follow radar's :00/:20/:40 starts by fifteen minutes. The approved 960-second
+active research bound (990-second wrapper) can now outlast that existing consumer
+spacing. This code change does not update the grid: schedule rollout must be
+reviewed separately; neither spacing nor nominal headroom guarantees non-overlap.
+Each cycle still requires
 fresh evidence and every unchanged review, reconciliation and risk gate.
 The regression intersects the versioned grid with the real slot/window code
 for EDT, EST and both DST-transition Mondays; deployment verification separately
@@ -105,63 +107,68 @@ compare actual tool-call counts, sourceable candidates and stage latency after r
 
 ## Adaptive research budgets
 
-Premarket/radar has a **600-second outer timeout**, with an active deadline
-of **570 seconds** and **30 seconds reserved for final overhead**. Discovery stays
-capped at 165 seconds; the shared evidence fetch/rescue pipeline has 180 seconds.
-The active budget, evidence cap and outer cutoff each increased by 60 seconds.
-Individual URL/helper timeouts, model turns and all other stage caps are unchanged.
-Focused retrieval allows **seven model turns**, an advisory `--run-budget 110`,
-and a **150-second focused wall-clock cap**. One absolute focused deadline is
-`min(start + 150, active_deadline - 260)`, established before command preparation.
-Preparation, search, safety validation and extraction all consume that original
-deadline; every launch recomputes its remaining allowance. At zero or below it
-launches nothing and returns `research_focused_retrieval_timeout`. A standalone
-call retains the same 150-second cap. The model performs only the three parallel
-focused searches and returns an attested alternatives manifest; the parent owns
-selection and bounded extraction. Trusted pages are reused only after shared
-identity/body/publication/freshness validation, with no duplicate direct/fallback
-fetch for accepted pages. Invalid pages take ordinary bounded fetching.
+Premarket/radar uses a **960-second absolute active research deadline** and a
+**990-second application wrapper timeout**, preserving 30 seconds for final
+intake/persistence/scheduling overhead. Discovery remains capped at 165 seconds,
+focused retrieval at 150 seconds (seven turns, advisory `--run-budget 110`), and
+the evidence fetch/rescue pipeline at 180 seconds. Publication recovery retains
+its separate cumulative 90-second allowance. No source, earnings, broker,
+retry-classification, or execution-risk gate changes.
 
-The explicit **260-second downstream reserve** is full evidence/rescue (180) +
-one viable synthesis launch (30) + cumulative enrichment (45) + **five seconds of
-transition headroom**. This is a bounded local-overhead margin, not a guaranteed
-hard-real-time path: slower preparation, persistence, scheduling, or other local
-work can still exhaust the deadline. After the full 165-second discovery cap,
-focused retrieval gets at most **145 seconds minus local overhead**; its full
-150-second cap remains possible with faster discovery. The reserve budgets one
-viable path, not every alternative's maximum. Synthesis's shared 90-second phase
-already includes intermediate enrichment and deferred rescue; its 60-second
-per-synthesis cap remains unchanged and can use unused upstream time. There is
-one discovery and at most three distinct candidate attempts; qualification,
-source receipts, earnings, and execution-risk gates are unchanged.
+Synthesis has **270 cumulative seconds across at most three distinct candidate
+attempts**, separate from **90 cumulative enrichment seconds across candidates**.
+There is no per-candidate synthesis or enrichment cap: a slow candidate may use
+all remaining stage time. Synthesis prompt/command preparation, model I/O and
+output processing consume synthesis time; enrichment is subtracted from that
+elapsed interval and charged only to its own allowance, including on rejection
+or exception. Intake and deferred evidence rescue do not refill either pool;
+they still consume the absolute deadline. A combined 360-second wall-clock phase
+would not implement this contract.
 
-Synthesis alternatives share one **90-second monotonic phase window**, rather
-than resetting a per-candidate phase allowance. Intermediate enrichment, intake,
-and deferred rescue advance this clock. Each synthesis subprocess still has a
-60-second ceiling and the unchanged model flags `--run-budget 45 --max-turns 1`.
-Before every launch, its timeout is clipped to the smaller of the phase time left
-and the active time left **minus remaining enrichment**. If fewer than 30 seconds
-remain, no subprocess is launched: the last candidate-local rejection is preserved,
-or `research_synthesis_timeout` is returned if there is no such rejection.
-Deferred rescue also reserves this viable launch window and remaining enrichment;
-it never resets the original phase deadline.
+Every synthesis launch is bounded by the remaining synthesis allowance and the
+absolute active time left **minus all remaining enrichment**. The subprocess no
+longer has a 60-second ceiling. The model stays tool-free and single-turn;
+`--run-budget 270` is an advisory ceiling matching the full shared synthesis
+allowance, while the parent timeout enforces the actual remaining allowance.
+Prompt/command preparation is followed by a fresh launch check. With fewer than
+30 seconds available no model subprocess is launched; the last candidate-local
+rejection is preserved, otherwise `research_synthesis_timeout` is returned.
+Infrastructure timeouts/unavailability still terminate research rather than
+trying another candidate.
 
-Enrichment retains **45 cumulative active seconds across all candidates**. Each
-earnings/market-data section uses `min(active_deadline, now + remaining_enrichment)`
-and deducts elapsed time even on exceptions. Later synthesis does not consume the
-enrichment allotment; final enrichment remains bounded by the active deadline.
-These adaptive caps are **not additive**: the extra synthesis opportunity borrows
-unused earlier-stage headroom. Launch and enrichment deadline clipping retain the
-570-second active envelope and the 30-second final overhead reservation; the outer
-600-second process timeout remains the hard backstop. A pre-existing limitation
-remains in SEC metadata helpers: socket timeouts do not impose an absolute deadline
-on trickling HTTP body reads, so the overhead reserve is not an unconditional
-whole-pipeline guarantee. This change does not alter those source adapters.
+Each enrichment section has deadline
+`min(active_deadline, now + remaining_enrichment)` and deducts actual elapsed
+time even on exceptions. Subsequent synthesis and deferred rescue never consume
+or reset enrichment time. Deferred rescue reserves a viable synthesis launch
+plus remaining enrichment; recovery and evidence clocks remain independent.
+Focused retrieval reserves **395 downstream seconds**: evidence 180 + publication
+recovery 90 + minimum synthesis launch 30 + enrichment 90 + transition headroom 5.
+The five-second margin is not a hard-real-time guarantee. Stage caps remain
+adaptive and subordinate to the absolute deadline; no completion is guaranteed.
 
-Regression verification uses deterministic mocked subprocesses and local fixture
-roots, including a 30-second synthesis + 8-second enrichment + rejection followed
-by a successful second 30-second synthesis, global clipping, minimum-window
-no-launch, shared deferred-rescue deadlines, and cumulative enrichment exhaustion.
+`run_cycle.py` owns the 990-second outer research bound; execution stays 600.
+The application-owned `cron/radar.sh` and `cron/premarket.sh` and inspected Hermes
+shell shims only exec their targets, with no shorter shell timeout. The inspected
+Hermes cron records have no per-job script timeout field, its config has no
+script-timeout override, and installed scheduler source defaults to 3600 seconds.
+No Hermes config, core, job or schedule is changed by this implementation;
+a different service-environment override would require deployment-time review.
+The existing owned-process supervision and lifecycle containment are unchanged.
+
+Synthesis now receives exact UTC and New York **AS OF** timestamps. The prompt
+requires `planned_exit_at` to be timezone-aware UTC ISO 8601, strictly future,
+and within **1–30 holding sessions including entry** (not calendar days), with
+short **1–5** versus swing **6–30** appropriate to the setup and catalyst. The
+three swing-only setup types retain their existing restriction. Historical or
+malformed dates are not copied or auto-repaired. Weekday research preflight is
+still provisional; the broker calendar remains authoritative. This clarification
+does not establish the root cause of prior `invalid_horizon` results.
+
+Offline regression tests exercise a rejected first candidate using 100 synthesis
+seconds and 40 enrichment seconds, followed by a successful second candidate
+using 160 synthesis seconds and 40 enrichment seconds (timeouts 270 then 170).
+They also cover global clipping, minimum launch windows, deferred rescue,
+shared-stage exhaustion, untouched dates and unchanged qualification gates.
 Do not validate these budgets with live research or broker calls.
 
 ## Broker transport lifetime

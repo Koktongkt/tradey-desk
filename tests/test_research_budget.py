@@ -1,13 +1,8 @@
-"""Guard tests for the 720-second research wrapper and stage deadlines.
+"""Offline guards for the 960-second active deadline and 990-second wrapper.
 
-The 690-second active envelope has adaptive, non-additive caps: discovery 165,
-focused retrieval 150, shared evidence/rescue 180, shared synthesis phase 90
-(including intermediate enrichment), and cumulative enrichment 45. Focused
-retrieval reserves 350 downstream seconds including publication recovery (90)
-and five seconds of transition
-headroom (a bounded margin, not a hard-real-time guarantee); the outer cycle reserves another
-30 seconds for intake/persistence/scheduling overhead.
-Calibration requires observing real provider latency and qualified-candidate rates.
+Synthesis has 270 cumulative seconds, separate from 90 enrichment seconds.
+Focused retrieval reserves evidence/recovery and a viable launch, not every
+alternative's maximum. No live provider or broker calls are permitted.
 """
 import json
 import subprocess
@@ -168,7 +163,7 @@ class ResearchBudgetGuardTests(unittest.TestCase):
             self.assertEqual(command,["synthesis fixture"])
             self.assertGreaterEqual(kwargs["timeout"],30)
             clock[0]+=30
-            self.assertGreaterEqual(790-clock[0],45)
+            self.assertGreaterEqual(1060-clock[0],90)
             return subprocess.CompletedProcess(command,0,'{"status":"none","none_reason":"no_fresh_setup"}',"")
         def focused(command, **kwargs):
             # Finish just inside the actual allowance, as in the reviewed failure.
@@ -184,10 +179,10 @@ class ResearchBudgetGuardTests(unittest.TestCase):
             result=alpha_radar.live_research({"focused_retrieval_enabled":True,"max_position_usd":500},intake=lambda c:c)
         self.assertEqual(result["status"],"none")
         self.assertEqual(len(launches),2)
-        self.assertLessEqual(clock[0],745)  # Still reserve the full enrichment cap.
+        self.assertLessEqual(clock[0],970)  # Still reserve the full enrichment cap.
 
     def test_focused_stage_has_150_second_ceiling_with_ample_time(self):
-        for deadline in (None,610):
+        for deadline in (None,655):
             with self.subTest(deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_private_child",return_value=search_done()) as run:
                 alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
                 self.assertEqual(run.call_args.kwargs["timeout"],150)
@@ -195,15 +190,15 @@ class ResearchBudgetGuardTests(unittest.TestCase):
     def test_focused_stage_obeys_remaining_global_budget(self):
         # Shifted reserve-boundary fixtures retain the same launch allowances;
         # the 150-second focused cap itself is unchanged.
-        for now,deadline,expected in ((260,760,150),(265,760,145),(266,760,144),
-                                      (100,459,9),(100,450.5,0.5)):
+        for now,deadline,expected in ((260,805,150),(265,805,145),(266,805,144),
+                                      (100,504,9),(100,495.5,0.5)):
             with self.subTest(now=now,deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=now), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_private_child",return_value=search_done()) as run:
                 alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
                 self.assertEqual(run.call_args.kwargs["timeout"],expected)
-                self.assertGreaterEqual(deadline-now-expected,350)
+                self.assertGreaterEqual(deadline-now-expected,395)
 
     def test_focused_stage_does_not_launch_at_or_below_reserve_boundary(self):
-        for deadline in (450,449.5,100):
+        for deadline in (495,494.5,100):
             with self.subTest(deadline=deadline), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command") as command, patch("focused_capture.run_private_child") as run:
                 with self.assertRaises(alpha_radar.ResearchFailure) as caught:
                     alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=deadline)
@@ -222,20 +217,20 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         url="https://www.reuters.com/article/fixture"
         done=search_done({"candidates":[{"symbol":"AAA","urls":[url]}]},attested=[url])
         with patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_private_child",return_value=done) as run:
-            result=alpha_radar.focused_retrieval([{"symbol":"AAA"},{"symbol":"BBB"}],deadline=610)
+            result=alpha_radar.focused_retrieval([{"symbol":"AAA"},{"symbol":"BBB"}],deadline=655)
             self.assertEqual(result,{"AAA":[url],"BBB":[]})
             self.assertEqual(result.focused_pages,{})  # timeout worker, not model claims
             self.assertEqual(run.call_args.kwargs["timeout"],150)
             done.returncode=1
             with self.assertRaises(alpha_radar.ResearchFailure) as caught:
-                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=610)
+                alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=655)
             self.assertEqual(caught.exception.code,"research_focused_retrieval_unavailable")
         for error,code in ((subprocess.TimeoutExpired(["fixture"],150),"research_focused_retrieval_timeout"),
                            (OSError("fixture unavailable"),"research_focused_retrieval_unavailable"),
                            (SearchProtocolError("receipt failure"),"research_focused_retrieval_unavailable")):
             with self.subTest(code=code), patch.object(alpha_radar,"monotonic",return_value=100), patch.object(alpha_radar,"focused_retrieval_command",return_value=["fixture"]), patch("focused_capture.run_private_child",side_effect=error):
                 with self.assertRaises(alpha_radar.ResearchFailure) as caught:
-                    alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=610)
+                    alpha_radar.focused_retrieval([{"symbol":"AAA"}],deadline=655)
                 self.assertEqual(caught.exception.code,code)
                 self.assertIs(caught.exception.__cause__,error)
 
@@ -246,8 +241,8 @@ class ResearchBudgetGuardTests(unittest.TestCase):
              ("input=discovery_prompt(cfg),capture_output=True,text=True,timeout=",),
              ("input=SCOUT_PROMPT,capture_output=True,text=True,timeout=240",)),
             ("synthesis_deadline_and_timeout_clamped_to_remaining",
-             ("synthesis_deadline=min(overall_deadline,monotonic()+SYNTHESIS_PHASE_BUDGET_SECONDS)",
-              "timeout=min(SYNTHESIS_BUDGET_SECONDS,remaining),cwd=ROOT"), ()),
+             ("synthesis_remaining=float(SYNTHESIS_PHASE_BUDGET_SECONDS)",
+              "timeout=remaining,cwd=ROOT"), ()),
             ("focused_retrieval_prompt_feeds_bounded_subprocess",
              ("focused_deadline=min(started+FOCUSED_RETRIEVAL_TIMEOUT_SECONDS,",
               "run_focused_pipeline(candidates,deadline=focused_deadline"), ()),
@@ -270,36 +265,34 @@ class ResearchBudgetGuardTests(unittest.TestCase):
         self.assertEqual(command[command.index("-m")+1],"test/model")
 
     def test_research_envelope_pins_stage_constants_and_run_cycle_timeout(self):
-        # Caps are 165/150/180. Synthesis phase can borrow up to 90,
-        # but launches reserve shared enrichment inside active 690. Recovery
-        # has a distinct 90-second clock, not another retry allowance. Caps
-        # remain adaptive/non-additive; wrapper 720 keeps final 30 seconds.
-        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 690)
+        # Caps stay 165/150/180; synthesis 270 excludes enrichment 90.
+        # Recovery has its own 90-second clock. All stages obey active 960;
+        # the 990-second wrapper preserves 30 seconds of final headroom.
+        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS, 960)
         self.assertEqual(alpha_radar.DISCOVERY_TIMEOUT_SECONDS, 165)
         self.assertEqual(alpha_radar.FOCUSED_RETRIEVAL_TIMEOUT_SECONDS, 150)
         self.assertEqual(alpha_radar.FOCUSED_TRANSITION_HEADROOM_SECONDS, 5)
-        self.assertEqual(alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS, 350)
+        self.assertEqual(alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS, 395)
         self.assertEqual(alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS,
                          alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS+90+
                          alpha_radar.MIN_SYNTHESIS_WINDOW_SECONDS+alpha_radar.ENRICHMENT_BUDGET_SECONDS+
                          alpha_radar.FOCUSED_TRANSITION_HEADROOM_SECONDS)
         self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS-
                          alpha_radar.DISCOVERY_TIMEOUT_SECONDS-
-                         alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS,175)
+                         alpha_radar.FOCUSED_DOWNSTREAM_RESERVE_SECONDS,400)
         self.assertEqual(alpha_radar.EVIDENCE_PIPELINE_BUDGET_SECONDS, 180)
-        self.assertEqual(alpha_radar.SYNTHESIS_BUDGET_SECONDS, 60)
-        self.assertEqual(alpha_radar.SYNTHESIS_PHASE_BUDGET_SECONDS, 90)
+        self.assertEqual(alpha_radar.SYNTHESIS_PHASE_BUDGET_SECONDS, 270)
         self.assertEqual(alpha_radar.MIN_SYNTHESIS_WINDOW_SECONDS, 30)
-        self.assertEqual(alpha_radar.ENRICHMENT_BUDGET_SECONDS, 45)
-        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS+30,720)
+        self.assertEqual(alpha_radar.ENRICHMENT_BUDGET_SECONDS, 90)
+        self.assertEqual(alpha_radar.RESEARCH_ACTIVE_BUDGET_SECONDS+30,990)
         self.assertEqual(earnings_calendar.SEC_LOOKUP_BUDGET_SECONDS,45)
         self.assertIn("research_enrichment_timeout",run_cycle.ALLOWED_FAILURE_TOKENS)
         source = (Path(__file__).resolve().parents[1] / "run_cycle.py").read_text()
         pins = (
             ("execution_keeps_explicit_timeout", "timeout_seconds=600", False),
             ("radar_launch_attempts_single", "attempts=1", False),
-            ("radar_launch_uses_720_envelope",
-             'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=720', False),
+            ("radar_launch_uses_990_envelope",
+             'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=990', False),
             ("radar_launch_never_uses_legacy_1110",
              'if a.mode in {"premarket","radar"}:rc=execute([sys.executable,str(ROOT/"alpha_radar.py")],timeout_seconds=1110', True),
         )

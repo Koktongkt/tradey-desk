@@ -18,6 +18,7 @@
    "test_radar_notifications",
    "test_repair_nul_jsonl",
    "test_research_budget",
+   "test_synthesis_horizon_prompt",
    "test_discovery_collection",
    "test_discovery_process",
    "test_discovery_selection",

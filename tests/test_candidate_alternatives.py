@@ -82,10 +82,62 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(calls.call_count, 3)
             fetch.assert_called_once()
 
+    def test_separate_shared_allowances_allow_rejected_first_then_long_second(self):
+        clock=[0.0]
+        with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')],symbols=('AAA','BBB')) as (cfg,root,calls,_,market):
+            responses=calls.side_effect
+            def model(*args,**kwargs):
+                result=next(responses)
+                if calls.call_count>1:
+                    duration=100 if calls.call_count==2 else 160
+                    self.assertGreaterEqual(kwargs['timeout'],duration)
+                    clock[0]+=duration
+                return result
+            calls.side_effect=model
+            def prices(symbol):
+                clock[0]+=40
+                return {'price':100,'spy_price':500}
+            market.side_effect=prices
+            def intake(candidate):
+                if candidate['symbol']=='AAA':raise radar.CandidateRejection('candidate_failed_qualification')
+                return candidate
+            with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]):
+                result=radar.live_research(cfg,intake=intake)
+            self.assertEqual(result['symbol'],'BBB')
+            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[270,170])
+            self.assertEqual(clock[0],340)  # 260 synthesis + 80 enrichment, not a 360s wall-clock pool.
+            self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_synthesis_preserves_invalid_exit_dates_and_real_intake_rejects_them(self):
+        now=dt.datetime.now(dt.timezone.utc)
+        values=('not-a-date',(now-dt.timedelta(days=2)).isoformat(),
+                (now+dt.timedelta(days=3)).replace(tzinfo=None).isoformat(),
+                (now+dt.timedelta(days=70)).isoformat())
+        for raw_exit in values:
+            with self.subTest(raw_exit=raw_exit), self.research_fixture([self.candidate('AAA',planned_exit_at=raw_exit)],symbols=('AAA',)) as (cfg,root,_,_,_):
+                seen=[]
+                def intake(candidate):
+                    seen.append(candidate['planned_exit_at'])
+                    return radar.prepare_candidate(candidate,cfg,ledger_path=root/'order_ledger.jsonl')
+                with self.assertRaises(radar.CandidateRejection) as caught:
+                    radar.live_research(cfg,intake=intake)
+                self.assertIn('invalid_horizon',caught.exception.code)
+                self.assertEqual(seen,[raw_exit])
+                self.assertFalse((root/'candidates.jsonl').exists())
+
+    def test_supported_short_and_swing_exit_dates_pass_real_intake_unchanged(self):
+        now=dt.datetime.now(dt.timezone.utc)
+        for days,setup in ((3,'event_momentum'),(12,'strategic_rerating')):
+            raw_exit=(now+dt.timedelta(days=days)).isoformat()
+            with self.subTest(setup=setup), self.research_fixture([self.candidate('AAA',planned_exit_at=raw_exit,setup_type=setup)],symbols=('AAA',)) as (cfg,_,_,_,_):
+                result=radar.live_research(cfg)
+                self.assertEqual(result['planned_exit_at'],raw_exit)
+                self.assertEqual(result['setup_type'],setup)
+
     def test_oct2_replay_borrows_for_second_synthesis_without_burning_enrichment(self):
         # Retain the historical 400-second replay, plus its shifted near-global
-        # equivalent under the larger active envelope (690 rather than 570).
-        for upstream,expected_timeouts in ((0,[60,52]),(400,[60,52]),(580,[60,35])):
+        # equivalent under the 960-second active envelope.
+        for upstream,expected_timeouts in ((0,[270,240]),(400,[270,240]),(790,[80,50])):
             clock=[0.0]
             with self.subTest(upstream=upstream), self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,fetch,market):
                 original=calls.side_effect
@@ -120,13 +172,19 @@ class CandidateAlternativesTests(unittest.TestCase):
         for prompt_exhausts,expected in ((True,'candidate_failed_qualification'),(False,'research_synthesis_timeout')):
             clock=[0.0]
             with self.subTest(prompt_exhausts=prompt_exhausts), self.research_fixture([self.candidate('AAA'),subprocess.TimeoutExpired('synthesis',30)],symbols=('AAA','BBB')) as (cfg,root,calls,_,_):
+                responses=calls.side_effect
+                def model(*args,**kwargs):
+                    response=next(responses)
+                    if calls.call_count==2:clock[0]=240.0
+                    if isinstance(response,BaseException):raise response
+                    return response
+                calls.side_effect=model
                 prompt=radar.synthesis_prompt
                 def prepare_prompt(*args,**kwargs):
                     if kwargs.get('candidate_hint',{}).get('symbol')=='BBB' and prompt_exhausts:
                         clock[0]+=0.01
                     return prompt(*args,**kwargs)
                 def reject_first(candidate,cfg,**kwargs):
-                    clock[0]=60.0
                     raise radar.CandidateRejection('candidate_failed_qualification')
                 with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesis_prompt',side_effect=prepare_prompt), patch.object(radar,'prepare_candidate',side_effect=reject_first):
                     with self.assertRaises(radar.ResearchFailure) as caught:
@@ -141,7 +199,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         with self.research_fixture([none],symbols=('AAA',)) as (cfg,_,calls,fetch,_):
             pages=fetch.return_value
             def delayed_fetch(*args,**kwargs):
-                clock[0]=615.0
+                clock[0]=840.0
                 return pages
             fetch.side_effect=delayed_fetch
             with patch.object(radar,'monotonic',side_effect=lambda:clock[0]):
@@ -151,7 +209,7 @@ class CandidateAlternativesTests(unittest.TestCase):
 
     def test_subminimum_window_never_launches_initial_or_alternative(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        for initial,first in ((616,None),(0,none),(0,self.candidate('AAA'))):
+        for initial,first in ((841,None),(0,none),(0,self.candidate('AAA'))):
             with self.subTest(initial=initial,first=first), self.research_fixture([first or none,none],symbols=('AAA','BBB')) as (cfg,root,calls,fetch,_):
                 clock=[0.0]
                 pages=fetch.return_value
@@ -162,7 +220,7 @@ class CandidateAlternativesTests(unittest.TestCase):
                 responses=calls.side_effect
                 def model(*args,**kwargs):
                     result=next(responses)
-                    if calls.call_count>1 and not initial:clock[0]=61
+                    if calls.call_count>1 and not initial:clock[0]=241
                     return result
                 calls.side_effect=model
                 with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'prepare_candidate',side_effect=radar.CandidateRejection('candidate_failed_qualification')):
@@ -178,7 +236,7 @@ class CandidateAlternativesTests(unittest.TestCase):
             pages=fetch.return_value
             fetch.return_value=pages[:3]
             def late_focused(*args,**kwargs):
-                clock[0]=580
+                clock[0]=790
                 return {s:[f'https://two.example/{s}'] for s in ('AAA','BBB')}
             deadlines=[]
             def synth(cfg,selected,evidence,deadline,**kwargs):
@@ -186,16 +244,16 @@ class CandidateAlternativesTests(unittest.TestCase):
                 clock[0]+=15
                 return none
             def rescue(selected,accepted,**kwargs):
-                self.assertEqual(kwargs['deadline'],610)  # Preserve 30 synthesis + 45 enrichment + 5 transition.
-                clock[0]=610
+                self.assertEqual(kwargs['deadline'],835)  # Preserve 30 synthesis + 90 enrichment + 5 transition.
+                clock[0]=835
                 return accepted+[pages[3]]
             with patch.object(radar,'focused_retrieval',side_effect=late_focused), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'post_fetch_rescue_candidate',side_effect=rescue) as rescued:
                 self.assertEqual(radar.live_research(cfg)['status'],'none')
-            self.assertEqual(deadlines,[670,670])
+            self.assertEqual(deadlines,[960,960])
             rescued.assert_called_once()
             self.assertEqual(calls.call_count,1)
 
-    def test_cumulative_enrichment_is_45_active_seconds_even_after_rejected_io(self):
+    def test_cumulative_enrichment_is_90_active_seconds_even_after_rejected_io(self):
         clock=[0.0]
         with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')],symbols=('AAA','BBB')) as (cfg,root,calls,_,market):
             responses=calls.side_effect
@@ -205,15 +263,15 @@ class CandidateAlternativesTests(unittest.TestCase):
                 return result
             calls.side_effect=model
             def prices(symbol):
-                clock[0]+=20 if symbol=='AAA' else 26
+                clock[0]+=40 if symbol=='AAA' else 51
                 if symbol=='AAA':raise ValueError('invalid_symbol')
                 return {'price':100,'spy_price':500}
             market.side_effect=prices
             with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'active_deadline',wraps=radar.active_deadline) as deadlines:
                 with self.assertRaises(radar.ResearchFailure) as caught:radar.live_research(cfg)
             self.assertEqual(caught.exception.code,'research_enrichment_timeout')
-            self.assertEqual([call.args[0] for call in deadlines.call_args_list],[55,65])
-            self.assertEqual(clock[0],66)
+            self.assertEqual([call.args[0] for call in deadlines.call_args_list],[100,110])
+            self.assertEqual(clock[0],111)
             self.assertEqual(calls.call_count,3)
             self.assertEqual(market.call_count,2)
             self.assertFalse((root/'candidates.jsonl').exists())
@@ -260,7 +318,7 @@ class CandidateAlternativesTests(unittest.TestCase):
         with self.research_fixture([self.candidate('AAA'),self.candidate('BBB')]) as (cfg,root,calls,_,market):
             clock=[0.0]
             def expired_prices(symbol):
-                clock[0]=46.0
+                clock[0]=91.0
                 return {'price':100,'spy_price':500}
             market.side_effect=expired_prices
             with patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch('research_budget.monotonic',side_effect=lambda:clock[0]):
@@ -280,15 +338,15 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual([p.split('SELECTED SYMBOL: ')[1].split('.')[0] for p in prompts],['AAA','BBB','CCC'])
             fetch.assert_called_once()
 
-    def test_alternatives_share_one_monotonic_90_second_budget(self):
+    def test_alternatives_share_270_cumulative_synthesis_seconds(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
         with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda: {1:0,2:30,3:55}.get(calls.call_count,0)):
             radar.live_research(cfg)
-            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[60,60,35])
+            self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[270,240,215])
 
     def test_exhausted_budget_never_starts_another_subprocess(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda:61 if calls.call_count>=2 else 0):
+        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda:241 if calls.call_count>=2 else 0):
             with self.assertRaises(radar.ResearchFailure) as caught:
                 radar.live_research(cfg)
             self.assertEqual(caught.exception.code,'research_synthesis_timeout')

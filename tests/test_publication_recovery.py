@@ -481,7 +481,7 @@ class RecoveryWiringTests(unittest.TestCase):
         def synth(cfg,selected,evidence,deadline,**kw):
             self.assertEqual(len(evidence),2)
             self.assertTrue(all(p['publication_basis']=='llm_grounded' for p in evidence))
-            self.assertEqual(kw['enrichment_budget']['overall'],790)
+            self.assertEqual(kw['enrichment_budget']['overall'],1060)
             return {'status':'none'}
         with patch.object(recovery,'candidate_recovery_page',return_value=None), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch('publication_interpreter.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['discovery']), patch.object(radar.subprocess,'run',side_effect=child), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'research_subprocess_command',return_value=['publication']) as factory, patch.object(radar,'run_publication_process',side_effect=runner), patch.object(radar,'synthesize_candidate',side_effect=synth), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'post_fetch_rescue_candidate',return_value=[]) as rescue:
             result=radar.live_research({},intake=lambda c:c)

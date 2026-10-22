@@ -116,7 +116,7 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertNotIn("--ignore-user-config", synthesis)
         self.assertEqual(synthesis[synthesis.index("-t") + 1], "bot_room")
         self.assertEqual(synthesis[synthesis.index("--max-turns") + 1], "1")
-        self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "45")
+        self.assertEqual(synthesis[synthesis.index("--run-budget") + 1], "270")
 
     def test_hermes_bot_room_posture_resolves_to_zero_effective_tools(self):
         probe=(
@@ -1575,7 +1575,7 @@ class BundleRescueTests(unittest.TestCase):
                 self.assertEqual(calls,["BBB"])
                 rescued.assert_not_called()
 
-    def test_live_research_fast_deferred_rescue_uses_original_synthesis_deadline(self):
+    def test_live_research_fast_deferred_rescue_preserves_unspent_synthesis(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",
               "https://www.reuters.com/a"]
         scout = _deferred_scout(urls)
@@ -1584,13 +1584,13 @@ class BundleRescueTests(unittest.TestCase):
         def synth(_cfg,selected,_evidence,deadline,**_kwargs):
             synth_deadlines.append(deadline)
             if selected["symbol"]=="BBB":
-                clock[0]=deadline-32
+                clock[0]+=50
                 return {"status":"none","none_reason":"no_fresh_setup"}
             self.assertLess(clock[0],deadline)
             return {"symbol":"AAA"}
         def rescue(candidate,accepted,**kwargs):
             rescue_deadlines.append(kwargs["deadline"])
-            self.assertEqual(kwargs["deadline"],synth_deadlines[0]-30)
+            self.assertEqual(kwargs["deadline"],280)
             clock[0]+=2
             candidate["urls"].append(urls[3])
             return accepted+[pages[3]]
@@ -1602,8 +1602,8 @@ class BundleRescueTests(unittest.TestCase):
             alpha_radar,"post_fetch_rescue_candidate",side_effect=rescue):
             result=alpha_radar.live_research({},intake=lambda c:c)
         self.assertEqual(result["symbol"],"AAA")
-        self.assertEqual(synth_deadlines,[190.0,190.0])
-        self.assertEqual(rescue_deadlines,[160.0])
+        self.assertEqual(synth_deadlines,[370.0,372.0])
+        self.assertEqual(rescue_deadlines,[280.0])
 
     def test_live_research_rescues_after_intake_rejection_without_resetting_deadline(self):
         urls=["https://a.example/a","https://www.sec.gov/b","https://www.reuters.com/b",

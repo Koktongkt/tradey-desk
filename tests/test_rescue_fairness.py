@@ -181,9 +181,9 @@ class RescueFairnessTests(unittest.TestCase):
     def test_deferred_synthesis_reserve_and_successful_fastpath(self):
         r=replay({'initial_pair':True,'synth_cost':50,'slow':False})
         self.assertEqual([x['symbol'] for x in r['ready']],['ZZZ','BBB'])
-        self.assertEqual([x['deadline'] for x in r['ready']],[100,100])
-        self.assertTrue(all(e['deadline']==70 for e in r['events'] if e['kind'] in ('lookup','fetch')))
-        for cost in (60,90):
+        self.assertEqual([x['deadline'] for x in r['ready']],[280,288])
+        self.assertTrue(all(e['deadline']==180 for e in r['events'] if e['kind'] in ('lookup','fetch')))
+        for cost in (180,270):
             r=replay({'initial_pair':True,'synth_cost':cost})
             self.assertEqual([e['kind'] for e in r['events']],['initial','synthesis'])
             self.assertEqual(r['outcome']['result']['status'],'none')

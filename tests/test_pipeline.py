@@ -19,8 +19,8 @@ class PipelineTests(unittest.TestCase):
         parent=Path(__file__).resolve().parents[1]/'test_artifacts/publication-hybrid/task4'
         parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         with tempfile.TemporaryDirectory(dir=parent) as td:
-            for mode,timeout,stage,child in [('premarket',720,'research','alpha_radar.py'),
-                    ('radar',720,'research','alpha_radar.py'),('autotrader',600,'execution','autotrader.py')]:
+            for mode,timeout,stage,child in [('premarket',990,'research','alpha_radar.py'),
+                    ('radar',990,'research','alpha_radar.py'),('autotrader',600,'execution','autotrader.py')]:
                 with self.subTest(mode=mode),patch.object(run_cycle,'ROOT',Path(td)),patch.object(sys,'argv',['offline',mode]),patch.object(run_cycle,'scheduled_slot',return_value=True),patch.object(run_cycle,'in_window',return_value=True),patch.object(run_cycle,'completed_today',return_value=False),patch.object(run_cycle,'mark_completed') as complete,patch.object(run_cycle,'execute',return_value=0) as execute:
                     self.assertEqual(run_cycle.main(),0)
                     execute.assert_called_once_with([sys.executable,str(Path(td)/child)],
