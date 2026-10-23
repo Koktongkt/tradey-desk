@@ -1,0 +1,894 @@
+{
+  "source_revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+  "repository": "https://github.com/Koktongkt/tradey-desk.git",
+  "scope": "Committed source excerpts; not runtime, deployment or policy-activation evidence. Supplemental ranges support overview cards beyond node citation slots.",
+  "diagram_citation_count": 80,
+  "nodes": [
+    {
+      "id": "schedule",
+      "ranges": [
+        {
+          "path": "run_cycle.py",
+          "line": 223,
+          "end_line": 247,
+          "blob_sha256": "c4acec19382e5ddd8092c02dbb0364519275dfda2a719ec53189ae889dad3d4b",
+          "excerpt_sha256": "18c77e44da91d3dbaf7b9deec63212ab03814a1f204487af24f339f2fd2905d7",
+          "diagram_citation": true
+        },
+        {
+          "path": "cron/autotrader.schedule",
+          "line": 1,
+          "end_line": 1,
+          "blob_sha256": "f4cbe085e070860ddd8704854f3aac56e2412e023b325e9a578d14c9bdb78fd3",
+          "excerpt_sha256": "f4cbe085e070860ddd8704854f3aac56e2412e023b325e9a578d14c9bdb78fd3",
+          "diagram_citation": true
+        },
+        {
+          "path": "run_cycle.py",
+          "line": 159,
+          "end_line": 164,
+          "blob_sha256": "c4acec19382e5ddd8092c02dbb0364519275dfda2a719ec53189ae889dad3d4b",
+          "excerpt_sha256": "d200c008bc6d79c14d6940c34a7f1b067c5960c8060323d9f49f861ebcd0e6d4",
+          "diagram_citation": false
+        },
+        {
+          "path": "cron/reconcile.schedule",
+          "line": 1,
+          "end_line": 1,
+          "blob_sha256": "948f492156de77bd1ce2e9c3a8a752b26e3aa7a8504ae9486b4d8cac1f6ab56c",
+          "excerpt_sha256": "948f492156de77bd1ce2e9c3a8a752b26e3aa7a8504ae9486b4d8cac1f6ab56c",
+          "diagram_citation": false
+        }
+      ]
+    },
+    {
+      "id": "scout",
+      "ranges": [
+        {
+          "path": "discovery_collection.py",
+          "line": 12,
+          "end_line": 33,
+          "blob_sha256": "0b132584826703a938e9aa21477371e98235ee099142e80902a70260650c297a",
+          "excerpt_sha256": "c159ef5b47e4c5f4dd1c23de17eed59510cbc56393df6c118a73645e1158f506",
+          "diagram_citation": true
+        },
+        {
+          "path": "discovery_pipeline.py",
+          "line": 45,
+          "end_line": 78,
+          "blob_sha256": "6c77d6c2b94484729e5d3902cd773235fd44f61f6b499c22c70a6f17f626a1ef",
+          "excerpt_sha256": "1215d7798efb7593aea304106a5f0f025b8df9108038cdbcce6c47624101a1ff",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1837,
+          "end_line": 1859,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "6645235d53ba87893c3d6843e301fa6b05946020726f50790b92c5d030905c28",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "ranges": [
+        {
+          "path": "focused_pipeline.py",
+          "line": 73,
+          "end_line": 162,
+          "blob_sha256": "d5b72e0885437a147dda641340c9553385e175488a9c1d4b6a33fa8502ec3c30",
+          "excerpt_sha256": "ae4f9224f8a3353d5070f533fb94ba867d0b365c381a9c5a4c667635b5e34088",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1289,
+          "end_line": 1348,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "dcf639b2d09c4a8a832c1fd420f391a0d9bc106f247bce599abebcf103ac98b6",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1890,
+          "end_line": 2037,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "c1de03d1b64e2b05662f0fe63e9555017725f55f4afbb0468e43578aded85397",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1890,
+          "end_line": 1948,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "8e8faa920ebdb3ba2bf3cabd2f09590aff0ec95213907a480b4fdc439b94683e",
+          "diagram_citation": false
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1957,
+          "end_line": 2037,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "c4586c1e45f96e57b83092e66cd35ce7580041a687ad4e88da31746a609db505",
+          "diagram_citation": false
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1699,
+          "end_line": 1791,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "d1dd69aaf948e4e47869a3893697a979292858f3273c742dd4f24aed7ead563b",
+          "diagram_citation": false
+        },
+        {
+          "path": "gap_retrieval.py",
+          "line": 28,
+          "end_line": 53,
+          "blob_sha256": "a3a48659c71399284f9048afb41c17b923e56795edbc2d8289cb1a7afaed37b8",
+          "excerpt_sha256": "aa7285e8aa0707a3679cb801fa77b23d298d4565406455d98a9cefde865a979b",
+          "diagram_citation": false
+        }
+      ]
+    },
+    {
+      "id": "synthesis",
+      "ranges": [
+        {
+          "path": "alpha_radar.py",
+          "line": 2038,
+          "end_line": 2096,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "0427cb4e5da27812b797e3847f8045c7b1deda5b842e7827e291f0663dd667af",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 2099,
+          "end_line": 2138,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "6e8143bd479a997074f9df6dc5266ffdc7d0e74ac02c368e40294bc2cbbcfa5f",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1513,
+          "end_line": 1527,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "b35349d033b60c93b713474450eddae037e4a9d93d10364b8d6b720fa6d923df",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "qualify",
+      "ranges": [
+        {
+          "path": "alpha_radar.py",
+          "line": 2140,
+          "end_line": 2175,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "9753bb6d3921b6a84c8c8104e776269b956a0aa7462b1e0f0f2a396c63a13097",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1802,
+          "end_line": 1817,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "05b37df0615656db87283587d88b9bffa9cb03b016f521ce0046803fec4e674a",
+          "diagram_citation": true
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 189,
+          "end_line": 227,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "7c7a3485687028542eeebbb1e2b7f36c880394ed22716849f1fd5d8f53eb7737",
+          "diagram_citation": true
+        },
+        {
+          "path": "market_data.py",
+          "line": 18,
+          "end_line": 40,
+          "blob_sha256": "5ffb0ab5bec454d14eb41088e22e64fc54a4dad52e78bb5f7a32e20124596169",
+          "excerpt_sha256": "c7b58859282d2e5e659af4f8458292da92612fba59cae06173f163dfdd7a925d",
+          "diagram_citation": false
+        },
+        {
+          "path": "market_data.py",
+          "line": 46,
+          "end_line": 95,
+          "blob_sha256": "5ffb0ab5bec454d14eb41088e22e64fc54a4dad52e78bb5f7a32e20124596169",
+          "excerpt_sha256": "f14e872b5a0de74c0eb0c3b2640521f63ca7f9edfcacfcfeb6f6d12346aa8c1e",
+          "diagram_citation": false
+        }
+      ]
+    },
+    {
+      "id": "dossier",
+      "ranges": [
+        {
+          "path": "alpha_radar.py",
+          "line": 2301,
+          "end_line": 2307,
+          "blob_sha256": "c5880a9589c6be7dfa7c75fa15b013866ce49f1dfb9a3e7dde7acf75f8e03d57",
+          "excerpt_sha256": "f131de9267cab84473da8e67dfa1dbbd5685ba2b25117102772b5d15bd2c8f25",
+          "diagram_citation": true
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1253,
+          "end_line": 1274,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "13cc425aec789af68e81010c319f2b66fd8ca83826a7b95a76b34b67d48f8cfd",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "reconcile",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 1428,
+          "end_line": 1474,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "16bdc2a92b04f0c022f4fc2c4142ef055e0261eb3ffc854c4b7ccb4fbd46f68b",
+          "diagram_citation": true
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 365,
+          "end_line": 488,
+          "blob_sha256": "b3a8f8708c4c873be3a71207656c57a3ae6360fae1aec04b0651e53e58625206",
+          "excerpt_sha256": "053f757bff0c086b9cd4aea2ebcc4f249d96d899ce68abe00e852d9632217d4e",
+          "diagram_citation": true
+        },
+        {
+          "path": "sqlite_ledger.py",
+          "line": 323,
+          "end_line": 382,
+          "blob_sha256": "35b566f0d36fec2eca3ff7712fe4c1b703e8fca88763036f207c3513c3972196",
+          "excerpt_sha256": "6fa86148984e2ef36e499b8df0b1b146b090a89cafc6c8ae719920e55267cd90",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "truth",
+      "ranges": [
+        {
+          "path": "broker_mcp_bridge.py",
+          "line": 230,
+          "end_line": 323,
+          "blob_sha256": "cbea4a64556ea61828c0286acdb519d6ebafb303bf9d735b941afba96ccf67b9",
+          "excerpt_sha256": "35892e398489dbd94455b52d3ceebea531e27acc9ad847de2e866274c94894af",
+          "diagram_citation": true
+        },
+        {
+          "path": "market_data.py",
+          "line": 18,
+          "end_line": 40,
+          "blob_sha256": "5ffb0ab5bec454d14eb41088e22e64fc54a4dad52e78bb5f7a32e20124596169",
+          "excerpt_sha256": "c7b58859282d2e5e659af4f8458292da92612fba59cae06173f163dfdd7a925d",
+          "diagram_citation": true
+        },
+        {
+          "path": "market_data.py",
+          "line": 98,
+          "end_line": 131,
+          "blob_sha256": "5ffb0ab5bec454d14eb41088e22e64fc54a4dad52e78bb5f7a32e20124596169",
+          "excerpt_sha256": "a90a10185c62ac3a69a759af5dba6b0ec9b0781f268fbd5aa17a9020cc691fe5",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "proposal",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 314,
+          "end_line": 364,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "8dcf97c043979f3e79e15984723f128f57602e186639805122880d75f8717881",
+          "diagram_citation": true
+        },
+        {
+          "path": "pending_policy.py",
+          "line": 40,
+          "end_line": 86,
+          "blob_sha256": "41049aae04b6606598e9213facfaf767cee943afd2d902d714f7ed746c973bc6",
+          "excerpt_sha256": "76f6094f0a0b7fd0de643927b136ea13a6c7ba14eac69119f7af1a67b4f37fca",
+          "diagram_citation": true
+        },
+        {
+          "path": "entry_expiry.py",
+          "line": 40,
+          "end_line": 61,
+          "blob_sha256": "27d6e37dbb9541d929b4050899f3bd1eea2a33b141c2abe88e954455bf54b20e",
+          "excerpt_sha256": "3034394343bca1189cbf7c6a185d58bfa686d72268445c718c151855191be1cb",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "reviews",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 891,
+          "end_line": 964,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "9dfad195fa97441fee07add2b8565d4dc947d0c3b31b09ea67f352f0e9e9083a",
+          "diagram_citation": true
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1506,
+          "end_line": 1509,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "0b01c71e15bfa748c280049dc12297a10381c7c1a8a7e3c5977fb7250660b00e",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "consensus",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 374,
+          "end_line": 393,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "82d9397ad98102564e5157e9702b96de94fe6fd806c32949b145078edeeb5af2",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "final",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 1374,
+          "end_line": 1410,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "f5e5d2cf8d3fb7aea305decf74ee04a2ec51423aceab1d78f5867352768586f6",
+          "diagram_citation": true
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1520,
+          "end_line": 1568,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "6fdcb5ea15dd91122c75dddec1e3de54f2270b746234304dfe32b041a8f937f4",
+          "diagram_citation": true
+        },
+        {
+          "path": "entry_state.py",
+          "line": 17,
+          "end_line": 57,
+          "blob_sha256": "e33c0405e4cc4ea95cf02481c7f0b35e1ec342736476d9343999b7edf5597433",
+          "excerpt_sha256": "4cb9baecd1e44a475ea7edfcfe0fed5716c495541523ef8fd460742cf7ad07d5",
+          "diagram_citation": true
+        },
+        {
+          "path": "autonomy_config.json",
+          "line": 2,
+          "end_line": 26,
+          "blob_sha256": "144ed287f4fd1f928fe65be03ea8ee68ef613815a822ab84a65fdb98e3a5c72a",
+          "excerpt_sha256": "9cb769eb1db28e50a18e7fea884ca2cf792f29194dcf5bd481f427ffb515601b",
+          "diagram_citation": false
+        }
+      ]
+    },
+    {
+      "id": "submit",
+      "ranges": [
+        {
+          "path": "broker_process.py",
+          "line": 13,
+          "end_line": 75,
+          "blob_sha256": "a8b874f696c5542dce1b7ab8318c8489c25060a36f9cfd7677470fd1250af044",
+          "excerpt_sha256": "fa0f643bf442f38385399f4c3b3e4f996a8ad102fc411d56270c649ba4edaaf0",
+          "diagram_citation": true
+        },
+        {
+          "path": "broker_supervisor.py",
+          "line": 193,
+          "end_line": 228,
+          "blob_sha256": "5b33e3fdd4820321207c55302ce1989aac424801eabff19617c3a744db382798",
+          "excerpt_sha256": "a67871daaffbeae4ff59a870486488935ccd7c9517cd1e30714c8be3001c6afd",
+          "diagram_citation": true
+        },
+        {
+          "path": "broker_supervisor.py",
+          "line": 133,
+          "end_line": 175,
+          "blob_sha256": "5b33e3fdd4820321207c55302ce1989aac424801eabff19617c3a744db382798",
+          "excerpt_sha256": "41560c4ba8c6cc267bda37ed2c423aa1492781961f02e802fbf080625f3843bc",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "readback",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 1568,
+          "end_line": 1583,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "ce5f1bb26746d31c9cbf1b0b7db7e326a15dbb286d18da2c09d5673a4f80f239",
+          "diagram_citation": true
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1205,
+          "end_line": 1230,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "0b0d4b8b4121f09c4c616966c78f881ca4c23b4b84b59dc068c33036546094bf",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "journal",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 696,
+          "end_line": 713,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "719a593e8c41e1cb670dc1ba455fb0a220286fd613221541c268930c7d31e6f9",
+          "diagram_citation": true
+        },
+        {
+          "path": "sqlite_ledger.py",
+          "line": 282,
+          "end_line": 320,
+          "blob_sha256": "35b566f0d36fec2eca3ff7712fe4c1b703e8fca88763036f207c3513c3972196",
+          "excerpt_sha256": "8bfcb6abef22118389d93083fe54b9a029145d4fb948ed41b01e4cc7cdad1f15",
+          "diagram_citation": true
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 464,
+          "end_line": 469,
+          "blob_sha256": "b3a8f8708c4c873be3a71207656c57a3ae6360fae1aec04b0651e53e58625206",
+          "excerpt_sha256": "f35decc53eeb34a76c79d14b01090f8533856bb977b2d956076499126280c711",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "outcomes",
+      "ranges": [
+        {
+          "path": "candidate_outcomes.py",
+          "line": 11,
+          "end_line": 39,
+          "blob_sha256": "eb49a69cff9921ce927a228871a7ff8a10e5a53ab623fecd12fab3e3ed8ebbb7",
+          "excerpt_sha256": "9660fb3e45d85416dc3299cffc675527f1c61abe34a84a2ec65c7bda704dcfdd",
+          "diagram_citation": true
+        },
+        {
+          "path": "run_cycle.py",
+          "line": 242,
+          "end_line": 246,
+          "blob_sha256": "c4acec19382e5ddd8092c02dbb0364519275dfda2a719ec53189ae889dad3d4b",
+          "excerpt_sha256": "246d130375dbb0c2dc683d46585f10631df567a722b4911e84243cbf8c1afd62",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "shadow",
+      "ranges": [
+        {
+          "path": "shadow_calibration.py",
+          "line": 25,
+          "end_line": 57,
+          "blob_sha256": "eee7cd29d66b3bd4376014d7428c245e2eb2e376da758d3c438d51677cecc1eb",
+          "excerpt_sha256": "93b846d8f2315633e17c260a21b2d51e70a236f7a1fc324b9d9a7941e006b236",
+          "diagram_citation": true
+        },
+        {
+          "path": "shadow_calibration.py",
+          "line": 95,
+          "end_line": 118,
+          "blob_sha256": "eee7cd29d66b3bd4376014d7428c245e2eb2e376da758d3c438d51677cecc1eb",
+          "excerpt_sha256": "e46804aea5f4efa4e5fdef4d57fa3375ae3cc26f2af08de36be00589d801c9a4",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "ranges": [
+        {
+          "path": "public_dashboard.py",
+          "line": 14,
+          "end_line": 26,
+          "blob_sha256": "3c455504bde7bbcc88ef754b91636b240d7ea76210728ea04a44d53b8a918c43",
+          "excerpt_sha256": "05d0b840ea808d2c840d0d408b702368b8e1b1800942844e3333ecd150c39029",
+          "diagram_citation": true
+        },
+        {
+          "path": "public_dashboard.py",
+          "line": 176,
+          "end_line": 214,
+          "blob_sha256": "3c455504bde7bbcc88ef754b91636b240d7ea76210728ea04a44d53b8a918c43",
+          "excerpt_sha256": "dd03af4043296cc7222117530e7dd6169ef7ad865dcb5c67bbc446fc26475451",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "ranges": [
+        {
+          "path": "run_cycle.py",
+          "line": 242,
+          "end_line": 248,
+          "blob_sha256": "c4acec19382e5ddd8092c02dbb0364519275dfda2a719ec53189ae889dad3d4b",
+          "excerpt_sha256": "0fa4c8c2dd75efb8d2701e9235474cd06b7225cc49595dafafb98ae3685d0c5f",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "stop",
+      "ranges": [
+        {
+          "path": "autotrader.py",
+          "line": 472,
+          "end_line": 640,
+          "blob_sha256": "3f2fc1d91eacf3811e2328da70d15454848fe38512eca4a93f42bdd9afa0bab2",
+          "excerpt_sha256": "995299ee88372c05f2edc60de1442f98416198c572aee2c3d1fdb2f084064e24",
+          "diagram_citation": true
+        },
+        {
+          "path": "pending_policy.py",
+          "line": 72,
+          "end_line": 86,
+          "blob_sha256": "41049aae04b6606598e9213facfaf767cee943afd2d902d714f7ed746c973bc6",
+          "excerpt_sha256": "ff365dba61faedf78b82b938d302c7260b280c8279c593e1a7cc933d84789bcd",
+          "diagram_citation": true
+        },
+        {
+          "path": "managed_reconciliation.py",
+          "line": 227,
+          "end_line": 290,
+          "blob_sha256": "b3a8f8708c4c873be3a71207656c57a3ae6360fae1aec04b0651e53e58625206",
+          "excerpt_sha256": "2dc2a95ce5480d1b7a8a56a711fa287ea97d47df809e671cd0e1b539dba74a14",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-clock",
+      "ranges": [
+        {
+          "path": "watchdog/schedule.py",
+          "line": 76,
+          "end_line": 84,
+          "blob_sha256": "84d3cd606be99e02c247190efab71a0b28cad94e49023fa43b407b20db17aa0d",
+          "excerpt_sha256": "cb52da1e45309d9055447dd95f9def747a16924012ecc876535b559f2a18d908",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog_cron.py",
+          "line": 11,
+          "end_line": 26,
+          "blob_sha256": "c5f9f34f6c54365bec44858f7de06b3c5cfbaae57196d68613b710ecb48db979",
+          "excerpt_sha256": "5e0e62c8ed90dd265a31c4918ff3782ab5ee8c9f8dcd8fb64728a10a7b7d3b3e",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-snapshot",
+      "ranges": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 48,
+          "end_line": 128,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "b6c744b0e9389312e4094b7041268cbe6a3dd539e7eed5b518fca762b3ce3a21",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 319,
+          "end_line": 369,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "446a72241dc195c7a70c4162f080e693da5e107cc8388b643abf5c7e78c50555",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-checks",
+      "ranges": [
+        {
+          "path": "watchdog/mechanical.py",
+          "line": 1,
+          "end_line": 6,
+          "blob_sha256": "7410afa1b338d9efd916be6fdf6d6fce62c8e9e03dabd18932149ef9a4da26bc",
+          "excerpt_sha256": "af7d183a9f4adf491285cd7bf60edc8ad916d353108a6f81570d43fb6ba767dc",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/mechanical.py",
+          "line": 46,
+          "end_line": 123,
+          "blob_sha256": "7410afa1b338d9efd916be6fdf6d6fce62c8e9e03dabd18932149ef9a4da26bc",
+          "excerpt_sha256": "643b4168183f91365c9e14b2edf02055fe0c622ad8fcceaa16bd7ac0dbbfd84c",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 365,
+          "end_line": 371,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "09230d2b649babda637d75dbf7cdaca6613aca110f5d752f7df83fee7d8fc401",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-coverage",
+      "ranges": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 429,
+          "end_line": 464,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "59e52ef4c92f10c8d676ee2c225bf9c034d5d72a91e6dbb67324bfa17f0985ac",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 512,
+          "end_line": 522,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "3cc3b00ee1a51a9a7439bceb6ed69f322230e9fbdfe836c17b76e7b0e05b7c16",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-store",
+      "ranges": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 320,
+          "end_line": 320,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "c247b4ad100377fdaf8ddcbd4c377605cb88023da0765bd41e5b00b2278a8557",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 465,
+          "end_line": 501,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "625123bde3525b0fc3df8850ce36e8d1baab6832db0d5ab3e6b984495732374c",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wm-relay",
+      "ranges": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 255,
+          "end_line": 271,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "62f02be8d5badafef39e520157f68344b61f20d2185ad3e057007a4183c41f3f",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 227,
+          "end_line": 268,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "35daa282aee148ab86f0f93761b6d7fae2e09a99cecd1bfe76c8ff2ff426ccf6",
+          "diagram_citation": true
+        },
+        {
+          "path": "docs/watchdog-notifications.md",
+          "line": 21,
+          "end_line": 84,
+          "blob_sha256": "f5be3f4e8790b33c72e7fbf4d60d1ff3fb0868c49f2f2d6c710e89ec81d5ce56",
+          "excerpt_sha256": "7b779a673a1dc796da13d64e6207f8ebf1f109b79ffb626ea70cb47c5e84ac64",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-clock",
+      "ranges": [
+        {
+          "path": "watchdog/schedule.py",
+          "line": 85,
+          "end_line": 94,
+          "blob_sha256": "84d3cd606be99e02c247190efab71a0b28cad94e49023fa43b407b20db17aa0d",
+          "excerpt_sha256": "6212ff11d502ddd3930cb9544b8d19893003ee3bf53016c3766496fd1688d863",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 347,
+          "end_line": 356,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "7e28746c37540219e2c907068ccc8e8fb451d0d77715559352cec285cf0a6439",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-account",
+      "ranges": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 360,
+          "end_line": 394,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "42e158adcf97a68f3911674563d89fa0fd39cf98689da3b9a11c7db2af6e60a1",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 141,
+          "end_line": 158,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "232905901ce32275d4763e134076a2129cb3c563853f67280ece286c3a7aed9a",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-source",
+      "ranges": [
+        {
+          "path": "watchdog/source_worker.py",
+          "line": 1,
+          "end_line": 6,
+          "blob_sha256": "8584089b72db8a2ea2c45db0ec33793c2f2fbc3ec3b176b2c81d590ea27457e6",
+          "excerpt_sha256": "21f53369c3c3a4cd55e739e3a15ae6af93e8ea5385dc9b5bb2f5e656f2839f2a",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 207,
+          "end_line": 211,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "7970d29ca7b48ceeffb4e1e3840c72912d858f53a9ae14fa5d80f7d3df3d86d8",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 400,
+          "end_line": 423,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "af5125e19a80d882616625334a057913ff8efcef731e8dfcfd9cad3ee2dbbe8c",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-classify",
+      "ranges": [
+        {
+          "path": "watchdog/provider_gateway.py",
+          "line": 1,
+          "end_line": 6,
+          "blob_sha256": "c7a6bf5c45053d6dbb61ec2ce1d3a2c2a304451a0aa978d26ced58c693bd7772",
+          "excerpt_sha256": "80b8477b55829cf78bf0d046cca5ed43d389fe681fb5fe5491ddcfeef61a444b",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/provider_gateway.py",
+          "line": 35,
+          "end_line": 52,
+          "blob_sha256": "c7a6bf5c45053d6dbb61ec2ce1d3a2c2a304451a0aa978d26ced58c693bd7772",
+          "excerpt_sha256": "3e649039dedab4d94431b19fdaa012ddb2485d5e6aa7d35b25e29642130a9fbe",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/runtime.py",
+          "line": 182,
+          "end_line": 211,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "14eaecd16a0a9e11428c662774d8ef0d1301d59119ac517d65dd2511311686ed",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-store",
+      "ranges": [
+        {
+          "path": "watchdog/cli.py",
+          "line": 429,
+          "end_line": 501,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "d73318a1a864332800e88bb61edbeee2d19515a452ab016b1c1ce70637ff41b4",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/reports.py",
+          "line": 1,
+          "end_line": 5,
+          "blob_sha256": "cdb88304cbe31fc28ab35cbf77642e2218efa9fcb3ecce72e9c221e43ac1b166",
+          "excerpt_sha256": "11b12e5adba62ce4e653d3bc12754c9172429474646e5d231ccc02e0f6805214",
+          "diagram_citation": true
+        }
+      ]
+    },
+    {
+      "id": "wd-relay",
+      "ranges": [
+        {
+          "path": "watchdog/runtime.py",
+          "line": 255,
+          "end_line": 271,
+          "blob_sha256": "4fab3dfc709e043d38759e22202cc0a34265cd8dae268e5880adc712639520ba",
+          "excerpt_sha256": "62f02be8d5badafef39e520157f68344b61f20d2185ad3e057007a4183c41f3f",
+          "diagram_citation": true
+        },
+        {
+          "path": "watchdog/cli.py",
+          "line": 227,
+          "end_line": 268,
+          "blob_sha256": "6c7cd344a77718a5946066695a5ba4f0b6bad57c11a8129e1bb837ea42bccb78",
+          "excerpt_sha256": "35daa282aee148ab86f0f93761b6d7fae2e09a99cecd1bfe76c8ff2ff426ccf6",
+          "diagram_citation": true
+        },
+        {
+          "path": "docs/watchdog-notifications.md",
+          "line": 21,
+          "end_line": 84,
+          "blob_sha256": "f5be3f4e8790b33c72e7fbf4d60d1ff3fb0868c49f2f2d6c710e89ec81d5ce56",
+          "excerpt_sha256": "7b779a673a1dc796da13d64e6207f8ebf1f109b79ffb626ea70cb47c5e84ac64",
+          "diagram_citation": true
+        },
+        {
+          "path": "docs/watchdog-operations.md",
+          "line": 27,
+          "end_line": 41,
+          "blob_sha256": "a4947eb5a859d29b23c6538348549a8e9cf9a9eb75f542090b5c07c14d235934",
+          "excerpt_sha256": "b18675ee6efc018b5351c9aa144bc009f61163db9bea58b9345dc8b88b4b80ea",
+          "diagram_citation": false
+        }
+      ]
+    },
+    {
+      "id": "expiry",
+      "ranges": [
+        {
+          "path": "entry_expiry.py",
+          "line": 64,
+          "end_line": 100,
+          "blob_sha256": "27d6e37dbb9541d929b4050899f3bd1eea2a33b141c2abe88e954455bf54b20e",
+          "excerpt_sha256": "8f7e1f80e65cb837b40d61048862c504fd0d9b987079c1558dadaae573073e03",
+          "diagram_citation": true
+        },
+        {
+          "path": "entry_expiry.py",
+          "line": 17,
+          "end_line": 61,
+          "blob_sha256": "27d6e37dbb9541d929b4050899f3bd1eea2a33b141c2abe88e954455bf54b20e",
+          "excerpt_sha256": "666331d0708d57cde87e070703905ad785128287490a0f5e50b5baa9c62770ca",
+          "diagram_citation": true
+        }
+      ]
+    }
+  ],
+  "supplemental_range_count": 10
+}

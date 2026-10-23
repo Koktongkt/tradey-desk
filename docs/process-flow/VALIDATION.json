@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "source_revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+  "diagram_type": "workflow",
+  "archify_version": "3.0.1",
+  "source_citations": 80,
+  "supplemental_ranges": 10,
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "browser": {
+    "engine": "Chromium headless shell 156.0.8078.4",
+    "viewports": [
+      [
+        1440,
+        900
+      ],
+      [
+        1600,
+        1000
+      ],
+      [
+        1920,
+        1080
+      ],
+      [
+        2048,
+        1320
+      ]
+    ],
+    "themes": "light at all; dark at both endpoints",
+    "detail": "read",
+    "motion": "still",
+    "environment_note": "Isolated browser libraries and DejaVu fonts supplied to a fontless host; browser sandbox opt-out was confined to this local artifact inspection."
+  },
+  "visual_review": {
+    "status": "passed",
+    "inspected": [
+      "1440x900 light",
+      "2048x1320 dark",
+      "native PNG export",
+      "scrolled explanatory cards"
+    ],
+    "observations": [
+      "No clipped nodes or overlapping labels observed. Supporting diagram text is small at laptop scale; zoom and explanation cards provide detail.",
+      "Source-defined watchdog tracks and deadline observation remain separate.",
+      "Advisory detours remain on dossier/reconciliation, journal/outcomes and expiry routes; no gate failures."
+    ],
+    "initial_environment_failure": "First screenshots on a fontless host omitted text. Font-ready finalize, captures and exports were rerun; only those final results are reported."
+  },
+  "exports": [
+    {
+      "format": "svg",
+      "receipt": {
+        "data-last-export-format": "svg",
+        "data-last-export-bytes": "197734",
+        "data-last-export-canonical": "true"
+      },
+      "bytes": 197734
+    },
+    {
+      "format": "png",
+      "receipt": {
+        "data-last-export-format": "png",
+        "data-last-export-bytes": "1121830",
+        "data-last-export-canonical": "true"
+      },
+      "bytes": 1121830
+    }
+  ],
+  "png_dimensions": [
+    4026,
+    3456
+  ],
+  "artifacts": [
+    {
+      "path": "docs/process-flow/tradey-desk.workflow.json",
+      "sha256": "8e7990810bb7404fd7c15638d35a1eb08109ef1cf574abffaaab0e0bb7d94860",
+      "bytes": 32716
+    },
+    {
+      "path": "docs/process-flow/tradey-desk.workflow.html",
+      "sha256": "9dda3dc90a228775c99b1e058334bd04de44e6a6eb59ce36e999b5b4612d3032",
+      "bytes": 818653
+    },
+    {
+      "path": "docs/process-flow/tradey-desk-preview.svg",
+      "sha256": "2c5ea5b3acc608373f525c601b29a6a32f148a71fd7502e1ce89f615716f1ec8",
+      "bytes": 197734
+    },
+    {
+      "path": "docs/process-flow/tradey-desk-preview.png",
+      "sha256": "663881ce998dee1ef2b8c66952b38a0138ad43e5b93b684cadc013c64b080ae7",
+      "bytes": 1121830
+    },
+    {
+      "path": "docs/process-flow/SOURCE_EVIDENCE.json",
+      "sha256": "5df454bbd9d0c61c7754a3912157e81ee1b7fec60196538254fe8f7c45cc20c7",
+      "bytes": 32469
+    }
+  ],
+  "boundaries": [
+    "Documentation-only isolated worktree.",
+    "No runtime suite rerun, live research, broker calls, scheduler mutation, deploy or push.",
+    "Historical tradey-desk.html is preserved, not the refreshed current workflow."
+  ],
+  "provenance_note": "Portable summary derived from real local Archify receipts; not an Archify delivery sidecar. Machine-specific receipts and captures are deliberately excluded."
+}

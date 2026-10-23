@@ -8,7 +8,7 @@
     "output": "docs/process-flow/tradey-desk.workflow.html",
     "repository": {
       "url": "https://github.com/Koktongkt/tradey-desk.git",
-      "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
+      "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
       "link_mode": "local-only"
     }
   },
@@ -59,8 +59,13 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 209,
-          "end_line": 233
+          "line": 223,
+          "end_line": 247
+        },
+        {
+          "path": "cron/autotrader.schedule",
+          "line": 1,
+          "end_line": 1
         }
       ]
     },
@@ -69,79 +74,108 @@
       "lane": "research",
       "col": 1,
       "type": "backend",
-      "label": "Discover ideas",
-      "sublabel": "Bounded web scouting",
+      "label": "Six-lane discovery",
+      "sublabel": "Search + fixed selector",
       "width": 144,
       "sources": [
         {
-          "path": "alpha_radar.py",
-          "line": 1375,
-          "end_line": 1407
+          "path": "discovery_collection.py",
+          "line": 12,
+          "end_line": 33
+        },
+        {
+          "path": "discovery_pipeline.py",
+          "line": 45,
+          "end_line": 78
         },
         {
           "path": "alpha_radar.py",
-          "line": 412,
-          "end_line": 439
+          "line": 1837,
+          "end_line": 1859
         }
-      ]
+      ],
+      "tag": "up to 5 ideas"
     },
     {
       "id": "evidence",
       "lane": "research",
       "col": 2,
       "type": "cloud",
-      "label": "Fetch evidence",
-      "sublabel": "Freshness + source rescue",
+      "label": "Retrieve + rank",
+      "sublabel": "Focused + bounded rescue",
       "width": 144,
       "sources": [
         {
+          "path": "focused_pipeline.py",
+          "line": 73,
+          "end_line": 162
+        },
+        {
           "path": "alpha_radar.py",
-          "line": 1408,
-          "end_line": 1462
+          "line": 1289,
+          "end_line": 1348
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1890,
+          "end_line": 2037
         }
-      ]
+      ],
+      "tag": ">=2 publisher domains"
     },
     {
       "id": "synthesis",
       "lane": "research",
       "col": 3,
       "type": "backend",
-      "label": "Synthesize thesis",
-      "sublabel": "Tool-free evidence analysis",
+      "label": "Sequential synthesis",
+      "sublabel": "Tool-free; shared 270s",
       "width": 144,
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1508,
-          "end_line": 1528
+          "line": 2038,
+          "end_line": 2096
         },
         {
           "path": "alpha_radar.py",
-          "line": 432,
-          "end_line": 435
+          "line": 2099,
+          "end_line": 2138
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 1513,
+          "end_line": 1527
         }
-      ]
+      ],
+      "tag": "up to 5 distinct"
     },
     {
       "id": "qualify",
       "lane": "research",
       "col": 4,
       "type": "security",
-      "label": "Qualify candidate",
-      "sublabel": "Sources + earnings + intake",
+      "label": "Enrich + intake",
+      "sublabel": "Earnings + REST prices",
       "width": 144,
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1344,
-          "end_line": 1356
+          "line": 2140,
+          "end_line": 2175
         },
         {
           "path": "alpha_radar.py",
-          "line": 1689,
-          "end_line": 1703
+          "line": 1802,
+          "end_line": 1817
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 189,
+          "end_line": 227
         }
-      ]
+      ],
+      "tag": "local reject: next"
     },
     {
       "id": "dossier",
@@ -154,13 +188,13 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 1703,
-          "end_line": 1709
+          "line": 2301,
+          "end_line": 2307
         },
         {
           "path": "autotrader.py",
-          "line": 1233,
-          "end_line": 1254
+          "line": 1253,
+          "end_line": 1274
         }
       ]
     },
@@ -175,18 +209,18 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1402,
-          "end_line": 1445
+          "line": 1428,
+          "end_line": 1474
         },
         {
           "path": "managed_reconciliation.py",
-          "line": 330,
-          "end_line": 448
+          "line": 365,
+          "end_line": 488
         },
         {
           "path": "sqlite_ledger.py",
-          "line": 319,
-          "end_line": 376
+          "line": 323,
+          "end_line": 382
         }
       ],
       "tag": "operational import"
@@ -197,13 +231,23 @@
       "col": 1,
       "type": "cloud",
       "label": "Broker + market truth",
-      "sublabel": "Gross cash / net BP",
+      "sublabel": "IEX + Massive REST",
       "width": 144,
       "sources": [
         {
           "path": "broker_mcp_bridge.py",
-          "line": 211,
-          "end_line": 286
+          "line": 230,
+          "end_line": 323
+        },
+        {
+          "path": "market_data.py",
+          "line": 18,
+          "end_line": 40
+        },
+        {
+          "path": "market_data.py",
+          "line": 98,
+          "end_line": 131
         }
       ]
     },
@@ -218,8 +262,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 313,
-          "end_line": 363
+          "line": 314,
+          "end_line": 364
         },
         {
           "path": "pending_policy.py",
@@ -245,13 +289,13 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 874,
-          "end_line": 946
+          "line": 891,
+          "end_line": 964
         },
         {
           "path": "autotrader.py",
-          "line": 1474,
-          "end_line": 1477
+          "line": 1506,
+          "end_line": 1509
         }
       ]
     },
@@ -266,8 +310,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 373,
-          "end_line": 392
+          "line": 374,
+          "end_line": 393
         }
       ],
       "tag": "score >=0.55"
@@ -283,13 +327,13 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1354,
-          "end_line": 1385
+          "line": 1374,
+          "end_line": 1410
         },
         {
           "path": "autotrader.py",
-          "line": 1488,
-          "end_line": 1527
+          "line": 1520,
+          "end_line": 1568
         },
         {
           "path": "entry_state.py",
@@ -297,7 +341,7 @@
           "end_line": 57
         }
       ],
-      "tag": "daily 2; pending 3"
+      "tag": "daily 3; pending 3"
     },
     {
       "id": "submit",
@@ -311,17 +355,17 @@
         {
           "path": "broker_process.py",
           "line": 13,
-          "end_line": 57
+          "end_line": 75
         },
         {
           "path": "broker_supervisor.py",
-          "line": 181,
-          "end_line": 211
+          "line": 193,
+          "end_line": 228
         },
         {
           "path": "broker_supervisor.py",
-          "line": 126,
-          "end_line": 163
+          "line": 133,
+          "end_line": 175
         }
       ]
     },
@@ -336,13 +380,13 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1527,
-          "end_line": 1547
+          "line": 1568,
+          "end_line": 1583
         },
         {
           "path": "autotrader.py",
-          "line": 1185,
-          "end_line": 1210
+          "line": 1205,
+          "end_line": 1230
         }
       ]
     },
@@ -357,18 +401,18 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 679,
-          "end_line": 696
+          "line": 696,
+          "end_line": 713
         },
         {
           "path": "sqlite_ledger.py",
-          "line": 278,
-          "end_line": 316
+          "line": 282,
+          "end_line": 320
         },
         {
           "path": "managed_reconciliation.py",
-          "line": 424,
-          "end_line": 429
+          "line": 464,
+          "end_line": 469
         }
       ]
     },
@@ -388,8 +432,8 @@
         },
         {
           "path": "run_cycle.py",
-          "line": 228,
-          "end_line": 232
+          "line": 242,
+          "end_line": 246
         }
       ]
     },
@@ -430,8 +474,8 @@
         },
         {
           "path": "public_dashboard.py",
-          "line": 146,
-          "end_line": 181
+          "line": 176,
+          "end_line": 214
         }
       ]
     },
@@ -446,8 +490,8 @@
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 228,
-          "end_line": 234
+          "line": 242,
+          "end_line": 248
         }
       ]
     },
@@ -462,8 +506,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 471,
-          "end_line": 623
+          "line": 472,
+          "end_line": 640
         },
         {
           "path": "pending_policy.py",
@@ -510,13 +554,13 @@
       "sources": [
         {
           "path": "watchdog/runtime.py",
-          "line": 39,
-          "end_line": 81
+          "line": 48,
+          "end_line": 128
         },
         {
           "path": "watchdog/cli.py",
-          "line": 311,
-          "end_line": 350
+          "line": 319,
+          "end_line": 369
         }
       ],
       "yOffset": -54
@@ -542,8 +586,8 @@
         },
         {
           "path": "watchdog/cli.py",
-          "line": 346,
-          "end_line": 352
+          "line": 365,
+          "end_line": 371
         }
       ],
       "yOffset": -54
@@ -559,13 +603,13 @@
       "sources": [
         {
           "path": "watchdog/cli.py",
-          "line": 410,
-          "end_line": 445
+          "line": 429,
+          "end_line": 464
         },
         {
           "path": "watchdog/cli.py",
-          "line": 490,
-          "end_line": 500
+          "line": 512,
+          "end_line": 522
         }
       ],
       "yOffset": -54
@@ -581,13 +625,13 @@
       "sources": [
         {
           "path": "watchdog/cli.py",
-          "line": 312,
-          "end_line": 312
+          "line": 320,
+          "end_line": 320
         },
         {
           "path": "watchdog/cli.py",
-          "line": 446,
-          "end_line": 483
+          "line": 465,
+          "end_line": 501
         }
       ],
       "yOffset": -54
@@ -598,18 +642,23 @@
       "col": 5,
       "type": "cloud",
       "label": "Exception alerts",
-      "sublabel": "No receipt: pending",
+      "sublabel": "Policy-gated; no receipt",
       "width": 144,
       "sources": [
         {
           "path": "watchdog/runtime.py",
-          "line": 194,
-          "end_line": 210
+          "line": 255,
+          "end_line": 271
         },
         {
           "path": "watchdog/cli.py",
-          "line": 223,
-          "end_line": 259
+          "line": 227,
+          "end_line": 268
+        },
+        {
+          "path": "docs/watchdog-notifications.md",
+          "line": 21,
+          "end_line": 84
         }
       ],
       "yOffset": -54
@@ -630,8 +679,8 @@
         },
         {
           "path": "watchdog/cli.py",
-          "line": 328,
-          "end_line": 337
+          "line": 347,
+          "end_line": 356
         }
       ],
       "yOffset": 54
@@ -647,13 +696,13 @@
       "sources": [
         {
           "path": "watchdog/cli.py",
-          "line": 341,
-          "end_line": 375
+          "line": 360,
+          "end_line": 394
         },
         {
           "path": "watchdog/runtime.py",
-          "line": 84,
-          "end_line": 101
+          "line": 141,
+          "end_line": 158
         }
       ],
       "yOffset": 54
@@ -674,13 +723,13 @@
         },
         {
           "path": "watchdog/runtime.py",
-          "line": 147,
-          "end_line": 151
+          "line": 207,
+          "end_line": 211
         },
         {
           "path": "watchdog/cli.py",
-          "line": 381,
-          "end_line": 404
+          "line": 400,
+          "end_line": 423
         }
       ],
       "yOffset": 54
@@ -706,8 +755,8 @@
         },
         {
           "path": "watchdog/runtime.py",
-          "line": 125,
-          "end_line": 151
+          "line": 182,
+          "end_line": 211
         }
       ],
       "yOffset": 54
@@ -723,8 +772,8 @@
       "sources": [
         {
           "path": "watchdog/cli.py",
-          "line": 410,
-          "end_line": 483
+          "line": 429,
+          "end_line": 501
         },
         {
           "path": "watchdog/reports.py",
@@ -740,23 +789,23 @@
       "col": 5,
       "type": "cloud",
       "label": "Daily summary + alerts",
-      "sublabel": "No receipt ≠ delivered",
+      "sublabel": "Emission != acknowledgment",
       "width": 144,
       "sources": [
         {
           "path": "watchdog/runtime.py",
-          "line": 194,
-          "end_line": 210
+          "line": 255,
+          "end_line": 271
         },
         {
           "path": "watchdog/cli.py",
-          "line": 223,
-          "end_line": 259
+          "line": 227,
+          "end_line": 268
         },
         {
-          "path": "docs/watchdog-operations.md",
-          "line": 26,
-          "end_line": 33
+          "path": "docs/watchdog-notifications.md",
+          "line": 21,
+          "end_line": 84
         }
       ],
       "yOffset": 54
@@ -796,14 +845,16 @@
       "to": "evidence",
       "variant": "default",
       "role": "main",
-      "from": "scout"
+      "from": "scout",
+      "label": "ideas"
     },
     {
       "id": "evidence-synthesis",
       "to": "synthesis",
       "variant": "default",
       "role": "main",
-      "from": "evidence"
+      "from": "evidence",
+      "label": "ranked"
     },
     {
       "id": "synthesis-qualify",
@@ -818,7 +869,7 @@
       "variant": "security",
       "role": "main",
       "from": "qualify",
-      "label": "passes intake"
+      "label": "first pass"
     },
     {
       "id": "dossier-reconcile",
@@ -1006,23 +1057,60 @@
       "role": "branch",
       "variant": "dashed",
       "label": "observe"
+    },
+    {
+      "id": "intake-next-candidate",
+      "from": "qualify",
+      "to": "synthesis",
+      "role": "return",
+      "variant": "dashed",
+      "label": "next",
+      "fromSide": "top",
+      "toSide": "top"
     }
   ],
   "cards": [
     {
       "dot": "cyan",
+      "title": "Discovery and focused evidence • no trading authority",
+      "items": [
+        "Six code-owned search lanes: broad, SEC, issuer IR, reporting, undercovered wire and rotating sector. A one-turn tool-free selector admits at most five source-bound company/event pairs; private history supports selection. Discovery does not require a two-source bundle.",
+        "Focused search, safety validation and fair allocation admit up to five URLs per candidate / 25 unique URLs; at most three singleton extraction supervisors run concurrently under one original deadline. Actual extraction envelopes, not search/model prose, establish page content; accepted focused pages can be reused.",
+        "Ordinary fetch/cache, SEC dates and publication recovery precede ranking. At least two distinct accepted publisher domains are required. Evidence score uses provenance, independent/primary corroboration, completeness and freshness; scout order breaks ties."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Rescue, sequential alternatives and distinct failure paths",
+      "items": [
+        "Thin-bundle rescue preserves accepted evidence and resumes bounded operation turns across up to three candidates: retained alternatives, SEC primary lookup, then missing independent/wire lane searches. Gap retrieval consumes actual result URLs; accepted publishers and attempted URLs are excluded.",
+        "If no initial eligible bundle exists, rescue precedes synthesis. Otherwise eligible candidates run first; only after their local rejections can deferred rescue/recovery rerank unattempted symbols under the original deadlines. Rescue does not reset recovery or evidence budgets.",
+        "Up to five distinct evidence-eligible symbols receive sequential tool-free synthesis plus the same deterministic intake. Explicit none / candidate-local policy rejection continues; first intake pass returns immediately. Infrastructure, parse, containment, market-data ambiguity and persistence failures abort rather than trying another candidate."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Shared budgets, exit-aware earnings and actual data adapters",
+      "items": [
+        "Synthesis: 270 cumulative seconds across all candidates, no per-candidate cap. Enrichment: separate 90 cumulative seconds. Enrichment pauses synthesis charging but still consumes the 960-second absolute active deadline; outer research wrapper is 990 seconds. Minimum viable launch/reserve checks still apply.",
+        "Prompt anchors actual UTC and New York as-of times and requires a future timezone-aware UTC ISO exit with 1–30 entry-inclusive holding sessions. No date repair. Intake checks exit-aware earnings through planned exit plus weekday blackout; the unchanged broker actual-session earnings gate remains authoritative.",
+        "Enrichment resolves trusted earnings and synchronized completed stock/SPY prices. market_data.py calls Massive REST with a credential read from Massive MCP configuration; broker bridge also reads Massive completed daily technical bars/volume. Alpaca MCP supplies account/order/calendar and IEX quote truth. FRED is not integrated into this candidate flow."
+      ]
+    },
+    {
+      "dot": "cyan",
       "title": "Producer / consumer cadence • New York time",
       "items": [
-        "Premarket: 09:00. Radar: 10:00–15:40 at :00 / :20 / :40.",
-        "Autotrader: 09:40, then 10:10–15:50 at :10 / :30 / :50.",
-        "Verified eligible dossiers can be reused within 60 minutes; already-reviewed dossiers are normally skipped. Research qualification is not trade approval."
+        "Premarket 09:00 ET; radar 10:00–15:40 at :00/:20/:40. Autotrader UTC grid: 18,38,58 13-20 * * 1-5; NY slot AND weekday 09:30–16:00 fence accept 09:38/09:58, then 10:18–15:58 at :18/:38/:58.",
+        "09:18, obsolete :15/:35/:40/:55 and off-window fires do not execute. Cheap launch fences do not infer holidays/early closes; broker regular-session validation remains authoritative. Code-defined schedule is not installed-job readback.",
+        "Radar-to-consumer spacing is 18 minutes; 990-second wrapper leaves nominal 90 seconds, not guaranteed non-overlap. Reconciliation uses a separate shifted :02/:12/:22/:32/:42/:52 grid and shared nonblocking entry lock. Dossiers remain subject to freshness/review gates."
       ]
     },
     {
       "dot": "rose",
       "title": "Execution controls • checked-in configuration",
       "items": [
-        "Candidate pin: enabled=true, paper; exact_owned_zero_fill_v1 with three qualified pending parents. Daily submissions remain two, including unknown submissions by original New York submission date.",
+        "Pinned configuration: enabled=true, paper; discovery_v2, focused retrieval and gap retrieval enabled. exact_owned_zero_fill_v1 permits three qualified pending parents. Daily cap is three submissions, including unknown submissions by original New York submission date.",
         "Unchanged observed limits: $10,000 managed exposure; $500 per position; planned risk <=$40; IEX spread <=600 bps; whole shares; no margin. These are checked-in settings, not new policy authorization.",
         "Gross cash reserves exact pending notional once; available-net buying power is a separate cap and is not reduced twice. Pending notional also reserves exposure headroom. Unknown funding, manual/unlinked orders, partial fills and same-symbol pending entries block."
       ]
@@ -1038,12 +1126,12 @@
     },
     {
       "dot": "amber",
-      "title": "Candidate-only boundaries • publication gated",
+      "title": "Source pin, not operational or deployment evidence",
       "items": [
-        "Frozen candidate is under final independent review, NOT deployed. Artifact checks and offline tests are not release approval; publication requires parent PASS. No live broker, model, scheduler or deployment evidence is claimed.",
+        "Frozen committed source: 237b825. This documentation refresh does not deploy, activate schedules, inspect accounts, call models or execute broker actions. Artifact checks establish diagram integrity, not runtime acceptance or release approval.",
         "Expiry is OBSERVATION ONLY: SAFE_PARENT_CANCEL_VERIFIED=False. Legacy intents without metadata, including legacy UBER, are never retrofitted. Passing a deadline never frees a slot, cash/exposure reservation or daily quota; exact confirmed lifecycle reconciliation is required.",
         "Operational reconciliation explicitly imports projections when an existing database is present. verify_only qualification preserves business JSONL/SQLite bytes; typed repair-required or pending WAL/recovery fails closed. Coordination lock files may be created.",
-        "Stable per-launch outer Linux subreaper owns inner supervisor, wrapper and detached orphans. Internally controlled escalation preserves/resumes the custodian; cleanup/reap precedes return and entry-lock release. Offline probes found no living or zombie owned process. External custodian SIGKILL/OOM, container death and uninterruptible tasks are outside this guarantee; no sandbox or broker rollback."
+        "Stable outer Linux subreaper owns inner supervisor, wrapper and detached orphans. Caller pidfd and inherited entry-lock descriptions preserve authority until owned descendants are reaped, including caller death. External custodian SIGKILL/OOM, container death and uninterruptible tasks remain outside the internally controlled guarantee; no sandbox or broker rollback."
       ]
     },
     {
@@ -1070,7 +1158,7 @@
       "items": [
         "The later daily slot retries report installation, pending-outbox delivery and completion marker only after an observation is already committed; it does not repeat thesis retrieval or claim fresh all-clear.",
         "Mechanical runs without exceptions are silent; daily successful runs emit a report/coverage summary. Out-of-slot launches are silent no-ops, not completed observations.",
-        "Hermes cron relays sanitized stdout. Without genuine provider readback, alerts stay pending and may repeat. Diagram describes source behavior, not proof of eligible-run execution or alert delivery."
+        "Hermes cron relays sanitized stdout, not a provider receipt. Schema 1 retains legacy receiptless replay. Explicitly activated schema 2 keeps historical outbox evidence but separately records suppression/prepared/emitted/failed; current urgent conditions remind after 24h and one daily summary follows installation. Emitted is not delivered; crashes may lose messages and raised transports may duplicate. Activation was not inspected."
       ]
     }
   ]
