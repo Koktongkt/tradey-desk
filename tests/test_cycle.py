@@ -277,6 +277,26 @@ class CycleTests(unittest.TestCase):
             run_cycle.mark_completed("radar",state=state)
             self.assertTrue(run_cycle.completed_today("radar",state=state))
 
+    def test_approved_autotrader_fire_reaches_execution_without_slot_mock(self):
+        real_datetime=dt.datetime
+        for day in (dt.date(2026,3,9),dt.date(2026,10,12),dt.date(2026,11,2),dt.date(2026,12,15)):
+            for hour,minute in ((9,38),(9,58),(10,18),(10,38),(10,58),(15,58)):
+                fire=real_datetime.combine(day,dt.time(hour,minute),tzinfo=run_cycle.NY)
+                with self.subTest(fire=fire), patch.object(run_cycle.dt,'datetime') as clock, patch.object(sys,'argv',['run_cycle.py','autotrader']), patch.object(run_cycle,'execute',return_value=0) as execute, patch.object(run_cycle,'audit_result') as audit:
+                    clock.now.return_value=fire
+                    self.assertEqual(run_cycle.main(),0)
+                    execute.assert_called_once_with([sys.executable,str(run_cycle.ROOT/'autotrader.py')],timeout_seconds=600,attempts=1,audit_mode='autotrader',audit_stage='execution')
+                    audit.assert_not_called()
+
+    def test_autotrader_off_slot_and_market_fences_prevent_execution(self):
+        real_datetime=dt.datetime
+        for day,hour,minute in ((dt.date(2026,10,12),9,18),(dt.date(2026,10,12),9,40),(dt.date(2026,10,12),10,15),(dt.date(2026,10,12),16,18),(dt.date(2026,10,17),10,18)):
+            fire=real_datetime.combine(day,dt.time(hour,minute),tzinfo=run_cycle.NY)
+            with self.subTest(fire=fire), patch.object(run_cycle.dt,'datetime') as clock, patch.object(sys,'argv',['run_cycle.py','autotrader']), patch.object(run_cycle,'execute') as execute, patch.object(run_cycle,'audit_result'):
+                clock.now.return_value=fire
+                self.assertEqual(run_cycle.main(),0)
+                execute.assert_not_called()
+
     def test_new_york_pairing_slots(self):
         ny=ZoneInfo("America/New_York")
         day=dt.date(2026,9,15)
@@ -287,9 +307,9 @@ class CycleTests(unittest.TestCase):
             self.assertTrue(run_cycle.scheduled_slot("radar",at(h,m)))
         for h,m in [(9,30),(9,40),(16,0),(10,10),(10,30),(10,50)]:
             self.assertFalse(run_cycle.scheduled_slot("radar",at(h,m)))
-        for h,m in [(9,40),(10,15),(10,35),(10,55),(15,15),(15,35),(15,55)]:
+        for h,m in [(9,18),(9,38),(9,58),(10,18),(10,38),(10,58),(15,18),(15,38),(15,58)]:
             self.assertTrue(run_cycle.scheduled_slot("autotrader",at(h,m)))
-        for h,m in [(9,15),(9,30),(9,35),(9,45),(9,55),(10,0),(10,10),(10,20),(10,30),(10,40),(10,50),(16,15),(16,35),(16,55)]:
+        for h,m in [(9,15),(9,30),(9,35),(9,40),(9,45),(9,55),(10,0),(10,10),(10,15),(10,20),(10,30),(10,35),(10,40),(10,50),(10,55),(16,18),(16,38),(16,58)]:
             self.assertFalse(run_cycle.scheduled_slot("autotrader",at(h,m)))
 
     def test_market_open_and_close_fire_windows_exclude_edge_slots(self):
@@ -306,10 +326,11 @@ class CycleTests(unittest.TestCase):
         minute_field,hour_field,dom,month,dow=expression.split()
         self.assertEqual((dom,month,dow),("*","*","1-5"))
         minutes={int(value) for value in minute_field.split(",")}
+        self.assertEqual(minutes,{18,38,58})
         first_hour,last_hour=(int(value) for value in hour_field.split("-"))
         self.assertEqual((first_hour,last_hour),(13,20))
         ny=ZoneInfo("America/New_York")
-        expected=[(9,40)]+[(hour,minute) for hour in range(10,16) for minute in (15,35,55)]
+        expected=[(9,38),(9,58)]+[(hour,minute) for hour in range(10,16) for minute in (18,38,58)]
         # EDT, EST, and the Mondays following both DST transitions.
         for day in (dt.date(2026,10,12),dt.date(2026,12,15),dt.date(2026,3,9),dt.date(2026,11,2),dt.date(2026,10,17),dt.date(2026,12,19)):
             accepted=[]
@@ -328,18 +349,18 @@ class CycleTests(unittest.TestCase):
         self.assertTrue(run_cycle.scheduled_slot("premarket",summer))
         self.assertTrue(run_cycle.scheduled_slot("premarket",winter))
 
-    def test_intraday_consumer_leaves_five_minutes_after_research_cutoff(self):
+    def test_intraday_consumer_follows_research_by_eighteen_minutes(self):
         ny=ZoneInfo('America/New_York')
         for day in (dt.date(2026,3,9),dt.date(2026,10,12),dt.date(2026,11,2),dt.date(2026,12,15)):
             for hour in range(10,16):
                 for minute in (0,20,40):
                     producer=dt.datetime.combine(day,dt.time(hour,minute),tzinfo=ny)
-                    consumer=producer+dt.timedelta(minutes=15)
+                    consumer=producer+dt.timedelta(minutes=18)
                     with self.subTest(day=day,hour=hour,minute=minute):
                         self.assertTrue(run_cycle.scheduled_slot('radar',producer))
                         self.assertTrue(run_cycle.scheduled_slot('autotrader',consumer))
                         self.assertTrue(run_cycle.in_window('market',consumer))
-                        self.assertEqual(consumer-(producer+dt.timedelta(seconds=600)),dt.timedelta(minutes=5))
+                        self.assertEqual(consumer-(producer+dt.timedelta(seconds=990)),dt.timedelta(seconds=90))
 
     def test_reconciliation_grid_avoids_simultaneous_autotrader_starts(self):
         import managed_reconciliation as reconciliation

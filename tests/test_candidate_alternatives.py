@@ -328,19 +328,37 @@ class CandidateAlternativesTests(unittest.TestCase):
             self.assertEqual(market.call_count,1)
             self.assertFalse((root/'candidates.jsonl').exists())
 
-    def test_at_most_three_distinct_symbols_are_attempted(self):
-        none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*5,symbols=('AAA','AAA','BBB','CCC','DDD')) as (cfg,_,calls,fetch,_):
-            result=radar.live_research(cfg)
-            self.assertEqual(result['status'],'none')
-            self.assertEqual(calls.call_count,4)
+    def test_four_local_rejections_reach_fifth_and_persist_only_success(self):
+        symbols=('AAA','BBB','CCC','DDD','EEE')
+        responses=[self.candidate(s,instrument_type='etf') for s in symbols[:4]]+[self.candidate('EEE')]
+        with self.research_fixture(responses) as (_,root,calls,fetch,_):
+            self.assertEqual(self.run_main(),(0,'DECISION candidate_qualified EEE'))
+            self.assertEqual(calls.call_count,6)
             prompts=[c.kwargs['input'] for c in calls.call_args_list[1:]]
-            self.assertEqual([p.split('SELECTED SYMBOL: ')[1].split('.')[0] for p in prompts],['AAA','BBB','CCC'])
+            self.assertEqual([p.split('SELECTED SYMBOL: ')[1].split('.')[0] for p in prompts],list(symbols))
+            rows=[json.loads(line) for line in (root/'candidates.jsonl').read_text().splitlines()]
+            self.assertEqual([row['symbol'] for row in rows],['EEE'])
             fetch.assert_called_once()
+
+    def test_at_most_five_distinct_symbols_even_across_ranked_batches(self):
+        none={'status':'none','none_reason':'no_fresh_setup'}
+        symbols=('AAA','BBB','CCC','DDD','EEE','FFF')
+        # Inject an oversized rank result at the loop boundary, independently of
+        # discovery's unchanged five-candidate admission cap.
+        for deferred in (False,True):
+            with self.subTest(deferred=deferred), self.research_fixture([none]*6) as (cfg,_,calls,fetch,_):
+                ranked=[({'symbol':s},[]) for s in symbols]
+                batches=[ranked[:3],ranked] if deferred else [ranked]
+                with patch.object(radar,'ranked_candidate_evidence',side_effect=batches), patch.object(radar,'synthesize_candidate',return_value=none) as synth, patch.object(radar,'post_fetch_rescue_candidate') as rescue:
+                    result=radar.live_research(cfg)
+                self.assertEqual(result['status'],'none')
+                self.assertEqual([c.args[1]['symbol'] for c in synth.call_args_list],list(symbols[:5]))
+                rescue.assert_not_called()
+                fetch.assert_called_once()
 
     def test_alternatives_share_270_cumulative_synthesis_seconds(self):
         none={'status':'none','none_reason':'no_fresh_setup'}
-        with self.research_fixture([none]*3) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda: {1:0,2:30,3:55}.get(calls.call_count,0)):
+        with self.research_fixture([none]*3,symbols=('AAA','BBB','CCC')) as (cfg,_,calls,_,_), patch.object(radar,'monotonic',side_effect=lambda: {1:0,2:30,3:55}.get(calls.call_count,0)):
             radar.live_research(cfg)
             self.assertEqual([c.kwargs['timeout'] for c in calls.call_args_list[1:]],[270,240,215])
 

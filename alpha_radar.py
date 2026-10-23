@@ -2046,7 +2046,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         for selected,evidence in ranked:
             symbol=str(selected.get("symbol") or "").upper()
             if symbol in attempted_symbols:continue
-            if len(attempted_symbols)>=3:break
+            if len(attempted_symbols)>=5:break
             now=monotonic()
             launch_remaining=min(synthesis_remaining,overall_deadline-now-float(enrichment_budget["remaining"] or 0.0))
             if launch_remaining<MIN_SYNTHESIS_WINDOW_SECONDS:
@@ -2075,7 +2075,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 if last_rejection is not None:raise last_rejection
                 raise
         deferred_rescue_deadline=min(deferred_rescue_deadline,overall_deadline-float(enrichment_budget["remaining"] or 0.0)-deferred_synthesis_reserve)
-        if batch or not initially_ranked or len(attempted_symbols)>=3 or monotonic()>=deferred_rescue_deadline:break
+        if batch or not initially_ranked or len(attempted_symbols)>=5 or monotonic()>=deferred_rescue_deadline:break
         diagnostics_before=len(source_diagnostics)
         urls_before=set(accepted_urls)
         rescue_thin_candidates(deferred_rescue_deadline)

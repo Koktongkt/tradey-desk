@@ -226,7 +226,7 @@ def scheduled_slot(mode:str,now:dt.datetime|None=None)->bool:
     if mode=="premarket":return n.hour==9 and n.minute==0
     if mode=="radar":return 10<=n.hour<=15 and n.minute in {0,20,40}
     if mode=="autotrader":
-        return (n.hour==9 and n.minute==40) or (10<=n.hour<=15 and n.minute in {15,35,55})
+        return 9<=n.hour<=15 and n.minute in {18,38,58}
     return True
 
 

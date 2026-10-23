@@ -49,23 +49,23 @@ If a successful reviewer process returns no parseable JSON, the same isolated mo
 
 ## Scheduled execution cadence
 
-`cron/autotrader.schedule` records the intended UTC scheduler expression:
-`15,35,40,55 13-20 * * 1-5`. The live scheduler must be explicitly updated and
+`cron/autotrader.schedule` records the approved UTC scheduler expression:
+`18,38,58 13-20 * * 1-5`. The live scheduler must be explicitly updated and
 read back against this contract; the file alone does not deploy a schedule.
-The broad DST-safe grid intersects the New York predicates to run
-once at **09:40 ET**, then **:15/:35/:55 from 10:00 through 15:59 ET**.
-The additional :40 triggers at other hours silently no-op before research,
-broker calls or audit writes. This shifts the regular slots by five minutes;
-the number of accepted weekday starts remains unchanged. The last is 15:55 ET,
-with no 16:00-or-later starts. These cheap weekday launch fences do not infer
+The broad DST-safe grid intersects the unchanged weekday 09:30–16:00 New York
+market window to run at **09:38 and 09:58 ET**, then **:18/:38/:58 from
+10:00 through 15:59 ET**, in both EDT and EST. The 09:18 fire and all other
+off-window fires do not execute; the last accepted start is **15:58 ET**.
+Obsolete :15/:35/:40/:55 autotrader slots silently no-op before research,
+broker calls or audit writes. These cheap weekday launch fences do not infer
 exchange holidays or early closes: entry validation uses the broker's regular
 calendar and rechecks the current clock at every validation stage. A swing
 order's next-session expiry never authorizes submission after today's close.
-The opening consumer follows 09:00 ET premarket research; later consumers
-follow radar's :00/:20/:40 starts by fifteen minutes. The approved 960-second
-active research bound (990-second wrapper) can now outlast that existing consumer
-spacing. This code change does not update the grid: schedule rollout must be
-reviewed separately; neither spacing nor nominal headroom guarantees non-overlap.
+The opening consumers follow 09:00 ET premarket research; later consumers
+follow radar's :00/:20/:40 starts by eighteen minutes. The unchanged 960-second
+active research bound (990-second wrapper) leaves nominal 90-second spacing
+between the wrapper cutoff and its paired consumer. Dispatch delay and cleanup
+can consume this spacing; it is not a guarantee of non-overlap.
 Each cycle still requires
 fresh evidence and every unchanged review, reconciliation and risk gate.
 The regression intersects the versioned grid with the real slot/window code
@@ -76,7 +76,7 @@ checks the installed job's expression, script, workdir, delivery and enabled sta
 maintenance, shifted three minutes earlier with the same frequency and unchanged
 New York 09:35–16:15 maintenance fence. The shifted grid's first/last accepted
 weekday passes are 09:42/16:12; 09:32 remains an off-window no-op. This avoids simultaneous scheduled starts with
-both the 09:40 opening consumer and regular :15/:35/:55 consumers. It does not
+both the 09:38/09:58 opening consumers and regular :18/:38/:58 consumers. It does not
 guarantee non-overlap of long-running jobs; the existing shared nonblocking lock
 continues to fail closed on contention. Other job schedules remain unchanged.
 
