@@ -1,87 +1,768 @@
-Query expanded to (from graph vocab, 11 tokens): ['qualify', 'pending', 'canonical', 'proposal', 'placing', 'submission', 'readonly', 'metadata', 'supervisor', 'guard', 'watchdog']
-Structural shortest paths; undirected references/containment are NOT verified runtime sequencing.
-qualify() [pending_policy.py:L40]
-  -- calls [EXTRACTED] --
-_run_locked() [autotrader.py:L1388]
-  -- calls [EXTRACTED] --
-build_canonical_proposal() [autotrader.py:L313]
-qualify() [pending_policy.py:L40]
-  -- calls [EXTRACTED] --
-_run_locked() [autotrader.py:L1388]
-  -- calls [EXTRACTED] --
-emit_placing_notification_once() [autotrader.py:L834]
+Pinned source revision: 237b8251e027c5469263a4afbb6688a0789388fd
+AST/import/containment links, not a runtime execution trace. No edges authored by this audit.
 
-CLI BFS context (budget truncated):
-Query expanded to (from graph vocab, 11 tokens): ['qualify', 'pending', 'canonical', 'proposal', 'placing', 'submission', 'readonly', 'metadata', 'supervisor', 'guard', 'watchdog']
-Graph: rebuild-0d3a5a55/output/graph.json (2299 nodes) | Traversal: BFS depth=2 | Start: ['qualify()', 'metadata()', 'pending()', '_canonical()', 'guardian_main()', 'PlacingNotificationTests', '_proposal()', 'ReadOnlyAlpaca', 'pre_submission_retryable()', 'broker_supervisor.py', 'watchdog_cron.py'] | 395 nodes found
+$ graphify query alpha_radar live_research synthesize_candidate gather_evidence focused_retrieval
+Graph: .hermes/cache/scratch/tradey-graphify-237b825/graphify-out/graph.json (4269 nodes) | Traversal: BFS depth=2 | Start: ['Live research radar. Writes qualified candidate dossiers; never orders.', 'gather()', 'focused()', 'alpha_radar.py', '.candidate()', 'evidence()', 'live_research()', 'RadarNotifications', 'research_extraction.py', 'RetrievalImprovements', 'synthesize_candidate()'] | 891 nodes found
 
-[!] TRUNCATED: showing 67 of 395 nodes (~2000-token budget). The answer may be among the 328 cut nodes — raise the token budget (CLI: --budget) or narrow the query (e.g. context_filter=['call'], or get_node for a specific symbol).
+[!] TRUNCATED: showing 58 of 891 nodes (~1800-token budget). The answer may be among the 833 cut nodes — raise the token budget (CLI: --budget) or narrow the query (e.g. context_filter=['call'], or get_node for a specific symbol).
 
-NODE qualify() [src=pending_policy.py loc=L40 community=Pending Policy]
-NODE metadata() [src=entry_expiry.py loc=L40 community=Managed Reconciliation]
-NODE pending() [src=tests/test_pending_capacity.py loc=L12 community=ThreeRuntime Tests]
-NODE _canonical() [src=sqlite_ledger.py loc=L61 community=Managed Reconciliation]
-NODE guardian_main() [src=broker_supervisor.py loc=L181 community=Broker Supervisor]
-NODE PlacingNotificationTests [src=tests/test_order_notifications.py loc=L12 community=PlacingNotification Tests]
-NODE _proposal() [src=tests/test_w2_w4.py loc=L26 community=NoOpCycleSkip Tests]
-NODE ReadOnlyAlpaca [src=watchdog/broker.py loc=L89 community=Watchdog Broker]
-NODE pre_submission_retryable() [src=candidate_retry.py loc=L15 community=Managed Reconciliation]
-NODE broker_supervisor.py [src=broker_supervisor.py loc=L1 community=Broker Supervisor]
-NODE watchdog_cron.py [src=watchdog_cron.py loc=L1 community=Watchdog Cron]
-NODE alpha_radar.py [src=alpha_radar.py loc=L1 community=Alpha Radar]
-NODE autotrader.py [src=autotrader.py loc=L1 community=Autotrader]
-NODE json [src= loc= community=Watchdog Cron]
-NODE cli.py [src=watchdog/cli.py loc=L1 community=Cli]
-NODE pathlib [src= loc= community=Test Watchdog Broker]
-NODE sqlite_ledger.py [src=sqlite_ledger.py loc=L1 community=Managed Reconciliation]
-NODE _run_locked() [src=autotrader.py loc=L1388 community=Autotrader Run Locked]
-NODE broker.py [src=watchdog/broker.py loc=L1 community=Watchdog Broker]
-NODE append_jsonl() [src=sqlite_ledger.py loc=L278 community=Managed Reconciliation]
-NODE read_jsonl() [src=sqlite_ledger.py loc=L379 community=Managed Reconciliation]
-NODE subprocess [src= loc= community=Watchdog Cron]
-NODE test_watchdog_broker.py [src=tests/test_watchdog_broker.py loc=L1 community=Test Watchdog Broker]
-NODE collect_broker() [src=watchdog/broker.py loc=L318 community=Watchdog Broker]
-NODE test_three_runtime.py [src=tests/test_three_runtime.py loc=L1 community=Test Watchdog Broker]
-NODE require() [src=managed_reconciliation.py loc=L47 community=Managed Reconciliation]
-NODE BrokerSnapshotTests [src=tests/test_watchdog_broker.py loc=L64 community=Watchdog Broker]
-NODE sys [src= loc= community=Watchdog Cron]
-NODE pending_policy.py [src=pending_policy.py loc=L1 community=Pending Policy]
-NODE test_w2_w4.py [src=tests/test_w2_w4.py loc=L1 community=Blocker Diagnostics Fixtures]
-NODE .collect() [src=tests/test_watchdog_broker.py loc=L220 community=Watchdog Broker]
-NODE broker_process.py [src=broker_process.py loc=L1 community=Watchdog Cron]
-NODE os [src= loc= community=Watchdog Cron]
-NODE test_pending_capacity.py [src=tests/test_pending_capacity.py loc=L1 community=Test Watchdog Broker]
-NODE read_jsonl_readonly() [src=sqlite_ledger.py loc=L319 community=Managed Reconciliation]
-NODE _sync_stream() [src=sqlite_ledger.py loc=L229 community=Managed Reconciliation]
-NODE main() [src=watchdog/cli.py loc=L549 community=Test Watchdog Workflow]
-NODE number() [src=managed_reconciliation.py loc=L52 community=Managed Reconciliation]
-NODE build_canonical_proposal() [src=autotrader.py loc=L313 community=Autotrader Shared]
-NODE _candidate() [src=tests/test_w2_w4.py loc=L51 community=NoOpCycleSkip Tests]
-NODE time [src= loc= community=Test Research Budget]
-NODE collect_configured() [src=watchdog/broker.py loc=L414 community=Watchdog Broker]
-NODE entry_expiry.py [src=entry_expiry.py loc=L1 community=Managed Reconciliation]
-NODE timestamp() [src=managed_reconciliation.py loc=L61 community=Managed Reconciliation]
-NODE test_order_notifications.py [src=tests/test_order_notifications.py loc=L1 community=Test Watchdog Broker]
-NODE reusable_fresh_candidate() [src=alpha_radar.py loc=L1607 community=Alpha Radar Helpers]
-NODE policy_config() [src=tests/support_fixtures.py loc=L6 community=Blocker Diagnostics Fixtures]
-NODE _snapshot_with_bars() [src=tests/test_w2_w4.py loc=L42 community=NoOpCycleSkip Tests]
-NODE dossier_already_reviewed() [src=autotrader.py loc=L1260 community=Autotrader Run Locked]
-NODE freeze_kill_tree() [src=broker_supervisor.py loc=L26 community=Broker Supervisor]
-NODE reconcile_detailed() [src=managed_reconciliation.py loc=L324 community=Managed Reconciliation]
-NODE _parse_projection() [src=sqlite_ledger.py loc=L174 community=Managed Reconciliation]
-NODE BrokerBoundaryTests [src=tests/test_watchdog_broker.py loc=L392 community=Watchdog Broker]
-NODE cleanup() [src=broker_supervisor.py loc=L84 community=Broker Supervisor]
-NODE .add_pending() [src=tests/test_pending_capacity.py loc=L44 community=Test Broker Bridge]
-NODE .test_missing_cursor_schema_repeated_pages_or_partial_flags_are_unknown() [src=tests/test_watchdog_broker.py loc=L186 community=Watchdog Broker]
-NODE .test_orders_and_activities_paginate_with_exact_validated_cursors() [src=tests/test_watchdog_broker.py loc=L165 community=Watchdog Broker]
-NODE .test_reference_identity_mapping_is_bidirectional_over_nested_tree() [src=tests/test_watchdog_broker.py loc=L65 community=Watchdog Broker]
-NODE .test_snapshot_timestamp_numeric_stale_future_and_slow_are_unknown() [src=tests/test_watchdog_broker.py loc=L285 community=Watchdog Broker]
-NODE authoritative_bundle() [src=autotrader.py loc=L129 community=Autotrader Run Locked]
-NODE candidate_retry.py [src=candidate_retry.py loc=L1 community=Managed Reconciliation]
-NODE sessions() [src=entry_expiry.py loc=L17 community=Managed Reconciliation]
-NODE signal [src= loc= community=Watchdog Cron]
-NODE .add_pending() [src=tests/test_three_runtime.py loc=L58 community=ThreeRuntime Tests]
-NODE .test_model_fields_and_numeric_reference_or_interval_never_reach_transport() [src=tests/test_watchdog_broker.py loc=L300 community=Watchdog Broker]
-NODE .test_normalized_snapshot_has_cumulative_fill_and_no_raw_account() [src=tests/test_watchdog_broker.py loc=L308 community=Watchdog Broker]
-NODE .test_source_timestamp_is_checked_at_response_receipt() [src=tests/test_watchdog_broker.py loc=L269 community=Watchdog Broker]
-... (truncated — 328 more nodes cut by ~2000-token budget. Narrow with context_filter=['call'] or use get_node for a specific symbol)
+NODE Live research radar. Writes qualified candidate dossiers; never orders. [src=alpha_radar.py loc=L2 community=Radar Source Validation]
+NODE gather() [src=tests/test_alpha_radar.py loc=L896 community=Focused Retrieval Reranking]
+NODE focused() [src=tests/test_research_budget.py loc=L168 community=Focused Reuse Tests]
+NODE alpha_radar.py [src=alpha_radar.py loc=L1 community=Radar Source Validation]
+NODE .candidate() [src=tests/test_candidate_alternatives.py loc=L64 community=Broker Snapshot Alternatives]
+NODE evidence() [src=tests/test_candidate_alternatives.py loc=L150 community=Broker Snapshot Alternatives]
+NODE live_research() [src=alpha_radar.py loc=L1831 community=Live Evidence Retrieval]
+NODE RadarNotifications [src=tests/test_radar_notifications.py loc=L12 community=Radar Notification Tests]
+NODE research_extraction.py [src=research_extraction.py loc=L1 community=Research Extraction Dispatch]
+NODE RetrievalImprovements [src=tests/test_retrieval_improvements.py loc=L15 community=Retrieval Concurrency Tests]
+NODE synthesize_candidate() [src=alpha_radar.py loc=L2099 community=Candidate Synthesis Commands]
+NODE json [src= loc= community=Shared Test Imports]
+NODE pathlib [src= loc= community=Shared Test Imports]
+NODE subprocess [src= loc= community=Shared Test Imports]
+NODE Any [src= loc= community=Candidate Evidence Qualification]
+NODE time [src= loc= community=Discovery Runtime Orchestration]
+NODE validate_observation() [src=publication_observation.py loc=L579 community=Publication Observation Validation]
+NODE test_alpha_radar.py [src=tests/test_alpha_radar.py loc=L1 community=Shared Test Imports]
+NODE error() [src=extraction_worker.py loc=L17 community=Earnings Deadline Utilities]
+NODE extraction_compat.py [src=extraction_compat.py loc=L1 community=Extraction Provider Compatibility]
+NODE publication_recovery.py [src=publication_recovery.py loc=L1 community=Publication Recovery Selection]
+NODE publication_interpreter.py [src=publication_interpreter.py loc=L1 community=Capture Parsing Utilities]
+NODE publisher_domain() [src=alpha_radar.py loc=L123 community=Live Evidence Retrieval]
+NODE read_jsonl() [src=sqlite_ledger.py loc=L385 community=SQLite Durable Journals]
+NODE CandidateAlternativesTests [src=tests/test_candidate_alternatives.py loc=L17 community=Broker Snapshot Alternatives]
+NODE contextlib [src= loc= community=Shared Test Imports]
+NODE earnings_calendar.py [src=earnings_calendar.py loc=L1 community=Capture Parsing Utilities]
+NODE hashlib [src= loc= community=Shared Test Imports]
+NODE market_data.py [src=market_data.py loc=L1 community=Broker Bridge Normalization]
+NODE focused_pipeline.py [src=focused_pipeline.py loc=L1 community=Focused URL Allocation]
+NODE evaluate_publication() [src=publication_observation.py loc=L717 community=Publication Observation Tests]
+NODE prepare_publication_evidence() [src=publication_observation.py loc=L629 community=Publication Observation Validation]
+NODE retain_article() [src=retained_article.py loc=L22 community=Retained Recovery Tests]
+NODE test_research_budget.py [src=tests/test_research_budget.py loc=L1 community=Search Budget Receipts]
+NODE typing [src= loc= community=Capture Parsing Utilities]
+NODE validate_structured_page() [src=alpha_radar.py loc=L866 community=Radar Source Validation]
+NODE test_retained_recovery.py [src=tests/test_retained_recovery.py loc=L1 community=Shared Test Imports]
+NODE extraction_contract.py [src=extraction_contract.py loc=L1 community=Capture Parsing Utilities]
+NODE re [src= loc= community=Capture Parsing Utilities]
+NODE urllib_parse [src= loc= community=Capture Parsing Utilities]
+NODE filter_evidence() [src=alpha_radar.py loc=L1241 community=Live Evidence Retrieval]
+NODE test_focused_reuse.py [src=tests/test_focused_reuse.py loc=L1 community=Shared Test Imports]
+NODE test_research_extraction.py [src=tests/test_research_extraction.py loc=L1 community=Shared Test Imports]
+NODE test_structured_extraction.py [src=tests/test_structured_extraction.py loc=L1 community=Shared Test Imports]
+NODE SearchProtocolError [src=focused_search.py loc=L17 community=Focused Search Protocol]
+NODE _extract_tool() [src=research_extraction.py loc=L227 community=Research Extraction Dispatch]
+NODE test_bridge_and_reuse.py [src=tests/test_bridge_and_reuse.py loc=L1 community=Shared Test Imports]
+NODE test_publication_provenance.py [src=tests/test_publication_provenance.py loc=L1 community=Shared Test Imports]
+NODE _project() [src=research_extraction.py loc=L168 community=Research Extraction Dispatch]
+NODE original_text() [src=retained_article.py loc=L44 community=Retained Article Parsing]
+NODE datetime [src= loc= community=Candidate Evidence Qualification]
+NODE asyncio [src= loc= community=Shared Test Imports]
+NODE durable_jsonl.py [src=durable_jsonl.py loc=L1 community=SQLite Durable Journals]
+NODE test_publication_integration.py [src=tests/test_publication_integration.py loc=L1 community=Shared Test Imports]
+NODE zoneinfo [src= loc= community=Broker Bridge Normalization]
+NODE interpret_publications() [src=publication_interpreter.py loc=L258 community=Publication Recovery Probes]
+NODE runtime_paths.py [src=runtime_paths.py loc=L1 community=Runtime Credential Mechanics]
+NODE hermes_cli() [src=runtime_paths.py loc=L16 community=Runtime Credential Mechanics]
+... (truncated — 833 more nodes cut by ~1800-token budget. Narrow with context_filter=['call'] or use get_node for a specific symbol)
+
+
+$ graphify query run_cycle scheduled_slot in_window main execute
+Graph: .hermes/cache/scratch/tradey-graphify-237b825/graphify-out/graph.json (4269 nodes) | Traversal: BFS depth=2 | Start: ['main()', 'execute()', 'scheduled_slot()', 'CycleTests', 'InterpreterTests', 'run()', '.test_next_slot_retry_is_reporting_only_with_stable_run_identity()', '.test_subminimum_window_never_launches_initial_or_alternative()'] | 361 nodes found
+
+[!] TRUNCATED: showing 48 of 361 nodes (~1800-token budget). The answer may be among the 313 cut nodes — raise the token budget (CLI: --budget) or narrow the query (e.g. context_filter=['call'], or get_node for a specific symbol).
+
+NODE main() [src=run_cycle.py loc=L233 community=Cycle Dashboard Orchestration]
+NODE execute() [src=run_cycle.py loc=L166 community=Cycle Dashboard Orchestration]
+NODE scheduled_slot() [src=run_cycle.py loc=L223 community=Cycle Dashboard Orchestration]
+NODE CycleTests [src=tests/test_cycle.py loc=L12 community=Cycle Cadence Tests]
+NODE InterpreterTests [src=tests/test_publication_interpreter.py loc=L35 community=Publication Interpreter Tests]
+NODE run() [src=autotrader.py loc=L1396 community=Autotrader Reconciliation Core]
+NODE .test_next_slot_retry_is_reporting_only_with_stable_run_identity() [src=tests/test_watchdog_workflow.py loc=L795 community=Daily Watchdog Tests]
+NODE .test_subminimum_window_never_launches_initial_or_alternative() [src=tests/test_candidate_alternatives.py loc=L210 community=Broker Snapshot Alternatives]
+NODE autotrader.py [src=autotrader.py loc=L1 community=Autotrader Reconciliation Core]
+NODE run_watchdog() [src=watchdog/cli.py loc=L271 community=Watchdog Workflow Tests]
+NODE _run_locked() [src=autotrader.py loc=L1413 community=Autotrader Reconciliation Core]
+NODE error() [src=extraction_worker.py loc=L17 community=Earnings Deadline Utilities]
+NODE read_report() [src=watchdog/store.py loc=L463 community=Watchdog Persistence Reports]
+NODE CandidateAlternativesTests [src=tests/test_candidate_alternatives.py loc=L17 community=Broker Snapshot Alternatives]
+NODE .invoke() [src=tests/test_publication_interpreter.py loc=L36 community=Publication Interpreter Tests]
+NODE pending_alerts() [src=watchdog/store.py loc=L238 community=Watchdog Persistence Reports]
+NODE run_cycle.py [src=run_cycle.py loc=L1 community=Cycle Dashboard Orchestration]
+NODE .research_fixture() [src=tests/test_candidate_alternatives.py loc=L19 community=Broker Snapshot Alternatives]
+NODE test_publication_interpreter.py [src=tests/test_publication_interpreter.py loc=L1 community=Shared Test Imports]
+NODE _run_in_root() [src=tests/test_blocker_diagnostics.py loc=L140 community=Execution Blocker Diagnostics]
+NODE .candidate() [src=tests/test_candidate_alternatives.py loc=L64 community=Broker Snapshot Alternatives]
+NODE lock() [src=entry_state.py loc=L17 community=Runtime Snapshot Locking]
+NODE .adapters() [src=tests/test_watchdog_workflow.py loc=L737 community=Daily Watchdog Tests]
+NODE run_owned() [src=dashboard_process.py loc=L14 community=Cycle Dashboard Orchestration]
+NODE test_cycle.py [src=tests/test_cycle.py loc=L1 community=Shared Test Imports]
+NODE .thesis_adapters() [src=tests/test_watchdog_workflow.py loc=L150 community=Daily Watchdog Tests]
+NODE DailyWorkflowTests [src=tests/test_watchdog_workflow.py loc=L736 community=Daily Watchdog Tests]
+NODE read_source_state() [src=watchdog/store.py loc=L355 community=Watchdog Store Notifications]
+NODE parse_failure_event() [src=run_cycle.py loc=L117 community=Cycle Dashboard Orchestration]
+NODE SpendingStateError [src=earnings_spending.py loc=L50 community=Candidate Intake Persistence]
+NODE audit_result() [src=run_cycle.py loc=L124 community=Cycle Dashboard Orchestration]
+NODE SpendingPersistenceError [src=earnings_spending.py loc=L38 community=Earnings Rejection Persistence]
+NODE model() [src=tests/test_candidate_alternatives.py loc=L89 community=Broker Snapshot Alternatives]
+NODE in_window() [src=run_cycle.py loc=L159 community=Cycle Dashboard Orchestration]
+NODE parse_order_events() [src=run_cycle.py loc=L108 community=Cycle Dashboard Orchestration]
+NODE .test_long_url_overhead_and_escaping_never_widen_transport() [src=tests/test_publication_interpreter.py loc=L82 community=Publication Interpreter Tests]
+NODE Path [src= loc= community=Cycle Dashboard Orchestration]
+NODE .test_compact_original_exact_and_hidden_conflicts_cannot_downgrade() [src=tests/test_publication_interpreter.py loc=L71 community=Publication Interpreter Tests]
+NODE .test_compact_reservations_precede_expansion_for_all_five_candidates() [src=tests/test_publication_interpreter.py loc=L61 community=Publication Interpreter Tests]
+NODE .test_duplicate_member_ids_taint_only_that_member() [src=tests/test_publication_interpreter.py loc=L146 community=Publication Interpreter Tests]
+NODE .test_duplicate_urls_are_not_ambiguous_output_bindings() [src=tests/test_publication_interpreter.py loc=L400 community=Publication Interpreter Tests]
+NODE .test_existing_valid_observation_is_not_replaced() [src=tests/test_publication_interpreter.py loc=L292 community=Publication Interpreter Tests]
+NODE .test_factory_failure_is_sanitized() [src=tests/test_publication_interpreter.py loc=L411 community=Publication Interpreter Tests]
+NODE .test_future_and_stale_dates_rejected() [src=tests/test_publication_interpreter.py loc=L189 community=Publication Interpreter Tests]
+NODE .test_grounding_limits_and_exact_to_day_downgrade() [src=tests/test_publication_interpreter.py loc=L163 community=Publication Interpreter Tests]
+NODE .test_independent_valid_members_survive_bad_members() [src=tests/test_publication_interpreter.py loc=L136 community=Publication Interpreter Tests]
+NODE .test_input_admission_bounds_complete_context_and_encoded_bytes() [src=tests/test_publication_interpreter.py loc=L368 community=Publication Interpreter Tests]
+NODE .test_invalid_attached_observation_never_uses_legacy_date() [src=tests/test_publication_interpreter.py loc=L195 community=Publication Interpreter Tests]
+... (truncated — 313 more nodes cut by ~1800-token budget. Narrow with context_filter=['call'] or use get_node for a specific symbol)
+
+
+Raw outgoing calls for alpha_radar_live_research alpha_radar.py:L1831
+[
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_prepare_candidate",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1836",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_timed_research_stage",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1841",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_research_subprocess_command",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1847",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_researchfailure",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1850",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_discovery_command",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1855",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_discovery_prompt",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1855",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_scout_parse_result",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1859",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_record_scout_diagnostic",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1860",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_focused_retrieval",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1868",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_recently_unreachable_domains",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1874",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_merge_candidate_urls",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1879",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_candidate_alternate_urls",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1880",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_gather_evidence",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1897",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_is_sec_archive_filing_url",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1908",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_valid_publication_timestamp",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1908",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_sec_filing_date_for_url",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1909",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_attach_sec_filing_dates",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1910",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_filter_evidence",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1911",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_live_research_recover_stage",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1935",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_record_focused_allocation",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1941",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_ranked_candidate_evidence",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1948",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_live_research_rescue_thin_candidates",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2016",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_record_research_diagnostics",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2028",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_evidence_failure_code",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2033",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_synthesize_candidate",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2064",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "alpha_radar_main_with_args_intake",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2072",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "discovery_pipeline_discover",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "confidence_score": 1.0,
+    "source_file": "alpha_radar.py",
+    "source_location": "L1842",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "sqlite_ledger_read_jsonl",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "INFERRED",
+    "confidence_score": 0.85,
+    "source_file": "alpha_radar.py",
+    "source_location": "L1872",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_live_research",
+    "target": "extraction_worker_error",
+    "relation": "indirect_call",
+    "context": "assignment",
+    "confidence": "INFERRED",
+    "confidence_score": 0.85,
+    "source_file": "alpha_radar.py",
+    "source_location": "L2073",
+    "weight": 1.0,
+    "_origin": "ast"
+  }
+]
+
+Raw outgoing calls for alpha_radar_synthesize_candidate alpha_radar.py:L2099
+[
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_synthesis_prompt",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2100",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_synthesis_command",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2101",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_synthesiswindowexhausted",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2105",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_timed_research_stage",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2107",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_researchfailure",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2110",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_extract_json",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2112",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_record_synthesis_none",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2115",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_candidaterejection",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2123",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "alpha_radar_build_source_receipts",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2124",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "research_budget_active_deadline",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2153",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "research_budget_remaining",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2154",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "earnings_calendar_resolve_candidate_earnings",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2155",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "earnings_calendar_default_trusted_date_loader",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2157",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "alpha_radar_synthesize_candidate",
+    "target": "market_data_synchronized_completed_close_prices",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2162",
+    "weight": 1.0,
+    "_origin": "ast"
+  }
+]
+
+Raw outgoing calls for run_cycle_scheduled_slot run_cycle.py:L223
+[]
+
+Raw outgoing calls for run_cycle_main run_cycle.py:L233
+[
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_scheduled_slot",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L235",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_in_window",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L237",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_audit_result",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L237",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_completed_today",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L239",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_execute",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L240",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_main",
+    "target": "run_cycle_mark_completed",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L248",
+    "weight": 1.0,
+    "_origin": "ast"
+  }
+]
+
+Raw outgoing calls for run_cycle_execute run_cycle.py:L166
+[
+  {
+    "source": "run_cycle_execute",
+    "target": "run_cycle_audit_result",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L183",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_execute",
+    "target": "run_cycle_parse_order_events",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L197",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_execute",
+    "target": "run_cycle_parse_failure_event",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L210",
+    "weight": 1.0,
+    "_origin": "ast"
+  },
+  {
+    "source": "run_cycle_execute",
+    "target": "dashboard_process_run_owned",
+    "relation": "calls",
+    "context": "call",
+    "confidence": "EXTRACTED",
+    "source_file": "run_cycle.py",
+    "source_location": "L175",
+    "weight": 1.0,
+    "_origin": "ast"
+  }
+]
+
+Enrichment vocabulary: [
+  {
+    "id": "alpha_radar_gather_evidence",
+    "label": "gather_evidence()",
+    "file_type": "code",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1030",
+    "_callable": true,
+    "_origin": "ast"
+  },
+  {
+    "id": "alpha_radar_gather_evidence_publish_page",
+    "label": "publish_page()",
+    "file_type": "code",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1084",
+    "_callable": true,
+    "_origin": "ast"
+  },
+  {
+    "id": "alpha_radar_gather_evidence_worker",
+    "label": "worker()",
+    "file_type": "code",
+    "source_file": "alpha_radar.py",
+    "source_location": "L1097",
+    "_callable": true,
+    "_origin": "ast"
+  },
+  {
+    "id": "alpha_radar_synthesize_candidate",
+    "label": "synthesize_candidate()",
+    "file_type": "code",
+    "source_file": "alpha_radar.py",
+    "source_location": "L2099",
+    "_callable": true,
+    "_origin": "ast"
+  }
+]

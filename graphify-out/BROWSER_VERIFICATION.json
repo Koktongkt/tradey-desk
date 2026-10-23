@@ -1,25 +1,58 @@
 {
-  "status": "PASS",
-  "html_sha256": "5680c708b3be068259d984085f172f9e5e80dc3eca3daf5356aa1c06e53f7d8b",
-  "html_bytes": 2559438,
+  "title": "graphify - graphify-out/graph.html",
+  "nodes": 4269,
+  "edges": 10541,
+  "loaded_nodes": 4269,
   "canvas": {
-    "x": 0,
-    "y": 0,
-    "width": 1220,
-    "height": 950
+    "width": 1240,
+    "height": 980
   },
-  "search_results": {
-    "qualify": "qualify()\n.test_actual_qualify_unimported_existing_database_blocks_without_business_writes()",
-    "supervisor": ".test_supervisor_failure_after_launch_reaps_detached_child()\nbroker_supervisor.py\nStable per-launch custodian; the inner supervisor may be forcibly killed. Only\u2026",
-    "guard": "GatewayFallbackGuardTests\nScoutReliabilityGuardTests\nResearchBudgetGuardTests\nguardian_main()\n.test_operational_guard_matches_canonical_sqlite_streams()\nGuard tests for execution tolerances in the production config.\nGuard tests from the 2026-09-09 3-run fetch-failure streak. Causes addressed:\u2026\nGuard tests for the 540-second radar envelope and stage deadlines. The\u2026",
-    "metadata": "metadata()\nvalidate_metadata()\nconfirmed_fill_metadata()\n.test_http_link_is_preserved_as_metadata_not_fetched_or_repaired()\n.test_sec_filing_metadata_enrichment_is_bound_and_nonmutating()\n.test_pending_fill_propagates_intent_top_level_metadata()\n.test_retry_review_metadata_has_candidate_identity()\n.test_reviewer_rejection_private_metadata_not_public_disagreement()\n.test_submission_metadata_leaves_payload_hash_and_reviewer_bundle_unchanged()\n.test_broker_notification_preserves_metadata_error_before_price_rejection()\n_metadata()\n.test_malformed_calendar_and_forged_metadata_fail_closed()\nForward-only private persistence metadata. Never merge into executable plans.\nPersist only normalized status metadata and the immutable evidence hash.\nUse exact SEC submission metadata only for its matching archive document.\nVerify the archive document against official exact-CIK submission metadata.",
-    "reap": "reap_owned()\n.test_exited_wrapper_inherited_pipes_bounded_and_reaped()\n.test_fast_spawn_exit_reaps_orphan_without_ppid_polling()\n.test_forced_escalation_reaps_before_entry_lock_release()\n.test_normal_exit_reaps_detached_devnull_child_before_successor_lock()\n.test_parent_escalation_preserves_stopped_custodian_until_reaped()\n.test_running_wrapper_timeout_reaps_detached_child()\n.test_supervisor_failure_after_launch_reaps_detached_child()\nPer-launch Linux subreaper owns wrapper + detached orphans until reaped. Parent\u2026\nLinux-only, per-launch subreaper. Never changes the shared runtime's prctl.\u2026\nOnly this isolated subreaper's children; never unrelated runtime children."
-  },
-  "pageerrors": [],
+  "legend": 180,
+  "external_scripts": [
+    {
+      "src": "https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js",
+      "integrity": "sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
+    }
+  ],
+  "network_nodes": 4269,
+  "renderer": "Playwright Chromium",
+  "chromium_version": "156.0.8078.4",
+  "page_errors": [],
   "console_errors": [],
-  "network_nodes": 2299,
-  "stats": "2299 nodes \u00b7 5544 edges \u00b7 110 communities",
-  "cdn_dependency": "integrity-checked unpkg vis-network@9.1.6; internet required; actual browser load used CDN",
-  "browser": "installed Chromium via isolated Playwright 1.63.0",
-  "deployment": "not deployed; independent final review running; approval is parent-owned and separate"
+  "failed_requests": [],
+  "search_checks": {
+    "synthesize_candidate": [
+      "synthesize_candidate()"
+    ],
+    "gather_evidence": [
+      "gather_evidence()",
+      ".test_gather_evidence_records_typed_fetch_failures()",
+      ".test_gather_evidence_types_still_alive_workers_and_is_deterministic()",
+      ".test_gather_evidence_timeout_goes_to_gateway_without_second_direct_attempt()",
+      ".test_gather_evidence_identical_urls_fetch_once_and_bind_result()",
+      ".test_gather_evidence_retries_connection_reset_once()",
+      ".test_gather_evidence_falls_back_on_timeout_after_retry()"
+    ],
+    "scheduled_slot": [
+      "scheduled_slot()"
+    ],
+    "run_cycle": [
+      "run_cycle.py",
+      ".test_research_envelope_pins_stage_constants_and_run_cycle_timeout()",
+      ".test_run_cycle_parses_already_reviewed_skip()"
+    ],
+    "focused_retrieval": [
+      "focused_retrieval_command()",
+      "focused_retrieval_prompt()",
+      "parse_focused_retrieval()",
+      "focused_retrieval()",
+      ".test_live_research_does_not_rescue_when_focused_retrieval_supplies_second_domain()",
+      ".test_focused_retrieval_prompt_searches_all_three_lanes_for_all_candidates()",
+      ".test_parse_focused_retrieval_symbol_filtering_and_merge_contract()"
+    ]
+  },
+  "html_sha256": "e5c05664e5995c65afd1477f440a66891fde2d690b1157171b9284e3b5318633",
+  "preview_sha256": "b2c1a670bf610a507ab05c8dfd4674fb986e413c679d873afdaaae8f88f4ec70",
+  "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+  "navigation": "local artifact file; no runtime app requested"
 }

@@ -1,33 +1,49 @@
 # Tradey pinned structural graph
 
-Source revision: `0d3a5a554bf2c36b758f085ab46e56d2a317f7a8`. **Local candidate under independent review; not deployed. Independent final review running; approval is parent-owned and separate.**
+Source revision: `237b8251e027c5469263a4afbb6688a0789388fd` (latest local `main` when this rebuild started). Offline source analysis only; **not deployed, not runtime approval evidence**.
 
-READY pending independent final review (running, not approved). Frozen offline candidate; parent owns runtime approval separately; no live claim.
+## Scope and results
 
-Fresh full rebuild: **91 Git-tree Python source/test files, 90,490 whitespace words; 2,299 graph nodes, 5,544 undirected edges, 110 freshly inspected and labeled communities.** Raw extraction: 2,252 nodes / 5,740 edges; builder adds 47 implicit endpoint nodes. No entire-checkout scan. Exact inventory, SHA-256 and excluded tracked paths: SOURCE_SCOPE.json. All source bytes come from `git show` at the pin; selected frozen worktree/snapshot bytes and Git index verified unchanged.
+Fresh full Graphify **0.9.75** rebuild: **172 Git-tree Python source/test files, 177,327 whitespace words; 4,269 graph nodes, 10,541 undirected edges, 180 inspected/labeled communities**. Scope preserves Python runtime/tests plus tracked Python source helpers: root `*.py`, recursive `tests/`, `watchdog/`, `scripts/`. This expands the previous 91-file snapshot to cover new source in the same categories; it does not index generated documentation.
 
-## Contents
+Every selected byte was copied with `git show REV:path` into a dedicated non-deployed analysis directory. SOURCE_SCOPE.json records exact revision, paths, bytes, SHA-256 and excluded tracked paths. No entire-checkout scan, source execution, ledger/state reads, credentials, configs, private outputs, `test_artifacts`, worktrees, or generated docs entered the corpus. Credential-named modules are code mechanics, not credential stores.
 
-- graph.html / graph.json: searchable visual and structural graph.
-- GRAPH_REPORT.md: raw cohesion, god nodes, inferred surprises and questions.
-- EXTRACTION_AUDIT.json / GRAPH_HEALTH.json: unfiltered extraction and diagnostics.
-- SOURCE_SCOPE.json / manifest.json: pinned complete selected-source hashes and portable incremental AST manifest.
-- BROWSER_VERIFICATION.json / graph-preview.png: actual HTML-bound Chromium receipt and inspected preview.
-- READONLY_VERIFICATION.json: confined-source/index read-only checks; not runtime activation evidence.
-- STRUCTURAL_QUERY.txt: vocabulary-expanded BFS and qualification-to-proposal/placing-notification paths with source locations.
-- BENCHMARK.txt / cost.json: estimate-only CLI benchmark and zero extraction LLM token accounting.
-- ARTIFACT_MANIFEST.json: exact byte hashes for every other payload file; deliberately does not hash itself.
+Raw AST extraction: **4,207 nodes / 10,969 edges**, including **700 INFERRED** callback/heuristic edges and 10,269 EXTRACTED edges. Builder creates 62 implicit endpoint nodes. Raw diagnostics disclose **1,067 dangling-endpoint edges, 22 self-loop edges, zero missing-endpoint edges, 425 directed / 426 undirected same-endpoint collapses among valid candidate edges**. These diagnostic collapse counts exclude dangling endpoints; they are not a subtraction formula for final edge count. No edges were manually authored or repaired. Cohesion range: **0.03076923076923077–1.0**.
 
-## Limits and warnings
+**Undirected structural connectivity is not a runtime execution chain.** Static calls do not establish successful execution, chronology, scheduler activation, or broker authorization. Runtime tests were not run by this analysis worker. Semantic extraction is empty and extraction token counts are zero; host-assisted community labels are outside that count.
 
-Undirected AST/import/containment discovery is **not a runtime-verified call graph**. No broker/model/scheduler actions, credentials or operational state were accessed. Credential-loading modules are code mechanics, not credential stores. Tests are indexed symbols; this worker did not execute runtime tests. Scope excludes configs, docs, generated/private/public/state trees and test_artifacts; explicit included source `public_dashboard.py` is code, not public output data. Source-only AST extraction has empty semantics and zero extraction tokens; host-assisted community labels are outside that cost count.
+## Contents and checks
 
-Raw graph-health warnings: **535 dangling-endpoint edges, 20 self loops, 194 same-endpoint edge collapses** (both diagnostic directed and undirected counts). Missing endpoints: 0. Do not hide heuristic false links or treat them as runtime authority. Raw cohesion range: 0.031746031746031744–1.0.
+- `graph.html`, `graph.json`: searchable visual and structural graph.
+- `GRAPH_REPORT.md`: raw cohesion, high-degree nodes, inferred connections and suggested questions.
+- `EXTRACTION_AUDIT.json`, `GRAPH_HEALTH.json`: all raw extraction and unfiltered health diagnostics (package path made portable).
+- `SOURCE_SCOPE.json`, `manifest.json`: pinned source SHA-256 inventory and portable AST incremental manifest.
+- `STRUCTURAL_QUERY.txt`: real Graphify BFS queries with expanded vocabulary plus raw outgoing call edges/direction/confidence and source locations.
+- `BROWSER_VERIFICATION.json`, `graph-preview.png`: actual Chromium render and inspected preview, bound to HTML hash.
+- `READONLY_VERIFICATION.json`: selected source/snapshot integrity and artifact checks; no operational-state read or runtime activation claim.
+- `BENCHMARK.txt`, `cost.json`: real CLI estimate-only benchmark and zero extraction LLM token accounting; not measured savings.
+- `rebuild.py`: reproducible source-only snapshot/extract/cluster/render recipe.
+- `ARTIFACT_MANIFEST.json`: exact byte/SHA-256 inventory of every other payload file; excludes itself and caches.
 
-Browser PASS: canvas 1220×950, 2299 loaded nodes; searches qualify, supervisor, readonly, metadata, run_watchdog all returned actual node results; no page errors or console errors. Actual preview inspected: network and sidebar rendered; dense overview requires search/zoom for labels. HTML requires internet to load **integrity-checked unpkg vis-network 9.1.6**; dependency was loaded in this browser check, not vendored.
+Browser verified **4,269 loaded nodes, 10,541 edges, 180 communities and a 1240×980 canvas**; the graph and sidebar text visibly render. DOM input-event search checks for `synthesize_candidate`, `gather_evidence`, `scheduled_slot`, `run_cycle`, `focused_retrieval` return actual node results. No page errors, console errors or failed requests. The full overview is dense: use search/zoom and community filters. Below 5,000 nodes, so the full-node view is used. HTML requires internet for the integrity-checked **unpkg vis-network 9.1.6** dependency; not vendored. Browser dependencies/fonts were provisioned in isolated scratch storage after the normal browser tool could not access a supported local profile.
 
-Real benchmark stdout retained in BENCHMARK.txt. Actual scoped source count is 90490 words. CLI graph-derived corpus defaults are estimates, not measured token or runtime savings.
+Query checks retain exact AST links: `live_research` calls `focused_retrieval` (`alpha_radar.py:L1868`), `gather_evidence` (`L1897`) and `synthesize_candidate` (`L2064`). `run_cycle.main` calls `scheduled_slot` (`run_cycle.py:L235`), `in_window` (`L237`) and `execute` (`L240`). These are raw EXTRACTED call-site facts, not inferred runtime chains. Enrichment is represented by evidence/retrieval vocabulary rather than a fabricated `enrich` symbol.
 
-Qualification paths with fresh source locations and exact edge confidence are in STRUCTURAL_QUERY.txt. This demonstrates structural co-connectivity, **not chronological placement**, approval, live activation or cancellation. No automatic cancellation edge has been authored.
+## Rebuild recipe
 
-Refresh later only from another explicitly pinned, vetted code-only snapshot; full rebuild chosen here because historical source coverage was stale. No Git staging, commits or pushes occurred. Portable artifacts omit absolute host paths and analysis caches/source snapshots.
+Use an isolated worktree at the chosen source revision and an **absent**, dedicated scratch analysis directory. Never run `graphify extract .` in the operational checkout.
+
+```sh
+uv tool run --from graphifyy==0.9.75 python graphify-out/rebuild.py \
+  237b8251e027c5469263a4afbb6688a0789388fd /dedicated/non-deployed/analysis
+# Inspect analysis/community-review.json and write 2–5 word names for every
+# newly clustered community into graphify-out/.graphify_labels.json.
+uv tool run --from graphifyy==0.9.75 python graphify-out/rebuild.py \
+  237b8251e027c5469263a4afbb6688a0789388fd /dedicated/non-deployed/analysis --render
+uv tool run --from graphifyy==0.9.75 graphify query \
+  'alpha_radar live_research synthesize_candidate gather_evidence focused_retrieval'
+uv tool run --from graphifyy==0.9.75 graphify query \
+  'run_cycle scheduled_slot in_window main execute'
+```
+
+Then refresh query/benchmark/browser/read-only receipts and the artifact manifest; verify all hashes and source inventory. Labels may change when community membership changes. Retain raw health warnings. Never carry forward stale browser receipts or claim approval/deployment. Analysis cache, copied source and installed dependencies are intentionally not committed. This work commits graph artifacts only; no push or deploy.

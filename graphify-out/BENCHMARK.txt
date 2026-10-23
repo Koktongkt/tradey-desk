@@ -1,15 +1,17 @@
-Estimate only: CLI graph-derived default corpus differs from measured scoped source words in SOURCE_SCOPE.json. No measured runtime/token savings claimed.
+Estimate-only CLI output; not measured runtime or token savings. Actual scoped whitespace words: 177327
+
 
 graphify token reduction benchmark
 ──────────────────────────────────────────────────
-  Corpus:          114,950 words → ~153,266 tokens (naive)
-  Graph:           2,299 nodes, 5,544 edges
-  Avg query cost:  ~6,687 tokens
-  Reduction:       22.9x fewer tokens per query
+  Corpus:          213,450 words → ~284,600 tokens (naive)
+  Graph:           4,269 nodes, 10,541 edges
+  Avg query cost:  ~16,962 tokens
+  Reduction:       16.8x fewer tokens per query
 
   Per question:
-    [40.0x] what is the main entry point
-    [20.0x] how are errors handled
-    [15.0x] what connects the data layer to the api
-    [30.6x] what are the core abstractions
+    [19.4x] how does authentication work
+    [23.9x] what is the main entry point
+    [9.2x] how are errors handled
+    [14.0x] what connects the data layer to the api
+    [41.8x] what are the core abstractions
 

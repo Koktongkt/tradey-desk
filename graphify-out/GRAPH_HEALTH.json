@@ -1,29 +1,29 @@
 {
-  "node_count": 2252,
+  "node_count": 4207,
   "unverified_node_count": 0,
-  "raw_edge_count": 5740,
+  "raw_edge_count": 10969,
   "non_object_edges": 0,
   "missing_endpoint_edges": 0,
-  "dangling_endpoint_edges": 535,
+  "dangling_endpoint_edges": 1067,
   "external_reference_edges": 0,
-  "self_loop_edges": 20,
-  "valid_candidate_edges": 5205,
+  "self_loop_edges": 22,
+  "valid_candidate_edges": 9902,
   "exact_duplicate_edges": 0,
-  "directed_unique_endpoint_pairs": 5011,
-  "directed_same_endpoint_collapsed_edges": 194,
-  "undirected_unique_endpoint_pairs": 5011,
-  "undirected_same_endpoint_collapsed_edges": 194,
-  "same_endpoint_group_count": 191,
-  "relation_variant_groups": 156,
+  "directed_unique_endpoint_pairs": 9477,
+  "directed_same_endpoint_collapsed_edges": 425,
+  "undirected_unique_endpoint_pairs": 9476,
+  "undirected_same_endpoint_collapsed_edges": 426,
+  "same_endpoint_group_count": 421,
+  "relation_variant_groups": 384,
   "source_file_variant_groups": 0,
-  "source_location_variant_groups": 2,
-  "context_variant_groups": 33,
+  "source_location_variant_groups": 4,
+  "context_variant_groups": 34,
   "post_build_graph_type": "Graph",
-  "post_build_node_count": 2299,
-  "post_build_edge_count": 5544,
+  "post_build_node_count": 4269,
+  "post_build_edge_count": 10541,
   "post_build_error": "",
   "producer_suppression": {
-    "path": "graphify-package/extract.py",
+    "path": "graphify/extract.py (graphifyy==0.9.75)",
     "total_sites": 12,
     "sites": [
       {
@@ -103,6 +103,27 @@
   },
   "examples": [
     {
+      "source": "tests_test_focused_reuse_focusedreusetests_test_per_call_utf8_cap_and_recording_failure_leave_response_unchanged",
+      "target": "tests_test_focused_reuse_focusedreusetests_test_per_call_utf8_cap_and_recording_failure_leave_response_unchanged_original",
+      "edge_count": 3,
+      "relations": [
+        "contains",
+        "indirect_call"
+      ],
+      "source_files": [
+        "tests/test_focused_reuse.py"
+      ],
+      "source_locations": [
+        "L499",
+        "L502",
+        "L510"
+      ],
+      "contexts": [
+        "",
+        "argument"
+      ]
+    },
+    {
       "source": "watchdog_broker_collect_broker",
       "target": "watchdog_types_brokersnapshot",
       "edge_count": 3,
@@ -180,28 +201,8 @@
         "alpha_radar.py"
       ],
       "source_locations": [
-        "L294",
-        "L305"
-      ],
-      "contexts": [
-        "",
-        "call"
-      ]
-    },
-    {
-      "source": "alpha_radar_record_source_verification_diagnostic",
-      "target": "alpha_radar_record_source_verification_diagnostic_bounded_count",
-      "edge_count": 2,
-      "relations": [
-        "calls",
-        "contains"
-      ],
-      "source_files": [
-        "alpha_radar.py"
-      ],
-      "source_locations": [
-        "L350",
-        "L359"
+        "L330",
+        "L341"
       ],
       "contexts": [
         "",

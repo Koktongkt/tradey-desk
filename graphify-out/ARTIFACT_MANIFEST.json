@@ -1,68 +1,72 @@
 {
-  "revision": "0d3a5a554bf2c36b758f085ab46e56d2a317f7a8",
-  "status": "prepared-not-published",
-  "publication_requires": "parent-owned independent approval; final review running",
+  "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+  "status": "offline-source-graph; committed separately; not deployed",
   "files": {
     ".graphify_labels.json": {
-      "sha256": "f417aab11e0c738ff8a545f61f5cce406ed001366bae39e09a090aed5716e58b",
-      "bytes": 3461
+      "sha256": "75a70a32c60eb66aa4af5877792153c2a96a1acfaf3d9a5f88633d451f2f1cd0",
+      "bytes": 6512
     },
     "BENCHMARK.txt": {
-      "sha256": "7be2b7970a02354ae8439841a0998c0ef30290853f698acbadde7eff6bf0081c",
-      "bytes": 717
+      "sha256": "d70be96e6c640d93f5c63d5a83aeec93a07b09333b297801b5c6d680727be8c5",
+      "bytes": 709
     },
     "BROWSER_VERIFICATION.json": {
-      "sha256": "feec1428c8bbef6143febc106e0f67085cf99d19d9483a73fc7d24dea2ada842",
-      "bytes": 2995
+      "sha256": "c93d461a338f25fb101d22ca4922479aedb6e8ceebf03714bf1ea4bdb80cb529",
+      "bytes": 2118
     },
     "EXTRACTION_AUDIT.json": {
-      "sha256": "f8ef4a16626264350b0e51b4874ec4cc673ab07187911bccfc6c7f8615196f82",
-      "bytes": 2753496
+      "sha256": "5043c1b04376518133235ac6df9a994a36902de6b278c64ac30e95dfbce2b780",
+      "bytes": 5331281
     },
     "GRAPH_HEALTH.json": {
-      "sha256": "40d9c428551d444439ce3066b28b599e9df382564bafbe1d7c9ab2d9ef0f5a64",
-      "bytes": 4863
+      "sha256": "51996548369cc9afa4f43fd3bb9f54e2f943d418d6fda5179bb6a81811f9b5ee",
+      "bytes": 5040
     },
     "GRAPH_REPORT.md": {
-      "sha256": "4e528b89a930281b2cae81938ed8f0bd861bbf8a624803f8f1126b89253420e3",
-      "bytes": 19163
+      "sha256": "b67c916aa83e9233ad03571fd9dfe678bc1fb88e1cca50ba974f6db198afa06d",
+      "bytes": 26808
     },
     "README.md": {
-      "sha256": "a7bcb02b364e9f466345ba58d0c81a2d5aef5a95b128cf12b6a5ee1b4571e859",
-      "bytes": 3854
+      "sha256": "1ab414978ff40ecd29115b11e46b6495434174d4ed8ea40f8ac6fe21f0c1735b",
+      "bytes": 5725
     },
     "READONLY_VERIFICATION.json": {
-      "sha256": "d149e6133f4a3c63a3481263abcff9fd36ea206d70dd08873f7a40b585621300",
-      "bytes": 957
+      "sha256": "1c837a7264cb0d1edde4be0da9b066dd2f90d0b92ebe075fff93336902b7bdd7",
+      "bytes": 841
     },
     "SOURCE_SCOPE.json": {
-      "sha256": "d0d63406496e3fee16d851f66b1c5f9317f2554930b7e6cf995d1555fc2b0769",
-      "bytes": 18778
+      "sha256": "196fdf9180649623fb309ff6c56b5508d0ec75187a6f060362a6d6bb8495a920",
+      "bytes": 33435
     },
     "STRUCTURAL_QUERY.txt": {
-      "sha256": "75536e3721d983e4fed25e0934c9921dfc29b12f0d6d782f83ede43bdfd9fdef",
-      "bytes": 7487
+      "sha256": "260b35a9b1997403b5c0d3400af40dc1057f4c844be64210ba3287b08ec405f1",
+      "bytes": 29194
     },
     "cost.json": {
-      "sha256": "0a4d1dc463e5fb827e3a3c90cbe13871090dca9b7d374bf29a1aabf9b512e3c9",
-      "bytes": 267
+      "sha256": "a960ea9efd9918edff45f962872f3b6b74813bd4c4bc386d3f34c1e1c7c21fd6",
+      "bytes": 209
     },
     "graph-preview.png": {
-      "sha256": "5a298becd90971c19ea510b5d14e2db98b80b5f5726eace0a712ced1e98b41cf",
-      "bytes": 953011
+      "sha256": "b2c1a670bf610a507ab05c8dfd4674fb986e413c679d873afdaaae8f88f4ec70",
+      "bytes": 1379629
     },
     "graph.html": {
-      "sha256": "5680c708b3be068259d984085f172f9e5e80dc3eca3daf5356aa1c06e53f7d8b",
-      "bytes": 2559438
+      "sha256": "e5c05664e5995c65afd1477f440a66891fde2d690b1157171b9284e3b5318633",
+      "bytes": 4895157
     },
     "graph.json": {
-      "sha256": "0174bd5797ff00f3fed9f0688795bf47a9fd77ace69a3b579738b87348d69427",
-      "bytes": 3138646
+      "sha256": "9366d762087f8b7582be52eaf1baee610e0ec98b22af5e2d61e1a909aba0e050",
+      "bytes": 6039839
     },
     "manifest.json": {
-      "sha256": "4f26345a000e17be9252f25766649d5fdda8e2c5ba424f5248e3a9b46d265578",
-      "bytes": 16222
+      "sha256": "001ca2611e8a3ab4bebbb818a8404dd88ab3bb9e6221e852a8b14023e82cab75",
+      "bytes": 30832
+    },
+    "rebuild.py": {
+      "sha256": "bc9fcd01493ff1135b7f2814acf22587ddaff3135ec2ca5ec69738340dbe1123",
+      "bytes": 7353
     }
   },
-  "file_count_excluding_manifest": 15
+  "file_count_excluding_manifest": 16,
+  "self_hash": "deliberately excluded"
 }
