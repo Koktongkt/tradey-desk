@@ -25,6 +25,45 @@ Recognize exactly verified pending paper BUY/limit bracket entries and their two
 - Parent fresh production read-only snapshot through the complete reconciler on isolated ledger copies: healthy/verified at 2026-10-09T01:11:58.145862Z, zero newly journaled rows, original operational state and confined journal projections unchanged.
 - Non-failing SQLite ResourceWarnings remain a test-harness observation.
 
+## Pending-entry full-fill maintenance recovery
+
+Maintenance now accounts for a saved pending BUY/limit bracket when exact broker
+readback confirms its complete fill. The shared entry-state lock covers readback,
+fill-key-idempotent journal accounting, lifecycle persistence, reload and the
+existing quantity/protection checks. The notification/readback contract and entry
+journal implementation live in lightweight `entry_fills.py`; autotrader retains
+its public helper interfaces. Maintenance never imports execution orchestration.
+
+Only exactly bound saved order IDs are queried. Pending snapshot inconsistencies
+can trigger one additional read-only snapshot of those same IDs; a first full-fill
+observation may not regress on refresh. There is no retry loop or symbol-only
+adoption. Fully filled pending entries receive one refresh to avoid a stale
+position read. Local/broker partial fills remain unsupported and fail closed.
+No baseline symbols, risk limits, execution gates or schedules change.
+
+Entry recovery is silent and is not returned as an exit-repair notification.
+`verify_only` reports `managed_repair_required` instead of recording entry fills.
+The journal is written before the filled lifecycle row so an interrupted lifecycle
+append replays against persisted full-entry parent/execution identity as well as
+its historical raw fill key. New entry rows retain `broker_filled_at` separately
+from their accounting timestamp: equivalent timezone/precision representations
+of the same instant reuse the original row and key. Conflicting execution IDs,
+time, quantity, price, symbol or supplied lineage fail closed before any batch
+entry journal/lifecycle append. Both maintenance and autotrader prevalidate the
+persisted evidence under the existing shared entry lock. Before either path
+appends, batch ownership validation also rejects duplicate saved parent references
+or one supplied broker execution ID claimed by multiple parents. Missing legacy
+broker IDs do not invent ownership or bypass persisted-reference checks. Cumulative partial
+observations and symbol-only rows are not full-entry identities.
+
+Legacy full-entry rows without `broker_filled_at` can prove only an exact raw-key
+repeat; changed keys with the same parent/execution are ambiguous and block
+without rewriting historical rows. A confirmed execution may remain
+recorded even if subsequent protection/quantity checks block; accounting a fill
+does not claim the holding is protected. Broker snapshots are not transactional:
+a change after the bounded final read is handled on a later pass, not by an
+unbounded convergence loop.
+
 ## Operational evidence limits
 
 A confined substantive broker probe proves the changed runtime path, not an eligible unattended cron fire or an alert-delivery receipt. Out-of-window scheduled success is a no-op, not broker reconciliation recovery. Preserve this distinction after resuming existing jobs.

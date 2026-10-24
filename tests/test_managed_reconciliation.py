@@ -8,6 +8,8 @@ from typing import Any
 from unittest.mock import patch
 
 import autotrader
+import entry_fills
+import managed_reconciliation as maintenance
 
 
 class ManagedReconciliationTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class ManagedReconciliationTests(unittest.TestCase):
         self.target = dict(client_order_id='replacement', symbol='ZS', side='sell', position_intent='sell_to_close', order_class='oco', type='limit', qty='3', filled_qty='3', filled_avg_price='184.44', filled_at='2026-09-14T14:48:15.061577Z', status='filled', limit_price='184.37', time_in_force='gtc')
         self.stop = dict(self.target, client_order_id='stop', type='stop', filled_qty='0', status='canceled', stop_price='151.24')
         self.target['legs'] = [self.stop]
-        self.parent = dict(client_order_id='parent', symbol='ZS', side='buy', position_intent='buy_to_open', order_class='bracket', qty='3', filled_qty='3', filled_avg_price='162.79', filled_at='2026-09-08T13:40:00Z', status='filled', legs=[dict(self.stop, client_order_id='old-stop', order_class='bracket'), dict(self.target, client_order_id='old-target', order_class='bracket', status='expired', filled_qty='0', legs=[])])
+        self.parent: dict[str, Any] = dict(client_order_id='parent', symbol='ZS', side='buy', position_intent='buy_to_open', order_class='bracket', qty='3', filled_qty='3', filled_avg_price='162.79', filled_at='2026-09-08T13:40:00Z', status='filled', legs=[dict(self.stop, client_order_id='old-stop', order_class='bracket'), dict(self.target, client_order_id='old-target', order_class='bracket', status='expired', filled_qty='0', legs=[])])
         self.calls = []
         self.positions = []
         self.open_orders = []
@@ -63,6 +65,332 @@ class ManagedReconciliationTests(unittest.TestCase):
                            qty='3', filled_qty='0', status='new', limit_price='162.79',
                            time_in_force='gtc', legs=[target, stop])
         self.open_orders = [copy.deepcopy(self.parent)]
+
+    def prepare_pending_fill(self):
+        self.prepare_pending()
+        self.plan.update(horizon='3 sessions', confidence=0.9, thesis='saved intent')
+        self.write('private/order_intents.jsonl', {
+            'client_order_id': 'parent', 'plan': self.plan,
+            'candidate_id': 'candidate-a', 'proposal_hash': 'proposal-a'})
+        self.parent.update(status='filled', filled_qty='3', filled_avg_price='162.70',
+                           filled_at='2026-10-23T19:40:11Z', id='broker-parent')
+        self.parent['legs'][0]['status'] = 'new'
+        self.open_orders = copy.deepcopy(self.parent['legs'])
+        self.positions = [{'symbol': 'ZS', 'qty': '3'}]
+
+    def test_pending_full_fill_is_silently_ingested_once_before_position_checks(self):
+        import managed_reconciliation as m
+        import contextlib
+        import io
+        self.prepare_pending_fill()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(m.cli(['--root', str(self.root)], broker=self.broker), 0)
+        self.assertEqual(out.getvalue(), '')
+        written, summary = m.reconcile_detailed(self.root, self.broker)
+        self.assertEqual(written, [])  # Entry accounting is not an exit notification.
+        self.assertEqual(summary['status'], 'healthy')
+        self.assertEqual(summary['pending'], [])
+        rows = autotrader.read_jsonl(self.root / 'trade_journal.jsonl')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['action'], rows[0]['quantity'], rows[0]['entry']),
+                         ('BUY', 3, 162.70))
+        self.assertEqual(rows[0]['candidate_id'], 'candidate-a')
+        self.assertEqual(rows[0]['broker_order_id'], 'broker-parent')
+        self.assertTrue(rows[0]['entry_fill_key'])
+        ledger = autotrader.read_jsonl(self.root / 'order_ledger.jsonl')
+        self.assertEqual([r['status'] for r in ledger], ['new', 'filled'])
+        self.assertEqual(autotrader.reconcile_pending_orders(
+            self.root / 'order_ledger.jsonl', self.root / 'private/order_intents.jsonl',
+            self.root / 'trade_journal.jsonl', broker=lambda *a: self.fail('already ingested')), [])
+        autotrader.journal_confirmed_fill(self.root / 'trade_journal.jsonl', self.plan, self.parent)
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+
+    def test_pending_fill_between_snapshot_reads_gets_one_bounded_refresh(self):
+        import managed_reconciliation as m
+        self.prepare_pending()
+        old_parent = copy.deepcopy(self.parent)
+        self.prepare_pending_fill()
+        real_broker = self.broker
+        def raced_broker(operation, payload):
+            snapshot = real_broker(operation, payload)
+            if len(self.calls) == 1:
+                # Position/open-order reads happened after the exact parent read.
+                snapshot['orders'] = [old_parent]
+            return snapshot
+        _, summary = m.reconcile_detailed(self.root, raced_broker)
+        self.assertTrue(summary['verified'])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual([p for _, p in self.calls], [{'client_order_ids': ['parent']}] * 2)
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+
+    def test_filled_pending_contract_mutations_fail_without_accounting(self):
+        for changes in ({'symbol': 'OTHER'}, {'client_order_id': 'other'}, {'qty': '4'},
+                        {'filled_qty': '2'}, {'filled_avg_price': 'NaN'},
+                        {'filled_avg_price': '0'}, {'filled_avg_price': '163'},
+                        {'filled_at': None}, {'filled_at': '2026-10-23'},
+                        {'status': 'partially_filled'}, {'position_intent': 'sell_to_close'},
+                        {'side': 'sell'}, {'time_in_force': 'day'}, {'limit_price': '163'},
+                        {'extended_hours': True}, {'extended_hours': 0}, {'notional': '500'},
+                        {'order_type': 'market'}, {'stop_price': '150'}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.prepare_pending_fill()
+                self.parent.update(changes)
+                self.assert_pending_blocked_without_writes()
+
+    def test_pending_fill_verify_only_requires_repair_without_mutating_storage(self):
+        import managed_reconciliation as m
+        from sqlite_ledger import migrate_jsonl
+        self.prepare_pending_fill()
+        migrate_jsonl(self.root)
+        # Materialize only the existing coordination locks before the audit.
+        with __import__('entry_state').lock(self.root):
+            pass
+        (self.root / '.managed_exit_reconciliation.lock').touch()
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(m.ReconciliationBlocked, 'managed_repair_required'):
+            m.reconcile_detailed(self.root, self.broker, verify_only=True)
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                                  for p in self.root.rglob('*') if p.is_file()})
+
+    def test_unknown_holding_is_not_adopted_by_pending_entry_recovery(self):
+        import managed_reconciliation as m
+        self.prepare_pending()
+        self.positions = [{'symbol': 'UNKNOWN', 'qty': '3'}]
+        with self.assertRaisesRegex(m.ReconciliationBlocked, 'managed_position_untracked'):
+            self.reconcile()
+        self.assertEqual(autotrader.read_jsonl(self.root / 'trade_journal.jsonl'), [])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_same_symbol_unconfirmed_holding_stays_blocked_after_bounded_refresh(self):
+        import managed_reconciliation as m
+        self.prepare_pending()
+        self.positions = [{'symbol': 'ZS', 'qty': '3'}]
+        self.assert_pending_blocked_without_writes()
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(autotrader.read_jsonl(self.root / 'trade_journal.jsonl'), [])
+
+    def test_pending_fill_refresh_broker_error_never_writes(self):
+        self.prepare_pending_fill()
+        real_broker = self.broker
+        def broker(operation, payload):
+            if self.calls:
+                raise RuntimeError('offline broker error')
+            return real_broker(operation, payload)
+        import managed_reconciliation as m
+        before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+        with self.assertRaisesRegex(RuntimeError, 'offline broker error'):
+            m.reconcile(self.root, broker)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
+    def test_filled_pending_missing_open_protection_still_blocks(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        self.open_orders = []
+        with self.assertRaisesRegex(m.ReconciliationBlocked, 'managed_protection_missing'):
+            self.reconcile()
+        # True execution is accounted for, not mistaken for healthy protection.
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+
+    def test_pending_fill_torn_lifecycle_append_replays_without_duplicate_journal(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        with patch.object(m, 'append_jsonl', side_effect=OSError('offline ledger failure')):
+            with self.assertRaisesRegex(OSError, 'offline ledger failure'):
+                self.reconcile()
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+        self.assertEqual(autotrader.read_jsonl(self.root / 'order_ledger.jsonl')[-1]['status'], 'new')
+        self.assertEqual(self.reconcile(), [])
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+        self.assertEqual(autotrader.read_jsonl(self.root / 'order_ledger.jsonl')[-1]['status'], 'filled')
+
+    def test_torn_entry_equivalent_execution_time_preserves_original_key(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        with patch.object(m, 'append_jsonl', side_effect=OSError('interrupted lifecycle')):
+            with self.assertRaises(OSError):
+                self.reconcile()
+        before = (self.root / 'trade_journal.jsonl').read_bytes()
+        self.parent['filled_at'] = '2026-10-23T19:40:11+00:00'
+        _, summary = m.reconcile_detailed(self.root, self.broker)
+        self.assertTrue(summary['verified'])
+        self.assertEqual((self.root / 'trade_journal.jsonl').read_bytes(), before)
+        autotrader.journal_confirmed_fill(self.root / 'trade_journal.jsonl', self.plan, self.parent)
+        self.assertEqual((self.root / 'trade_journal.jsonl').read_bytes(), before)
+
+    def test_persisted_entry_conflict_blocks_entire_batch_before_any_append(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        earlier = copy.deepcopy(self.parent)
+        earlier.update(client_order_id='earlier', id='broker-earlier', symbol='NET')
+        for leg in earlier['legs']:
+            leg.update(client_order_id='earlier-' + leg['type'], symbol='NET')
+        intent = {'client_order_id': 'earlier', 'plan': dict(self.plan, symbol='NET')}
+        # Explicitly place the fresh fill before the conflicting persisted fill.
+        saved = json.loads((self.root / 'private/order_intents.jsonl').read_text())
+        (self.root / 'private/order_intents.jsonl').write_text(
+            ''.join(json.dumps(r) + '\n' for r in (intent, saved)))
+        autotrader.append_jsonl(self.root / 'order_ledger.jsonl',
+                               {'client_order_id': 'earlier', 'status': 'new'})
+        autotrader.journal_confirmed_fill(self.root / 'trade_journal.jsonl', self.plan, self.parent)
+        self.parent['filled_at'] = '2026-10-23T19:40:12Z'
+        def broker(operation, payload):
+            self.assertEqual(operation, 'reconciliation_snapshot')
+            by_ref = {'parent': self.parent, 'earlier': earlier}
+            return copy.deepcopy({'orders': [by_ref[r] for r in payload['client_order_ids']],
+                                  'positions': self.positions + [{'symbol': 'NET', 'qty': '3'}],
+                                  'open_orders': self.open_orders + earlier['legs']})
+        before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+        with patch.object(m, 'append_jsonl', wraps=m.append_jsonl) as lifecycle, \
+             patch('entry_fills.append_jsonl', wraps=autotrader.append_jsonl) as journal:
+            with self.assertRaisesRegex(m.ReconciliationBlocked, 'managed_pending_entry_identity_conflict'):
+                m.reconcile_detailed(self.root, broker)
+            self.assertEqual((journal.call_count, lifecycle.call_count), (0, 0))
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
+    def test_batch_execution_collision_blocks_before_any_accounting_write(self):
+        import entry_fills
+        import managed_reconciliation as m
+        for mode, ownership in ((mode, ownership) for mode in ('maintenance', 'autotrader')
+                                for ownership in ('collision', 'distinct', 'legacy_missing')):
+            with self.subTest(mode=mode, ownership=ownership):
+                self.setUp()
+                self.prepare_pending_fill()
+                other = copy.deepcopy(self.parent)
+                other.update(client_order_id='second', symbol='NET')
+                if ownership == 'distinct':
+                    other['id'] = 'broker-second'
+                elif ownership == 'legacy_missing':
+                    self.parent.pop('id')
+                    other.pop('id')
+                for leg in other['legs']:
+                    leg.update(client_order_id='second-' + leg['type'], symbol='NET')
+                saved = json.loads((self.root / 'private/order_intents.jsonl').read_text())
+                second = dict(saved, client_order_id='second', plan=dict(self.plan, symbol='NET'))
+                (self.root / 'private/order_intents.jsonl').write_text(
+                    ''.join(json.dumps(r) + '\n' for r in (saved, second)))
+                autotrader.append_jsonl(self.root / 'order_ledger.jsonl',
+                                       {'client_order_id': 'second', 'status': 'new'})
+                by_ref = {'parent': self.parent, 'second': other}
+                def broker(operation, payload):
+                    if operation == 'reconcile':
+                        return copy.deepcopy(by_ref[payload['client_order_id']])
+                    self.assertEqual(operation, 'reconciliation_snapshot')
+                    return copy.deepcopy({'orders': [by_ref[r] for r in payload['client_order_ids']],
+                        'positions': self.positions + [{'symbol': 'NET', 'qty': '3'}],
+                        'open_orders': self.open_orders + other['legs']})
+                before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+                def reconcile_batch():
+                    if mode == 'maintenance':
+                        return m.reconcile_detailed(self.root, broker)
+                    return autotrader.reconcile_pending_orders(
+                        self.root / 'order_ledger.jsonl', self.root / 'private/order_intents.jsonl',
+                        self.root / 'trade_journal.jsonl', broker=broker)
+                if ownership == 'collision':
+                    with self.assertRaises((m.ReconciliationBlocked, entry_fills.EntryFillConflict)):
+                        reconcile_batch()
+                    self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+                    self.assertEqual(autotrader.read_jsonl(self.root / 'trade_journal.jsonl'), [])
+                else:
+                    reconcile_batch()
+                    rows = autotrader.read_jsonl(self.root / 'trade_journal.jsonl')
+                    self.assertEqual([(r['symbol'], r['quantity']) for r in rows], [('ZS', 3), ('NET', 3)])
+                    ledger = autotrader.read_jsonl(self.root / 'order_ledger.jsonl')
+                    self.assertEqual([r['status'] for r in ledger], ['new', 'new', 'filled', 'filled'])
+
+    def test_maintenance_autotrader_overlap_serializes_real_entry_accounting(self):
+        import concurrent.futures
+        import threading
+        import managed_reconciliation as m
+        for first in ('maintenance', 'autotrader'):
+            with self.subTest(first=first):
+                self.setUp()
+                self.prepare_pending_fill()
+                observed, release, competing = threading.Event(), threading.Event(), threading.Event()
+                real_broker = self.broker
+                def transport(operation, payload):
+                    if not observed.is_set():
+                        observed.set()
+                        if not release.wait(2):
+                            raise AssertionError('fixture release deadline')
+                    if operation == 'reconcile':
+                        self.assertEqual(payload, {'client_order_id': 'parent'})
+                        return copy.deepcopy(self.parent)
+                    return real_broker(operation, payload)
+                def run(which):
+                    if which == 'maintenance':
+                        return m.reconcile_detailed(self.root, transport)
+                    return autotrader.reconcile_pending_orders(
+                        self.root / 'order_ledger.jsonl', self.root / 'private/order_intents.jsonl',
+                        self.root / 'trade_journal.jsonl', broker=transport)
+                def competitor():
+                    competing.set()
+                    return run('autotrader' if first == 'maintenance' else 'maintenance')
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    owner = pool.submit(run, first)
+                    try:
+                        self.assertTrue(observed.wait(2))
+                        peer = pool.submit(competitor)
+                        self.assertTrue(competing.wait(2))
+                    finally:
+                        release.set()
+                    owner.result(timeout=5)
+                    peer.result(timeout=5)
+                self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+                ledger = autotrader.read_jsonl(self.root / 'order_ledger.jsonl')
+                self.assertEqual([r['status'] for r in ledger], ['new', 'filled'])
+
+    def test_full_fill_observation_cannot_regress_to_unfilled_on_refresh(self):
+        self.prepare_pending()
+        old_parent = copy.deepcopy(self.parent)
+        self.prepare_pending_fill()
+        real_broker = self.broker
+        def regressed_broker(operation, payload):
+            snapshot = real_broker(operation, payload)
+            if len(self.calls) == 2:
+                snapshot.update(orders=[old_parent], positions=[], open_orders=[old_parent])
+            return snapshot
+        import managed_reconciliation as m
+        with self.assertRaises(m.ReconciliationBlocked):
+            m.reconcile(self.root, regressed_broker)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(autotrader.read_jsonl(self.root / 'trade_journal.jsonl'), [])
+
+    def test_tngx_maintenance_ingests_the_delayed_full_entry_fill(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        self.plan.update(symbol='TNGX', quantity=19, limit_price=23.50, stop=21, target=29)
+        self.write('private/order_intents.jsonl', {'client_order_id': 'parent', 'plan': self.plan})
+        self.write('order_ledger.jsonl', {'client_order_id': 'parent', 'status': 'new',
+                                        'timestamp': '2026-10-23T19:39:58Z'})
+        self.parent.update(symbol='TNGX', qty='19', filled_qty='19',
+                           filled_avg_price='23.46', limit_price='23.50')
+        for leg in self.parent['legs']:
+            leg.update(symbol='TNGX', qty='19')
+            leg['limit_price' if leg['type'] == 'limit' else 'stop_price'] = (
+                '29' if leg['type'] == 'limit' else '21')
+        self.open_orders = copy.deepcopy(self.parent['legs'])
+        self.positions = [{'symbol': 'TNGX', 'qty': '19'}]
+        _, summary = m.reconcile_detailed(self.root, self.broker)
+        self.assertTrue(summary['verified'])
+        rows = autotrader.read_jsonl(self.root / 'trade_journal.jsonl')
+        self.assertEqual([(r['symbol'], r['quantity'], r['entry']) for r in rows], [('TNGX', 19, 23.46)])
+        self.assertEqual(self.reconcile(), [])
+        self.assertEqual(len(autotrader.read_jsonl(self.root / 'trade_journal.jsonl')), 1)
+
+    def test_full_fill_with_stale_position_read_uses_fresh_snapshot(self):
+        import managed_reconciliation as m
+        self.prepare_pending_fill()
+        real_broker = self.broker
+        def broker(operation, payload):
+            snapshot = real_broker(operation, payload)
+            if len(self.calls) == 1:
+                snapshot['positions'] = []
+            return snapshot
+        _, summary = m.reconcile_detailed(self.root, broker)
+        self.assertTrue(summary['verified'])
+        self.assertEqual(len(self.calls), 2)
 
     def prepare_legacy_failure(self):
         self.prepare_pending()
@@ -508,3 +836,90 @@ class ManagedReconciliationTests(unittest.TestCase):
         closed = autotrader.read_jsonl(self.root / 'order_ledger.jsonl')[-1]
         self.assertEqual(closed['closure_key'], rows[-1]['closure_key'])
         self.assertEqual(closed['exit_client_order_id'], 'replacement')
+
+
+class EntryFillReplayTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = ManagedReconciliationTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.prepare_pending_fill()
+        self.path = self.fixture.root / 'trade_journal.jsonl'
+
+    def interrupt(self):
+        with patch.object(maintenance, 'append_jsonl', side_effect=OSError('torn lifecycle')):
+            with self.assertRaises(OSError):
+                self.fixture.reconcile()
+
+    def test_conflicting_torn_full_entry_never_writes_journal_or_lifecycle(self):
+        self.interrupt()
+        original = copy.deepcopy(self.fixture.parent)
+        before = {p: p.read_bytes() for p in self.fixture.root.rglob('*.jsonl')}
+        for changes in ({'filled_at': '2026-10-23T19:40:12Z'},
+                        {'filled_at': '2026-10-23T19:40:11.000000001Z'},
+                        {'filled_avg_price': '162.60'}, {'filled_qty': '4', 'qty': '4'},
+                        {'id': 'different-execution'}, {'id': None}, {'symbol': 'NET'}):
+            with self.subTest(changes=changes):
+                self.fixture.parent = dict(original, **changes)
+                with self.assertRaises(maintenance.ReconciliationBlocked):
+                    self.fixture.reconcile()
+                self.assertEqual(before, {p: p.read_bytes() for p in self.fixture.root.rglob('*.jsonl')})
+
+    def test_autotrader_wrapper_rejects_changed_identity_even_when_raw_key_matches(self):
+        self.interrupt()
+        before = self.path.read_bytes()
+        for changes in ({'id': 'different-execution'}, {'id': None}, {'symbol': 'NET'}, {'side': 'sell'}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(entry_fills.EntryFillConflict):
+                    autotrader.journal_confirmed_fill(self.path, self.fixture.plan,
+                                                     dict(self.fixture.parent, **changes))
+                self.assertEqual(before, self.path.read_bytes())
+
+    def test_autotrader_pending_conflict_cannot_write_lifecycle_before_validation(self):
+        self.interrupt()
+        self.fixture.parent['filled_avg_price'] = '162.60'
+        before = {p: p.read_bytes() for p in self.fixture.root.rglob('*.jsonl')}
+        with self.assertRaises(entry_fills.EntryFillConflict):
+            autotrader.reconcile_pending_orders(
+                self.fixture.root / 'order_ledger.jsonl',
+                self.fixture.root / 'private/order_intents.jsonl', self.path,
+                broker=lambda *args: copy.deepcopy(self.fixture.parent))
+        self.assertEqual(before, {p: p.read_bytes() for p in self.fixture.root.rglob('*.jsonl')})
+
+    def test_historical_key_is_unchanged_and_legacy_exact_repeat_is_read_only(self):
+        order, plan = self.fixture.parent, self.fixture.plan
+        qty, price = float(order['filled_qty']), float(order['filled_avg_price'])
+        key = hashlib.sha256(json.dumps({'ref': order['client_order_id'],
+            'filled_at': order['filled_at'], 'qty': str(qty), 'price': str(price)},
+            sort_keys=True).encode()).hexdigest()
+        row = dict(entry_fill_key=key, status='filled', symbol=plan['symbol'], action='BUY',
+                   quantity=qty, entry=price, client_order_id='parent', broker_order_id=order['id'])
+        self.path.write_text(json.dumps(row) + '\n')
+        before = self.path.read_bytes()
+        autotrader.journal_confirmed_fill(self.path, plan, order)
+        self.assertEqual(before, self.path.read_bytes())
+        with self.assertRaises(entry_fills.EntryFillConflict):
+            autotrader.journal_confirmed_fill(self.path, plan,
+                dict(order, filled_at='2026-10-23T19:40:11+00:00'))
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_partial_observation_and_symbol_only_row_are_not_full_entry_replays(self):
+        order, plan = self.fixture.parent, self.fixture.plan
+        rows = [dict(client_order_id='parent', broker_order_id=order['id'],
+                     cumulative_filled_quantity='1', cumulative_filled_notional='162.7'),
+                dict(status='filled', symbol='ZS', action='BUY', quantity=3, entry=162.7)]
+        self.assertFalse(entry_fills.validate_entry_replay(rows, plan, order))
+
+    def test_equivalent_offsets_and_numeric_representations_preserve_original_row(self):
+        self.interrupt()
+        before = self.path.read_bytes()
+        for stamp in ('2026-10-23T15:40:11-04:00', '2026-10-23T19:40:11.000000Z'):
+            autotrader.journal_confirmed_fill(self.path, self.fixture.plan,
+                dict(self.fixture.parent, filled_at=stamp, filled_qty='3.000', filled_avg_price='162.700'))
+            self.assertEqual(before, self.path.read_bytes())
+
+    def test_ambiguous_duplicate_full_rows_fail_closed(self):
+        self.interrupt()
+        row = autotrader.read_jsonl(self.path)[0]
+        with self.assertRaisesRegex(entry_fills.EntryFillConflict, 'ambiguous'):
+            entry_fills.validate_entry_replay([row, row], self.fixture.plan, self.fixture.parent)

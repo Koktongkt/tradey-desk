@@ -10,6 +10,7 @@ import subprocess
 from broker_process import bridge_command, broker_executable, run_bridge
 import sys
 import entry_state
+import entry_fills
 from pathlib import Path
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -426,12 +427,95 @@ def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
         refs += [r['protection_client_order_id'] for r in registry if r['parent_client_order_id'] in refs]
         refs += [i['client_order_id'] for i in pending]
         require(len(refs) == len(set(refs)), 'managed_evidence_invalid')
-        snapshot = broker('reconciliation_snapshot', {'client_order_ids': refs})
-        require(isinstance(snapshot.get('orders'), list) and len(snapshot['orders']) == len(refs))
-        require(all(isinstance(o, dict) for o in snapshot['orders']))
-        orders = {o.get('client_order_id'): o for o in snapshot['orders']}
-        require(set(orders) == set(refs) and len(orders) == len(refs))
-        known_orders = exact_order_lineage(orders)
+        def read_snapshot():
+            snapshot = broker('reconciliation_snapshot', {'client_order_ids': refs})
+            require(isinstance(snapshot, dict))
+            require(isinstance(snapshot.get('orders'), list) and len(snapshot['orders']) == len(refs))
+            require(all(isinstance(o, dict) for o in snapshot['orders']))
+            orders = {o.get('client_order_id'): o for o in snapshot['orders']}
+            require(set(orders) == set(refs) and len(orders) == len(refs))
+            return snapshot, orders, exact_order_lineage(orders)
+
+        snapshot, orders, known_orders = read_snapshot()
+        # The broker snapshot spans separate reads. Retry at most once, only
+        # behind an exact saved pending entry, never to adopt a symbol holding.
+        refresh = any(orders[i['client_order_id']].get('status') == 'filled' for i in pending)
+        if pending and not refresh:
+            for intent in pending:
+                pending_bracket(intent, orders[intent['client_order_id']])
+            expected = journal_quantities(journal)
+            positions = snapshot.get('positions')
+            if isinstance(positions, list):
+                symbols = {i['plan']['symbol'] for i in pending}
+                refresh = any(isinstance(p, dict) and p.get('symbol') in symbols
+                              and number(p.get('qty')) != expected.get(p['symbol'], Decimal(0))
+                              for p in positions)
+            try:
+                check_pending_entries(snapshot, pending, orders)
+                check_exact_open_lineage(snapshot, known_orders)
+            except ReconciliationBlocked:
+                refresh = True
+        if refresh:
+            observed_fills = {i['client_order_id']: orders[i['client_order_id']]
+                              for i in pending if orders[i['client_order_id']].get('status') == 'filled'}
+            snapshot, orders, known_orders = read_snapshot()
+            for ref, observed in observed_fills.items():
+                require(all(orders[ref].get(field) == observed.get(field)
+                            for field in ('status', 'symbol', 'side', 'filled_at'))
+                        and all(number(orders[ref].get(field)) == number(observed.get(field))
+                                for field in ('qty', 'filled_qty', 'filled_avg_price')),
+                        'managed_pending_entry_inconsistent')
+        try:
+            entry_fills.validate_batch_execution_ownership(orders[i['client_order_id']] for i in pending)
+        except entry_fills.EntryFillConflict as error:
+            raise ReconciliationBlocked('managed_pending_entry_identity_conflict') from error
+        # Account only exact saved full entry fills, under the shared entry lock.
+        # Validate the entire batch before the first local append.
+        entry_updates = []
+        for intent in pending:
+            ref, plan = intent['client_order_id'], intent['plan']
+            parent = orders[ref]
+            if parent.get('status') != 'filled':
+                continue
+            require(entry_fills.broker_order_notification_line(ref, plan, parent, 'paper') is not None,
+                    'managed_pending_entry_invalid')
+            require(parent.get('position_intent') == 'buy_to_open'
+                    and parent.get('time_in_force') == 'gtc'
+                    and parent.get('symbol') == plan['symbol'] and plan.get('action') == 'BUY'
+                    and parent.get('order_type', 'limit') == 'limit'
+                    and (parent.get('extended_hours') is None or parent.get('extended_hours') is False)
+                    and parent.get('notional') is None and parent.get('stop_price') is None
+                    and number(parent.get('limit_price')) == number(plan['limit_price'])
+                    and number(plan['stop']) < number(plan['limit_price']) < number(plan['target']),
+                    'managed_pending_entry_invalid')
+            timestamp(parent.get('filled_at'))
+            require(number(parent.get('filled_avg_price')) <= number(plan['limit_price']),
+                    'managed_pending_entry_invalid')
+            exit_legs(intent, orders, registry)
+            require(all(field in plan for field in ('horizon', 'confidence', 'thesis')),
+                    'managed_pending_entry_invalid')
+            try:
+                entry_fills.validate_entry_replay(journal, plan, parent, private_lineage(intent))
+            except entry_fills.EntryFillConflict as error:
+                raise ReconciliationBlocked('managed_pending_entry_identity_conflict') from error
+            entry_updates.append((intent, parent))
+        if verify_only:
+            require(not entry_updates, 'managed_repair_required')
+        for intent, parent in entry_updates:
+            # Journal first: a torn lifecycle append remains pending and replays
+            # against persisted full-entry identity, including autotrader overlap.
+            entry_fills._journal_confirmed_fill_locked(
+                root / 'trade_journal.jsonl', intent['plan'], parent, private_lineage(intent))
+            append_jsonl(root / 'order_ledger.jsonl', dict(
+                timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+                client_order_id=intent['client_order_id'], status='filled',
+                symbol=intent['plan']['symbol'], action='BUY', **private_lineage(intent)))
+        if entry_updates:
+            ledger = read_rows(root / 'order_ledger.jsonl')
+            journal = read_rows(root / 'trade_journal.jsonl')
+            latest = {row['client_order_id']: row for row in ledger if row.get('client_order_id')}
+            active = [i for i in intents if latest[i['client_order_id']].get('status') == 'filled']
+            pending = [i for i in pending if latest[i['client_order_id']].get('status') != 'filled']
         updates = []
         legs_by_parent = {}
         for intent in active:

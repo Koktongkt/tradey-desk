@@ -27,6 +27,7 @@ import managed_reconciliation
 import pending_policy
 import entry_expiry
 import entry_state
+import entry_fills
 import entry_expiry as entry_expiry_policy
 from durable_jsonl import append_jsonl, read_jsonl
 from private_lineage import private_lineage, confirmed_fill_metadata
@@ -700,133 +701,16 @@ def journal_confirmed_fill(path: Path, plan: dict[str, Any], broker_order: dict[
 
 
 def _journal_confirmed_fill_locked(path, plan, broker_order, lineage=None):
-    if broker_order.get("status") != "filled":
-        return
-    qty = float(broker_order.get("filled_qty") or 0)
-    entry = float(broker_order.get("filled_avg_price") or 0)
-    if qty <= 0 or entry <= 0:
-        return
-    ref = broker_order.get("client_order_id")
-    fill_key = hashlib.sha256(json.dumps({"ref": ref, "filled_at": broker_order.get("filled_at"), "qty": str(qty), "price": str(entry)}, sort_keys=True).encode()).hexdigest() if ref else None
-    if fill_key and any(row.get("entry_fill_key") == fill_key for row in read_jsonl(path, strict=True)):
-        return
-    append_jsonl(path, {"entry_fill_key": fill_key, "timestamp": utcnow(), "symbol": plan["symbol"], "action": plan["action"], "entry": entry, "quantity": qty, "dollar_basis": round(entry * qty, 2), "stop": plan["stop"], "target": plan["target"], "horizon": plan["horizon"], "confidence": plan["confidence"], "thesis": plan["thesis"], "status": "filled", **confirmed_fill_metadata(broker_order, lineage)})
+    return entry_fills._journal_confirmed_fill_locked(
+        path, plan, broker_order, lineage, now=utcnow())
 
 
-BROKER_CONFIRMED_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "filled"}
-NOTIFICATION_STATUSES = BROKER_CONFIRMED_ORDER_STATUSES | {"placing"}
-
-
-def _notification_plan(plan, *, validate=True):
-    """Pure common projection; broker binding and fill checks stay with readback."""
-    action = str(plan.get("action") or "").upper()
-    symbol = str(plan.get("symbol") or "").upper()
-    try:
-        quantity, limit_price, stop, target = (
-            Decimal(str(plan.get(field))) for field in ("quantity", "limit_price", "stop", "target")
-        )
-    except Exception:
-        return None
-    if validate and (plan.get("order_type") != "limit" or action not in {"BUY", "SELL"}
-            or not symbol.isalpha() or len(symbol) > 6
-            or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
-            or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))):
-        return None
-    return action, symbol, quantity, limit_price, stop, target
-
-
-def placing_notification_line(plan: dict[str, Any], broker_mode: str) -> str | None:
-    """Return a safe pre-submission line for a validated paper limit plan."""
-    if broker_mode != "paper" or not isinstance(plan, dict):
-        return None
-    fields = _notification_plan(plan)
-    if fields is None:
-        return None
-    action, symbol, quantity, limit_price, stop, target = fields
-    return (
-        f"ORDER placing {action} {int(quantity)} {symbol} LIMIT {limit_price:.2f} "
-        f"STOP {stop:.2f} TARGET {target:.2f} PAPER"
-    )
-
-
-TERMINAL_ENTRY_STATUSES = {"canceled", "expired"}
-
-
-def exact_terminal_readback(ref, plan, broker_order):
-    """Validated zero-fill terminal cancellation; never claims a fill."""
-    if not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
-        return False
-    status = str(broker_order.get("status") or "").lower()
-    fields = _notification_plan(plan, validate=False)
-    if fields is None or status not in TERMINAL_ENTRY_STATUSES:
-        return False
-    action, symbol, quantity, limit_price, stop, target = fields
-    try:
-        broker_quantity = Decimal(str(broker_order.get("qty")))
-        filled = Decimal(str(broker_order.get("filled_qty") or 0))
-    except Exception:
-        return False
-    return (
-        str(broker_order.get("client_order_id") or "") == ref
-        and str(broker_order.get("symbol") or "").upper() == symbol
-        and str(broker_order.get("side") or "").lower() == action.lower()
-        and str(broker_order.get("type") or broker_order.get("order_type") or "").lower() == "limit"
-        and str(broker_order.get("order_class") or "").lower() == "bracket"
-        and broker_quantity == quantity and filled == 0
-    )
-
-
-def broker_order_notification_line(
-    ref: str, plan: dict[str, Any], broker_order: dict[str, Any], broker_mode: str,
-) -> tuple[str, str] | None:
-    """Return a safe line and status only for an exactly bound paper readback."""
-    if broker_mode != "paper" or not isinstance(ref, str) or not ref or not isinstance(broker_order, dict):
-        return None
-    status = str(broker_order.get("status") or "").lower()
-    if status in TERMINAL_ENTRY_STATUSES and not exact_terminal_readback(ref, plan, broker_order):
-        return None
-    fields = _notification_plan(plan, validate=False)
-    if fields is None:
-        return None
-    action, symbol, quantity, limit_price, stop, target = fields
-    try:
-        broker_quantity = Decimal(str(broker_order.get("qty")))
-    except Exception:
-        return None
-    if (
-        status not in BROKER_CONFIRMED_ORDER_STATUSES
-        or plan.get("order_type") != "limit"
-        or action not in {"BUY", "SELL"}
-        or not symbol.isalpha() or len(symbol) > 6
-        or str(broker_order.get("client_order_id") or "") != ref
-        or str(broker_order.get("symbol") or "").upper() != symbol
-        or str(broker_order.get("side") or "").lower() != action.lower()
-        or str(broker_order.get("type") or broker_order.get("order_type") or "").lower() != "limit"
-        or str(broker_order.get("order_class") or "").lower() != "bracket"
-        or not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value()
-        or not broker_quantity.is_finite() or broker_quantity != quantity
-        or any(not value.is_finite() or value <= 0 for value in (limit_price, stop, target))
-    ):
-        return None
-    average_fill = None
-    if status == "filled":
-        try:
-            filled_quantity = Decimal(str(broker_order.get("filled_qty")))
-            average_fill = Decimal(str(broker_order.get("filled_avg_price")))
-        except Exception:
-            return None
-        if (
-            not filled_quantity.is_finite() or filled_quantity != quantity
-            or not average_fill.is_finite() or average_fill <= 0
-        ):
-            return None
-    line = (
-        f"ORDER {status} {action} {int(quantity)} {symbol} LIMIT {limit_price:.2f} "
-        f"STOP {stop:.2f} TARGET {target:.2f}"
-    )
-    if average_fill is not None:
-        line += f" AVG {average_fill:.2f}"
-    return line + " PAPER", status
+# Preserve the public contract without importing execution into maintenance.
+from entry_fills import (
+    BROKER_CONFIRMED_ORDER_STATUSES, NOTIFICATION_STATUSES,
+    TERMINAL_ENTRY_STATUSES, _notification_plan, placing_notification_line,
+    exact_terminal_readback, broker_order_notification_line,
+)
 
 
 def _strict_notification_states(path: Path) -> dict[str, str] | None:
@@ -1216,6 +1100,11 @@ def _reconcile_pending_orders_locked(
         if broker_order_notification_line(ref, plan, order, broker_mode) is None:
             raise RuntimeError("broker_reconciliation_invalid")
         validated.append((ref, plan, order, private_lineage(intent)))
+    entry_fills.validate_batch_execution_ownership(order for _, _, order, _ in validated)
+    journal = read_jsonl(journal_path, strict=True)
+    for _, plan, order, lineage in validated:
+        if order.get('status') == 'filled':
+            entry_fills.validate_entry_replay(journal, plan, order, lineage)
     updates = []
     for ref, plan, order, lineage in validated:
         status = str(order["status"]).lower()
