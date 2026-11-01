@@ -403,7 +403,10 @@ print('complete')
                 pid=int(pidfile.read_text())
                 for _ in range(100):
                     status=Path(f'/proc/{pid}/stat')
-                    if not status.exists() or status.read_text().split()[2]=='Z':break
+                    try:
+                        if status.read_text().split()[2]=='Z':break
+                    except FileNotFoundError:
+                        break  # The descendant exited before the status read.
                     __import__('time').sleep(.01)
                 else:self.fail('owned descendant still running')
 
