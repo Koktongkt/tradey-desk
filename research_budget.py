@@ -25,6 +25,15 @@ def active_deadline(deadline: float) -> Iterator[None]:
         _active_deadline.reset(token)
 
 
+def diagnostic_remaining() -> float | None:
+    """Read-only, non-raising deadline snapshot for optional private diagnostics."""
+    try:
+        deadline = _active_deadline.get()
+        return None if deadline is None else max(0.0, deadline - monotonic())
+    except BaseException:
+        return None
+
+
 def remaining(max_seconds: float) -> float:
     deadline = _active_deadline.get()
     if deadline is None:

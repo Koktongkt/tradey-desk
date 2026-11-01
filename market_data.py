@@ -9,12 +9,14 @@ import subprocess
 import urllib.parse
 import urllib.request
 from research_budget import remaining, read_http_response, raise_if_expired_timeout
+from enrichment_diagnostics import span, traced
 from zoneinfo import ZoneInfo
 
 from broker_normalization import average_volume, massive_daily_bars
 from mcp_config_process import read_mcp_env_process
 
 
+@traced('config', 'massive')
 def configured_massive_key() -> str:
     try:
         completed = read_mcp_env_process("massive", timeout=remaining(30), run=subprocess.run)
@@ -36,8 +38,13 @@ def _massive_json(url: str):
         headers={"Authorization": f"Bearer {configured_massive_key()}", "User-Agent": "TradeyDesk/1.0"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=remaining(30)) as response:
-            return json.loads(read_http_response(response))
+        with span('open', 'massive'):
+            response = urllib.request.urlopen(request, timeout=remaining(30))
+        with response:
+            with span('body', 'massive'):
+                body = read_http_response(response)
+            with span('json', 'massive'):
+                return json.loads(body)
     except OSError as error:
         raise_if_expired_timeout(error)
         raise

@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from research_budget import remaining, read_http_response, raise_if_expired_timeout
+from enrichment_diagnostics import span, traced, provider_for_url
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -61,15 +62,21 @@ def extract_release_date(text: str) -> str | None:
 def _get_text(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": SEC_USER_AGENT, "Accept": "application/json,text/html"})
     try:
-        with urllib.request.urlopen(request, timeout=remaining(SEC_REQUEST_TIMEOUT_SECONDS)) as response:
-            return read_http_response(response, max_bytes=2_000_000).decode("utf-8", "replace")
+        provider = provider_for_url(url)
+        with span('open', provider):
+            response = urllib.request.urlopen(request, timeout=remaining(SEC_REQUEST_TIMEOUT_SECONDS))
+        with response:
+            with span('body', provider):
+                return read_http_response(response, max_bytes=2_000_000).decode("utf-8", "replace")
     except OSError as error:
         raise_if_expired_timeout(error)
         raise
 
 
 def _get_json(url: str) -> Any:
-    return json.loads(_get_text(url))
+    text = _get_text(url)
+    with span('json', provider_for_url(url)):
+        return json.loads(text)
 
 
 def _plain_text(document: str) -> str:
@@ -172,20 +179,37 @@ def cached_sec_release_history(
         raise ValueError("now_must_be_timezone_aware")
     normalized = str(symbol or "").upper()
     cache: dict[str, Any] = {}
-    try:
-        parsed = json.loads(cache_path.read_text(encoding="utf-8"))
-        if isinstance(parsed, dict):
-            cache = parsed
-    except (OSError, ValueError):
-        pass
-    entry = cache.get(normalized)
-    if isinstance(entry, dict) and isinstance(entry.get("checked_at"), str) and isinstance(entry.get("rows"), list):
+    with span('cache', 'sec') as diagnostic:
+        reason = 'absent'
         try:
-            checked = dt.datetime.fromisoformat(entry["checked_at"].replace("Z", "+00:00"))
-            if checked.tzinfo is not None and current - checked <= ttl:
-                return [row for row in entry["rows"] if isinstance(row, dict)]
+            parsed = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                cache = parsed
+            else:
+                reason = 'invalid'
+        except FileNotFoundError:
+            reason = 'absent'
+        except OSError:
+            reason = 'unreadable'
         except ValueError:
-            pass
+            reason = 'invalid'
+        entry = cache.get(normalized)
+        if normalized in cache:
+            reason = 'invalid'
+        try:
+            if isinstance(entry, dict) and isinstance(entry.get("checked_at"), str) and isinstance(entry.get("rows"), list):
+                try:
+                    checked = dt.datetime.fromisoformat(entry["checked_at"].replace("Z", "+00:00"))
+                    if checked.tzinfo is not None and current - checked <= ttl:
+                        reason = 'cachehit'
+                        return [row for row in entry["rows"] if isinstance(row, dict)]
+                    if checked.tzinfo is not None:
+                        reason = 'expired'
+                except ValueError:
+                    pass
+        finally:
+            if diagnostic is not None:
+                diagnostic.update(outcome='hit' if reason == 'cachehit' else 'miss', reason=reason)
     rows = history_loader(normalized)
     cache[normalized] = {
         "checked_at": current.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -220,6 +244,7 @@ def estimate_next_window(release_dates: Iterable[str]) -> dict[str, object] | No
     }
 
 
+@traced('stockanalysis', 'stockanalysis', 'date')
 def stockanalysis_earnings_date(
     symbol: str,
     *,
@@ -248,6 +273,7 @@ def stockanalysis_earnings_date(
     return event_date.isoformat(), url
 
 
+@traced('nasdaq', 'nasdaq', 'date')
 def nasdaq_earnings_date(
     symbol: str,
     horizon_start: dt.date,
@@ -295,7 +321,7 @@ def default_trusted_date_loader(
     try:
         return nasdaq_earnings_date(
             symbol, horizon_start, horizon_end,
-            get_json=lambda url: json.loads(_get_text(url)),
+            get_json=_get_json,
         )
     except Exception:
         return None
@@ -326,16 +352,22 @@ def resolve_candidate_earnings(
     current = current_at.astimezone(ZoneInfo("America/New_York")).date()
     confirmed = None
     if trusted_date_loader is not None:
-        confirmed = trusted_date_loader(str(candidate.get("symbol") or ""))
+        with span('trusted_date', 'trusted') as diagnostic:
+            confirmed = trusted_date_loader(str(candidate.get("symbol") or ""))
+            if diagnostic is not None:
+                diagnostic['outcome'] = 'confirmed' if confirmed is not None else 'no_date'
     history: list[dict[str, str]] = []
     try:
-        if history_loader is None:
-            history = cached_sec_release_history(
-                str(candidate.get("symbol") or ""), cache_path=cache_path, now=now,
-                history_loader=sec_release_history,
-            )
-        else:
-            history = history_loader(str(candidate.get("symbol") or ""))
+        with span('sec_history', 'sec') as diagnostic:
+            if history_loader is None:
+                history = cached_sec_release_history(
+                    str(candidate.get("symbol") or ""), cache_path=cache_path, now=now,
+                    history_loader=sec_release_history,
+                )
+            else:
+                history = history_loader(str(candidate.get("symbol") or ""))
+            if diagnostic is not None:
+                diagnostic['outcome'] = 'fetched' if history else 'empty'
     except Exception:
         history = []
     past_dates_set: set[str] = set()

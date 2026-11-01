@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from focused_pipeline import FocusedResult
 from zoneinfo import ZoneInfo
 from market_data import synchronized_completed_close_prices
+from enrichment_diagnostics import attempt as enrichment_attempt, span as enrichment_span
 from research_budget import ResearchDeadlineExceeded, active_deadline, remaining as budget_remaining
 from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
 from candidate_retry import pre_submission_retryable
@@ -2153,7 +2154,7 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
     if enrichment_budget is None:enrichment_budget={"overall":enrichment_started+ENRICHMENT_BUDGET_SECONDS,"remaining":ENRICHMENT_BUDGET_SECONDS}
     enrichment_deadline=min(float(enrichment_budget["overall"] or 0.0),enrichment_started+float(enrichment_budget["remaining"] or 0.0))
     try:
-        with timed_research_stage("enrichment"), active_deadline(enrichment_deadline):
+        with timed_research_stage("enrichment"), active_deadline(enrichment_deadline), enrichment_attempt(_timing_enabled.get(), ROOT, _research_run_id.get(), symbol):
             budget_remaining(ENRICHMENT_BUDGET_SECONDS)
             candidate=resolve_candidate_earnings(
                 candidate,
@@ -2162,7 +2163,9 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
             budget_remaining(ENRICHMENT_BUDGET_SECONDS)
             candidate.pop("price",None)
             candidate.pop("spy_price",None)
-            try:candidate.update(synchronized_completed_close_prices(symbol))
+            try:
+                with enrichment_span('prices', 'massive'):
+                    candidate.update(synchronized_completed_close_prices(symbol))
             except DurableAppendError:raise
             except ValueError as error:
                 # Only this exact adapter contract proves a candidate-local failure.
