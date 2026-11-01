@@ -138,7 +138,8 @@ class PipelineTests(unittest.TestCase):
             "setup_type":"post_news_momentum","planned_exit_at":"2026-09-04T20:00:00Z",
             "horizon_rationale":"short repricing window",
         }
-        self.assertTrue(alpha_radar.qualified(candidate,{"min_price_usd":10,"min_average_volume":1_000_000}))
+        now=dt.datetime(2026,8,29,14,tzinfo=dt.timezone.utc)
+        self.assertTrue(alpha_radar.qualified(candidate,{"min_price_usd":10,"min_average_volume":1_000_000},now=now))
 
     def test_radar_rejects_candidate_when_one_share_exceeds_position_cap(self):
         candidate={
@@ -169,12 +170,13 @@ class PipelineTests(unittest.TestCase):
             "sources":[{"url":"https://one.example/a"},{"url":"https://two.example/b"}],
             "earnings_event_at":"2026-11-01T21:00:00Z","researched_at":"2026-08-29T14:00:00Z",
         }
-        self.assertFalse(alpha_radar.qualified(base,{"min_price_usd":10}))
+        now=dt.datetime(2026,8,29,14,tzinfo=dt.timezone.utc)
+        self.assertFalse(alpha_radar.qualified(base,{"min_price_usd":10},now=now))
         complete = dict(
             base, setup_type="post_news_momentum", planned_exit_at="2026-09-04T20:00:00Z",
             horizon_rationale="repricing window",
         )
-        self.assertTrue(alpha_radar.qualified(complete,{"min_price_usd":10}))
+        self.assertTrue(alpha_radar.qualified(complete,{"min_price_usd":10},now=now))
         prompt = alpha_radar.research_prompt()
         for field in ("setup_type", "planned_exit_at", "horizon_rationale"):
             self.assertIn(field, prompt)

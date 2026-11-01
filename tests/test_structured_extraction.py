@@ -228,7 +228,13 @@ print(json.dumps(asyncio.run(scenario())))
             return subprocess.CompletedProcess([], 0, json.dumps({'candidates': [{'symbol': 'ABC', 'catalyst': 'current company event', 'event_date': '2026-10-17', 'urls': [URL]}]}), '')
         def direct(url, timeout):
             return {'url': url, 'title': 'Release', 'text': BODY, 'published_at': '2026-10-17T00:00:00Z'}
-        with tempfile.TemporaryDirectory() as td:
+        class Clock(radar.dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current=cls(2026,10,18,14,tzinfo=radar.dt.timezone.utc)
+                return current.astimezone(tz) if tz is not None else current.astimezone().replace(tzinfo=None)
+        # Both concurrent runs share the same historical scenario; 2025 stays stale.
+        with patch.object(radar.dt, 'datetime', Clock), tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root/'private').mkdir()
             (root/'private'/'source_cache.json').write_text(json.dumps({URL: {'checked_at': radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(), 'page': {'url': URL, 'text': BODY, 'published_at': '2025-10-17T00:00:00Z'}}}))

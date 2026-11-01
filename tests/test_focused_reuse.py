@@ -719,7 +719,13 @@ print('complete')
         focused = cap.FocusedURLs({'AAA':[OTHER]}, captures)
         scout = subprocess.CompletedProcess([],0,json.dumps({'candidates':[{'symbol':'AAA','catalyst':'guidance raised',
                     'event_date':'2026-10-18','urls':[URL]}]}),'')
-        with tempfile.TemporaryDirectory() as td, patch.object(radar, 'ROOT', Path(td)), patch.object(
+        class Clock(radar.dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current=cls(2026,10,19,14,tzinfo=radar.dt.timezone.utc)
+                return current.astimezone(tz) if tz is not None else current.astimezone().replace(tzinfo=None)
+        # Keep the historical event and publication fresh only within this scenario.
+        with patch.object(radar.dt, 'datetime', Clock), tempfile.TemporaryDirectory() as td, patch.object(radar, 'ROOT', Path(td)), patch.object(
             radar, 'discovery_command', return_value=['offline']
         ), patch.object(radar.subprocess, 'run', return_value=scout), patch.object(
             radar, 'focused_retrieval', return_value=focused

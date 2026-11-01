@@ -760,6 +760,35 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertIn("Use no_fresh_setup only when the evidence bundle is current and adequate", p)
         self.assertIn('"none_reason"', p)
 
+    def test_synthesis_prompt_requests_supported_corroboration_without_source_count_abstention(self):
+        sources = [
+            {"title": "Filing cover", "url": "https://www.sec.gov/Archives/cover.htm",
+             "text": "The earnings release is furnished as Exhibit 99.1; its body is not included."},
+            {"title": "Earnings release", "url": "https://issuer.example/results",
+             "text": "The issuer reported revenue growth and raised its outlook."},
+        ]
+        prompt = alpha_radar.synthesis_prompt('', sources, {'max_position_usd': 500})
+        instructions, evidence = prompt.split('EVIDENCE:\n', 1)
+        for requirement in (
+            'CITATION OUTPUT CONTRACT:',
+            'Include at least two supplied URLs from distinct publisher domains whenever the evidence supports doing so',
+            'Each listed source must materially support a factual claim used in catalyst or thesis',
+            'cite its original numbered evidence index in the prose',
+            'Include relevant corroborating sources, not only the most comprehensive article',
+            'Do not pad the sources list with unused, boilerplate-only or merely linked documents',
+            'Do not treat an exhibit linked by a filing as supplied evidence unless its body is included',
+            'Return only genuinely supported sources; deterministic code checks source eligibility',
+        ):
+            self.assertIn(requirement, instructions)
+        citation_instructions = instructions.split('CITATION OUTPUT CONTRACT:', 1)[1]
+        self.assertNotIn('status=none', citation_instructions)
+        self.assertNotIn('none_reason', citation_instructions)
+        self.assertNotIn('fewer than two', citation_instructions)
+        self.assertIn('return {"status":"none","none_reason":"no_fresh_setup"}', instructions)
+        self.assertEqual(evidence, '[1] Filing cover — https://www.sec.gov/Archives/cover.htm\n'
+                         + sources[0]['text'] + '\n[2] Earnings release — https://issuer.example/results\n'
+                         + sources[1]['text'])
+
     def test_live_research_raises_typed_timeout(self):
         calls = {"n": 0}
 
