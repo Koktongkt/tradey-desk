@@ -120,85 +120,55 @@ class PlacingNotificationTests(unittest.TestCase):
             self.assertEqual(ledger.read_text(), before)
             self.assertFalse(journal.exists())
 
-    def test_pending_order_recovery_does_not_renotify(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "private").mkdir()
-            (root / "public").mkdir()
-            (root / "autonomy_config.json").write_text(json.dumps({
-                "enabled": True, "broker_mode": "paper", "kill_switch_path": "KILL_SWITCH",
-            }))
-            (root / "order_ledger.jsonl").write_text(json.dumps({
-                "client_order_id": self.ref, "status": "placed",
-            }) + "\n")
-            (root / "private" / "order_intents.jsonl").write_text(json.dumps({
-                "client_order_id": self.ref, "plan": self.plan,
-            }) + "\n")
-            calls = []
-            def broker(operation, payload=None):
-                calls.append(operation)
-                self.assertEqual(operation, "reconcile")
-                return self.accepted
-            output = io.StringIO()
-            with patch.object(autotrader, "ROOT", root), patch(
-                "autotrader._broker_bridge", side_effect=broker
-            ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
-                "autotrader.reconcile_managed_protection", return_value=[]
-            ), contextlib.redirect_stdout(output):
-                code = autotrader.run(autotrader.argparse.Namespace(
-                    dry_run_fixture=False, live_dry_run=False))
-            self.assertEqual(code, 2)
-            self.assertEqual(calls, ["reconcile"])
-            self.assertEqual(output.getvalue(), "BLOCKER no_candidate\n")
-            self.assertNotIn("ORDER", output.getvalue())
-
-    def test_multiple_pending_parents_recover_silently(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "private").mkdir()
-            (root / "public").mkdir()
-            (root / "autonomy_config.json").write_text(json.dumps({
-                "enabled": True, "broker_mode": "paper", "kill_switch_path": "KILL_SWITCH",
-            }))
-            second_ref = "tradey-private-reference-two"
-            second_plan = dict(self.plan, symbol="AAPL", quantity=2,
-                               limit_price=100.00, stop=95.00, target=110.00)
-            ledger_rows = [
-                {"client_order_id": self.ref, "status": "placed"},
-                {"client_order_id": second_ref, "status": "submission_unknown"},
-            ]
-            intent_rows = [
-                {"client_order_id": self.ref, "plan": self.plan},
-                {"client_order_id": second_ref, "plan": second_plan},
-            ]
-            (root / "order_ledger.jsonl").write_text(
-                "\n".join(json.dumps(row) for row in ledger_rows) + "\n")
-            (root / "private" / "order_intents.jsonl").write_text(
-                "\n".join(json.dumps(row) for row in intent_rows) + "\n")
-            orders = {
-                self.ref: self.accepted,
-                second_ref: {
-                    "client_order_id": second_ref, "status": "new", "symbol": "AAPL",
-                    "side": "buy", "qty": "2", "type": "limit", "order_class": "bracket",
-                },
-            }
-            calls = []
-            def broker(operation, payload=None):
-                calls.append(operation)
-                self.assertEqual(operation, "reconcile")
-                return orders[payload["client_order_id"]]
-            output = io.StringIO()
-            with patch.object(autotrader, "ROOT", root), patch(
-                "autotrader._broker_bridge", side_effect=broker
-            ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
-                "autotrader.reconcile_managed_protection", return_value=[]
-            ), contextlib.redirect_stdout(output):
-                code = autotrader.run(autotrader.argparse.Namespace(
-                    dry_run_fixture=False, live_dry_run=False))
-            self.assertEqual(code, 2)
-            self.assertEqual(calls, ["reconcile", "reconcile"])
-            self.assertEqual(output.getvalue(), "BLOCKER no_candidate\n")
-            self.assertNotIn("ORDER", output.getvalue())
+    def test_pending_recovery_stays_silent(self):
+        for label, parent_count in (("single_placed", 1), ("placed_plus_submission_unknown", 2)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                (root / "private").mkdir()
+                (root / "public").mkdir()
+                (root / "autonomy_config.json").write_text(json.dumps({
+                    "enabled": True, "broker_mode": "paper", "kill_switch_path": "KILL_SWITCH",
+                }))
+                plan = dict(self.plan)
+                second_ref = "tradey-private-reference-two"
+                second_plan = dict(plan, symbol="AAPL", quantity=2,
+                                   limit_price=100.00, stop=95.00, target=110.00)
+                ledger_rows = [
+                    {"client_order_id": self.ref, "status": "placed"},
+                    {"client_order_id": second_ref, "status": "submission_unknown"},
+                ][:parent_count]
+                intent_rows = [
+                    {"client_order_id": self.ref, "plan": plan},
+                    {"client_order_id": second_ref, "plan": second_plan},
+                ][:parent_count]
+                (root / "order_ledger.jsonl").write_text(
+                    "\n".join(json.dumps(row) for row in ledger_rows) + "\n")
+                (root / "private" / "order_intents.jsonl").write_text(
+                    "\n".join(json.dumps(row) for row in intent_rows) + "\n")
+                orders = {
+                    self.ref: dict(self.accepted),
+                    second_ref: {
+                        "client_order_id": second_ref, "status": "new", "symbol": "AAPL",
+                        "side": "buy", "qty": "2", "type": "limit", "order_class": "bracket",
+                    },
+                }
+                calls = []
+                def broker(operation, payload=None):
+                    calls.append(operation)
+                    self.assertEqual(operation, "reconcile")
+                    return orders[payload["client_order_id"]] if parent_count == 2 else orders[self.ref]
+                output = io.StringIO()
+                with patch.object(autotrader, "ROOT", root), patch(
+                    "autotrader._broker_bridge", side_effect=broker
+                ), patch("autotrader.reconcile_managed_exits", return_value=[]), patch(
+                    "autotrader.reconcile_managed_protection", return_value=[]
+                ), contextlib.redirect_stdout(output):
+                    code = autotrader.run(autotrader.argparse.Namespace(
+                        dry_run_fixture=False, live_dry_run=False))
+                self.assertEqual(code, 2)
+                self.assertEqual(calls, ["reconcile"] * parent_count)
+                self.assertEqual(output.getvalue(), "BLOCKER no_candidate\n")
+                self.assertNotIn("ORDER", output.getvalue())
 
 
 if __name__ == "__main__":

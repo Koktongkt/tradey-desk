@@ -13,7 +13,7 @@ from unittest.mock import patch
 import autotrader
 
 
-def _protective_exit_parent(ref):
+def _protective_exit_parent(ref, **stop_overrides):
     return {
         "client_order_id": ref, "status": "filled", "symbol": "AAPL",
         "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
@@ -24,7 +24,8 @@ def _protective_exit_parent(ref):
             {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
              "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
              "symbol": "AAPL", "qty": "1", "filled_qty": "1",
-             "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
+             "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z",
+             **stop_overrides},
         ],
     }
 
@@ -737,19 +738,9 @@ class TradeySafetyTests(unittest.TestCase):
             ledger.write_text(json.dumps({"client_order_id": ref, "status": "filled"}) + "\n")
             intents.write_text(json.dumps({"client_order_id": ref, "plan": self.decision}) + "\n")
             journal.write_text(json.dumps({"symbol": "AAPL", "action": "BUY", "quantity": 1, "status": "filled"}) + "\n")
-            broker = lambda operation, payload: {"orders": [{
-                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
-                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
-                "legs": [
-                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
-                    {"client_order_id": "stop-loss", "status": "filled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "0.5",
-                     "filled_avg_price": "97.75", "filled_at": "2026-09-10T17:44:20Z"},
-                ],
-            }]}
+            broker = lambda operation, payload: {"orders": [
+                _protective_exit_parent(ref, filled_qty="0.5")
+            ]}
 
             with self.assertRaisesRegex(RuntimeError, "managed_exit_reconciliation_invalid"):
                 autotrader.reconcile_managed_exits(ledger, intents, journal, broker)
@@ -808,22 +799,10 @@ class TradeySafetyTests(unittest.TestCase):
                 "symbol": "AAPL", "action": "SELL", "quantity": 1, "status": "filled",
                 "closure_key": closure_key, "parent_client_order_id": ref,
             }) + "\n")
-            parent = {
-                "client_order_id": ref, "status": "filled", "symbol": "AAPL",
-                "side": "buy", "position_intent": "buy_to_open", "order_class": "bracket",
-                "legs": [
-                    {"client_order_id": "take-profit", "status": "canceled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "limit",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "0"},
-                    {"client_order_id": leg_ref, "status": "filled", "side": "sell",
-                     "position_intent": "sell_to_close", "order_class": "bracket", "type": "stop",
-                     "symbol": "AAPL", "qty": "1", "filled_qty": "1",
-                     "filled_avg_price": "97.75", "filled_at": filled_at},
-                ],
-            }
-
             updates = autotrader.reconcile_managed_exits(
-                ledger, intents, journal, lambda operation, payload: {"orders": [parent]},
+                ledger, intents, journal, lambda operation, payload: {"orders": [
+                    _protective_exit_parent(ref, client_order_id=leg_ref, filled_at=filled_at)
+                ]},
             )
 
             self.assertEqual(updates, [])

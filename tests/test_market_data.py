@@ -7,8 +7,11 @@ from unittest.mock import patch
 import market_data
 
 
-class _Response:
+class _PayloadResponse:
     status = 200
+
+    def __init__(self, payload):
+        self.payload = payload
 
     def __enter__(self):
         return self
@@ -17,33 +20,28 @@ class _Response:
         return False
 
     def read(self):
-        return json.dumps({
-            "status": "OK",
-            "results": [
-                {"o": 103, "h": 104, "l": 102, "c": 103.5, "v": 50, "t": 1788264000000},
-                {"o": 102, "h": 103, "l": 101, "c": 102.5, "v": 100, "t": 1788177600000},
-                {"o": 101, "h": 102, "l": 100, "c": 101.5, "v": 300, "t": 1788091200000},
-            ],
-        }).encode()
-
-
-class _GroupedResponse(_Response):
-    def read(self):
-        return json.dumps({
-            "status": "OK",
-            "results": [
-                {"T": "SPY", "c": 770.19, "t": 1788552000000},
-                {"T": "SNOW", "c": 337.18, "t": 1788552000000},
-            ],
-        }).encode()
-
-
-class _PayloadResponse(_GroupedResponse):
-    def __init__(self, payload):
-        self.payload = payload
-
-    def read(self):
         return json.dumps(self.payload).encode()
+
+
+def _daily_payload():
+    return {
+        "status": "OK",
+        "results": [
+            {"o": 103, "h": 104, "l": 102, "c": 103.5, "v": 50, "t": 1788264000000},
+            {"o": 102, "h": 103, "l": 101, "c": 102.5, "v": 100, "t": 1788177600000},
+            {"o": 101, "h": 102, "l": 100, "c": 101.5, "v": 300, "t": 1788091200000},
+        ],
+    }
+
+
+def _grouped_payload():
+    return {
+        "status": "OK",
+        "results": [
+            {"T": "SPY", "c": 770.19, "t": 1788552000000},
+            {"T": "SNOW", "c": 337.18, "t": 1788552000000},
+        ],
+    }
 
 
 class MarketDataTests(unittest.TestCase):
@@ -97,7 +95,7 @@ class MarketDataTests(unittest.TestCase):
 
     def test_synchronized_completed_close_prices_use_one_grouped_response(self):
         with patch("market_data.configured_massive_key", return_value="secret"), patch(
-            "market_data.urllib.request.urlopen", return_value=_GroupedResponse()
+            "market_data.urllib.request.urlopen", return_value=_PayloadResponse(_grouped_payload())
         ) as open_url:
             value = market_data.synchronized_completed_close_prices(
                 "SNOW", now_ms=1788609600000
@@ -161,7 +159,7 @@ class MarketDataTests(unittest.TestCase):
 
     def test_massive_volume_uses_header_and_completed_sessions(self):
         with patch("market_data.configured_massive_key", return_value="secret"), patch(
-            "market_data.urllib.request.urlopen", return_value=_Response()
+            "market_data.urllib.request.urlopen", return_value=_PayloadResponse(_daily_payload())
         ) as open_url:
             value = market_data.consolidated_average_volume(
                 "AAPL", now_ms=1788267600000
@@ -180,7 +178,7 @@ class MarketDataTests(unittest.TestCase):
 
     def test_massive_daily_bars_are_completed_normalized_and_chronological(self):
         with patch("market_data.configured_massive_key", return_value="secret"), patch(
-            "market_data.urllib.request.urlopen", return_value=_Response()
+            "market_data.urllib.request.urlopen", return_value=_PayloadResponse(_daily_payload())
         ):
             bars = market_data.consolidated_daily_bars("AAPL", now_ms=1788267600000)
         self.assertEqual(bars, [

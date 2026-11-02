@@ -80,15 +80,6 @@ def listish(x:Any)->list[Any]:
                 vals=list(x[k].values());return vals[0] if vals and isinstance(vals[0],list) else vals
     return []
 
-def symbol_dict(x:Any,symbol:str)->dict[str,Any]:
-    if isinstance(x,dict):
-        if symbol in x and isinstance(x[symbol],dict):return x[symbol]
-        for v in x.values():
-            found=symbol_dict(v,symbol)
-            if found:return found
-        if any(k in x for k in ("bid_price","ask_price","bp","ap","tradable","asset_class")):return x
-    return {}
-
 def symbol_bars(x:Any,symbol:str)->list[dict[str,Any]]:
     if isinstance(x,dict):
         if symbol in x and isinstance(x[symbol],list):return [b for b in x[symbol] if isinstance(b,dict)]

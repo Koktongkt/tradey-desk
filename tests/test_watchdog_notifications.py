@@ -384,52 +384,36 @@ class NotificationWorkflowTests(unittest.TestCase):
         self.assertIn('daily summary', calls[0])
         self.assertTrue(store.pending_alerts(case.db))
 
-    def test_operational_read_failure_notifies_that_current_protection_cannot_be_checked(self):
+    def test_current_protection_failure_notice(self):
+        from contextlib import ExitStack
         from test_watchdog_workflow import WorkflowCase, NOW
         from unittest.mock import patch
         from watchdog.cli import run_watchdog
-        case = WorkflowCase()
-        case.setUp()
-        self.addCleanup(case.tearDown)
-        store.apply_notification_policy(case.db)
-        calls = []
-        with patch('watchdog.cli.operational.read_operational', side_effect=OSError('SECRET')):
-            result = run_watchdog('mechanical', case.root, case.output_root,
-                                 case.adapters(transport=lambda alert, text: calls.append(text)), NOW)
-        self.assertEqual('failed', result['status'])
-        self.assertEqual(1, len(calls))
-        self.assertIn('protection could not be checked', calls[0])
-
-    def test_commit_failure_notifies_without_fabricating_run_or_receipt(self):
-        from test_watchdog_workflow import WorkflowCase, NOW
-        from unittest.mock import patch
-        from watchdog.cli import run_watchdog
-        case = WorkflowCase()
-        case.setUp()
-        self.addCleanup(case.tearDown)
-        store.apply_notification_policy(case.db)
-        calls = []
-        with patch('watchdog.cli.commit_observation', side_effect=ValueError('run_identity_conflict')):
-            result = run_watchdog('mechanical', case.root, case.output_root,
-                                 case.adapters(transport=lambda alert, text: calls.append(text)), NOW)
-        self.assertEqual('failed', result['status'])
-        self.assertEqual(1, len(calls))
-        self.assertEqual({}, store.read_report(case.db))
-
-    def test_budget_failure_does_not_silence_current_protection_check_failure(self):
-        from test_watchdog_workflow import WorkflowCase, NOW
-        from watchdog.cli import run_watchdog
-        case = WorkflowCase()
-        case.setUp()
-        self.addCleanup(case.tearDown)
-        store.apply_notification_policy(case.db)
-        calls = []
-        ticks = iter((0, 1000))
-        result = run_watchdog('mechanical', case.root, case.output_root,
-                             case.adapters(clock=lambda: next(ticks, 1000), transport=lambda alert, text: calls.append(text)), NOW)
-        self.assertEqual('budget_exceeded', result['status'])
-        self.assertEqual(1, len(calls))
-        self.assertIn('protection could not be checked', calls[0])
+        for label, target, error, status in (
+            ('operational_read', 'watchdog.cli.operational.read_operational', OSError('SECRET'), 'failed'),
+            ('commit', 'watchdog.cli.commit_observation', ValueError('run_identity_conflict'), 'failed'),
+            ('budget', None, None, 'budget_exceeded'),
+        ):
+            with self.subTest(case=label), ExitStack() as stack:
+                case = WorkflowCase()
+                case.setUp()
+                stack.callback(case.tearDown)
+                store.apply_notification_policy(case.db)
+                calls = []
+                overrides: dict = dict(transport=lambda alert, text: calls.append(text))
+                if target is not None:
+                    stack.enter_context(patch(target, side_effect=error))
+                else:
+                    ticks = iter((0, 1000))
+                    overrides['clock'] = lambda: next(ticks, 1000)
+                result = run_watchdog('mechanical', case.root, case.output_root,
+                                     case.adapters(**overrides), NOW)
+                self.assertEqual(status, result['status'])
+                self.assertEqual(1, len(calls))
+                if label == 'commit':
+                    self.assertEqual({}, store.read_report(case.db))
+                else:
+                    self.assertIn('protection could not be checked', calls[0])
 
     def test_real_run_broker_failure_notifies_once_under_policy_without_observation(self):
         from test_watchdog_workflow import WorkflowCase, NOW

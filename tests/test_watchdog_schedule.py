@@ -38,22 +38,16 @@ class MechanicalEligibilityTests(TestCase):
         self.assertEqual(reasons, [])
         self.assertEqual(day, '2026-10-07')
 
-    def test_outside_session_is_silent_no_op_with_typed_reason(self):
-        # 21:05 UTC = 17:05 EDT is after the close.
-        ok, reasons, _ = eligibility('mechanical', utc(2026, 10, 7, 21, 5), [session('2026-10-07')])
-        self.assertFalse(ok)
-        self.assertIn('outside_session', reasons)
-
-    def test_wrong_minute_is_not_eligible_even_inside_session(self):
-        ok, reasons, _ = eligibility('mechanical', utc(2026, 10, 7, 14, 6), [session('2026-10-07')])
-        self.assertFalse(ok)
-        self.assertIn('not_scheduled_slot', reasons)
-
-    def test_mechanical_requires_in_session_not_just_calendar_day(self):
-        # :05 slot before the 09:30 open must be a no-op.
-        ok, reasons, _ = eligibility('mechanical', utc(2026, 10, 7, 13, 5), [session('2026-10-07')])
-        self.assertFalse(ok)
-        self.assertIn('outside_session', reasons)
+    def test_mechanical_rejections(self):
+        for label, hour, minute, reason in (
+            ('after_close', 21, 5, 'outside_session'),
+            ('wrong_minute', 14, 6, 'not_scheduled_slot'),
+            ('before_open', 13, 5, 'outside_session'),
+        ):
+            with self.subTest(case=label):
+                ok, reasons, _ = eligibility('mechanical', utc(2026, 10, 7, hour, minute), [session('2026-10-07')])
+                self.assertFalse(ok)
+                self.assertIn(reason, reasons)
 
 
 class DailyEligibilityTests(TestCase):
@@ -84,11 +78,6 @@ class DailyEligibilityTests(TestCase):
         self.assertFalse(ok)
         self.assertIn('not_scheduled_slot', reasons)
 
-    def test_daily_outside_any_session_day(self):
-        ok, reasons, _ = eligibility('daily', utc(2026, 10, 7, 20, 15), [session('2026-10-06')])
-        self.assertFalse(ok)
-        self.assertIn('no_session_for_run_date', reasons)
-
 
 class CalendarEdgeTests(TestCase):
     def test_early_close_1300_new_york_daily_slot(self):
@@ -98,29 +87,26 @@ class CalendarEdgeTests(TestCase):
         self.assertEqual(reasons, [])
         self.assertEqual(day, '2026-11-27')
 
-    def test_dst_end_november_est_close_slot(self):
-        # After DST ends, 16:00 EST = 21:00 UTC; slot 21:15 UTC.
-        ok, reasons, _ = eligibility('daily', utc(2026, 11, 2, 21, 15), [session('2026-11-02')])
-        self.assertTrue(ok)
-        self.assertEqual(reasons, [])
+    def test_dst_daily_close_slots(self):
+        for label, month, day, hour, date in (
+            ('november_est', 11, 2, 21, '2026-11-02'),
+            ('march_edt', 3, 9, 20, '2026-03-09'),
+        ):
+            with self.subTest(case=label):
+                ok, reasons, _ = eligibility('daily', utc(2026, month, day, hour, 15), [session(date)])
+                self.assertTrue(ok)
+                self.assertEqual(reasons, [])
 
-    def test_dst_start_march_edt_close_slot(self):
-        # 16:00 EDT = 20:00 UTC; slot 20:15 UTC.
-        ok, reasons, _ = eligibility('daily', utc(2026, 3, 9, 20, 15), [session('2026-03-09')])
-        self.assertTrue(ok)
-        self.assertEqual(reasons, [])
-
-    def test_weekend_has_no_session(self):
-        # 2026-10-10 is a Saturday; the calendar has only the Friday session.
-        ok, reasons, _ = eligibility('mechanical', utc(2026, 10, 10, 14, 5), [session('2026-10-09')])
-        self.assertFalse(ok)
-        self.assertIn('no_session_for_run_date', reasons)
-
-    def test_holiday_absent_from_calendar_is_not_eligible(self):
-        # Calendar provider simply omits the holiday row.
-        ok, reasons, _ = eligibility('daily', utc(2026, 12, 25, 18, 15), [session('2026-12-24')])
-        self.assertFalse(ok)
-        self.assertIn('no_session_for_run_date', reasons)
+    def test_missing_run_date_session(self):
+        for label, mode, clock, calendar_date in (
+            ('ordinary_missing_day', 'daily', (2026, 10, 7, 20, 15), '2026-10-06'),
+            ('weekend', 'mechanical', (2026, 10, 10, 14, 5), '2026-10-09'),
+            ('holiday', 'daily', (2026, 12, 25, 18, 15), '2026-12-24'),
+        ):
+            with self.subTest(case=label):
+                ok, reasons, _ = eligibility(mode, utc(*clock), [session(calendar_date)])
+                self.assertFalse(ok)
+                self.assertIn('no_session_for_run_date', reasons)
 
     def test_missing_calendar_is_typed_coverage_gap_no_guess(self):
         for bad in (None, [], 'calendar', [dict(date='2026-10-07')]):

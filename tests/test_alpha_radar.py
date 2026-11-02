@@ -1722,7 +1722,9 @@ class BundleRescueTests(unittest.TestCase):
         self.assertEqual(rows[0]["reason"],"bundle_rescue_unavailable")
 
 class _RawResponse:
-    def __init__(self, raw): self.raw = raw
+    def __init__(self, raw, *, final_url=None):
+        self.raw = raw
+        if final_url is not None: self.geturl = lambda: final_url
     def __enter__(self): return self
     def __exit__(self,*_): return False
     def read(self,_limit): return self.raw() if callable(self.raw) else self.raw
@@ -1952,12 +1954,10 @@ class RetrievalHardeningTests(unittest.TestCase):
 
     def test_direct_fetch_rejects_cross_publisher_redirect_without_gateway_laundering(self):
         requested="https://www.reuters.com/story"
-        class Response:
-            def __enter__(self):return self
-            def __exit__(self,*_args):return False
-            def geturl(self):return "https://www.businesswire.com/redirected"
-            def read(self,_limit):return b"<title>Misattributed</title><article>"+b"evidence "*100+b"</article>"
-        with patch.object(alpha_radar,"safe_urlopen",return_value=Response()), patch.object(
+        response = _RawResponse(
+            b"<title>Misattributed</title><article>"+b"evidence "*100+b"</article>",
+            final_url="https://www.businesswire.com/redirected")
+        with patch.object(alpha_radar,"safe_urlopen",return_value=response), patch.object(
             alpha_radar,"fetch_source_via_gateway"
         ) as fallback:
             diagnostics=[]
@@ -1967,12 +1967,10 @@ class RetrievalHardeningTests(unittest.TestCase):
         fallback.assert_not_called()
 
     def test_direct_fetch_accepts_same_registered_domain_redirect(self):
-        class Response:
-            def __enter__(self):return self
-            def __exit__(self,*_args):return False
-            def geturl(self):return "https://www.reuters.com/story"
-            def read(self,_limit):return b"<title>Story</title><article>"+b"evidence "*100+b"</article>"
-        with patch.object(alpha_radar,"safe_urlopen",return_value=Response()), patch.object(
+        response = _RawResponse(
+            b"<title>Story</title><article>"+b"evidence "*100+b"</article>",
+            final_url="https://www.reuters.com/story")
+        with patch.object(alpha_radar,"safe_urlopen",return_value=response), patch.object(
             alpha_radar,"is_safe_public_url",return_value=True
         ):
             page=alpha_radar.fetch_source("https://reuters.com/story")
