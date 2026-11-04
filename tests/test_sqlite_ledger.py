@@ -441,6 +441,90 @@ ledger.append_jsonl(path, {"event": stage})
             module.migrate_jsonl(root, [custom])
             self.assertEqual(module.read_jsonl_readonly(custom), expected)
 
+    def test_stream_readonly_scopes_projection_checks_without_changing_global_reader(self):
+        module = self.module()
+        self.assertTrue(callable(getattr(module, 'read_jsonl_stream_readonly', None)),
+                        'missing scoped canonical read API')
+        for migrated in (False, True):
+            for damage in ('malformed', 'import_gap'):
+                with self.subTest(migrated=migrated, damage=damage), tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    target = root / 'private/opportunity_policy.jsonl'
+                    unrelated = root / 'order_ledger.jsonl'
+                    if migrated:
+                        module.append_jsonl(unrelated, {'status': 'new'})
+                    with unrelated.open('a') as output:
+                        output.write('not-json\n' if damage == 'malformed' else '{"status":"placed"}\n')
+                    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob('*') if p.is_file()}
+                    self.assertEqual(module.read_jsonl_stream_readonly(target), [])
+                    if damage == 'malformed' or migrated:
+                        with self.assertRaises(module.LedgerError):
+                            module.read_jsonl_readonly(target)
+                    self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
+                    created = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and p not in before}
+                    self.assertLessEqual(created, {'private/trading_journal.sqlite3.lock'})
+
+    def test_stream_readonly_rejects_requested_history_damage_without_repair(self):
+        module = self.module()
+        self.assertTrue(callable(getattr(module, 'read_jsonl_stream_readonly', None)),
+                        'missing scoped canonical read API')
+        for damage in ('missing', 'shortened', 'malformed', 'rewritten', 'tail', 'digest', 'sequence'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                target = root / 'private/opportunity_policy.jsonl'
+                module.append_jsonl(target, {'record_type': 'activation', 'policy_version': 1})
+                module.append_jsonl(target, {'record_type': 'activation', 'policy_version': 2})
+                self.assertEqual(len(module.read_jsonl_stream_readonly(target)), 2)
+                if damage == 'missing':
+                    target.unlink()
+                elif damage == 'shortened':
+                    target.write_text(target.read_text().splitlines()[0] + '\n')
+                elif damage == 'malformed':
+                    target.write_text('not-json\n')
+                elif damage == 'rewritten':
+                    target.write_text('{"record_type":"other"}\n' * 2)
+                elif damage == 'tail':
+                    with target.open('a') as output:
+                        output.write('{"record_type":"extra"}\n')
+                else:
+                    with closing(sqlite3.connect(module.database_path(target))) as connection:
+                        column, value = ('record_sha256', '0' * 64) if damage == 'digest' else ('sequence', 3)
+                        connection.execute(f'UPDATE ledger_entries SET {column}=? WHERE sequence=2', (value,))
+                        connection.commit()
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob('*') if p.is_file()}
+                expected = module.LedgerRepairRequired if damage == 'tail' else module.LedgerIntegrityError
+                with self.assertRaises(expected):
+                    module.read_jsonl_stream_readonly(target)
+                self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
+
+    def test_stream_readonly_retains_global_database_health_and_lock_checks(self):
+        module = self.module()
+        self.assertTrue(callable(getattr(module, 'read_jsonl_stream_readonly', None)),
+                        'missing scoped canonical read API')
+        from unittest.mock import patch
+        for damage in ('schema', 'database', 'wal', 'journal', 'lock'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                target = root / 'private/opportunity_policy.jsonl'
+                module.append_jsonl(root / 'order_ledger.jsonl', {'status': 'new'})
+                db = module.database_path(target)
+                if damage == 'schema':
+                    with closing(sqlite3.connect(db)) as connection:
+                        connection.execute('PRAGMA user_version=99')
+                elif damage == 'database':
+                    db.write_bytes(b'not a database')
+                elif damage in ('wal', 'journal'):
+                    Path(str(db) + '-' + damage).write_bytes(b'recovery needed')
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob('*') if p.is_file()}
+                if damage == 'lock':
+                    with patch.object(module.fcntl, 'flock', side_effect=OSError('lock unavailable')):
+                        with self.assertRaises(OSError):
+                            module.read_jsonl_stream_readonly(target)
+                else:
+                    with self.assertRaises(module.LedgerError):
+                        module.read_jsonl_stream_readonly(target)
+                self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
+
     def test_operational_readers_and_writers_use_shared_sqlite_ledger_boundary(self):
         import alpha_radar
         import autotrader

@@ -69,6 +69,7 @@
    "test_focused_pipeline",
    "test_focused_handoff",
    "test_rescue_fairness",
+   "test_opportunity_activation",
    "test_order_notifications",
    "test_pending_capacity",
    "test_pipeline",

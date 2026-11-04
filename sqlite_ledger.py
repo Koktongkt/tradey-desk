@@ -29,6 +29,7 @@ DEFAULT_STREAMS = (
     "trade_journal.jsonl",
     "private/blocker_diagnostics.jsonl",
     "private/bridge_diagnostics.jsonl",
+    "private/opportunity_policy.jsonl",
     "private/order_intents.jsonl",
     "private/order_notifications.jsonl",
     "private/protection_orders.jsonl",
@@ -321,7 +322,21 @@ def append_jsonl(path: Path | str, row: dict) -> None:
 
 
 def read_jsonl_readonly(path: Path | str) -> list[dict]:
-    """Strict integrity read of all ledger projections, with zero business writes.
+    """Strict whole-ledger integrity read, with zero business writes."""
+    return _read_jsonl_readonly(path, whole_ledger=True)
+
+
+def read_jsonl_stream_readonly(path: Path | str) -> list[dict]:
+    """Validate one projection against canonical history without importing it.
+
+    Unrelated projection damage/import gaps belong to their own consumers.
+    Database-wide structural health and recovery checks still apply.
+    """
+    return _read_jsonl_readonly(path, whole_ledger=False)
+
+
+def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
+    """Shared locked observation with either global or requested projection scope.
 
     Cooperating writers hold the same lock. Reject outstanding recovery/WAL
     state rather than creating SQLite shm/journals or ignoring uncheckpointed
@@ -338,7 +353,9 @@ def read_jsonl_readonly(path: Path | str) -> list[dict]:
         # Migration's canonical manifest plus the explicit request define the
         # projection scope; SQLite adds every registered custom stream below.
         # A .jsonl extension alone does not register archives or test artifacts.
-        names = set(DEFAULT_STREAMS) | {_stream_name(path, root)}
+        names = {_stream_name(path, root)}
+        if whole_ledger:
+            names.update(DEFAULT_STREAMS)
         connection = None
         try:
             if db.exists():
@@ -352,7 +369,8 @@ def read_jsonl_readonly(path: Path | str) -> list[dict]:
                     raise LedgerIntegrityError('database integrity check failed')
                 if connection.execute('PRAGMA foreign_key_check').fetchall():
                     raise LedgerIntegrityError('foreign key integrity check failed')
-                names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
+                if whole_ledger:
+                    names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
             result = []
             repair = False
             for name in sorted(names):

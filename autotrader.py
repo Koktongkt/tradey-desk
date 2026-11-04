@@ -1349,6 +1349,13 @@ def _run_locked(args: argparse.Namespace) -> int:
                 update=exit_updates[0]
                 print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")
                 return 0
+        from opportunity_activation import (
+            ActivationStateError, SUPPORTED_POLICY_VERSION, require_supported_activation,
+        )
+        try:
+            require_supported_activation(ROOT, supported=SUPPORTED_POLICY_VERSION)
+        except ActivationStateError as error:
+            print("BLOCKER " + str(error)); return 2
         candidates=read_jsonl(ROOT/"candidates.jsonl", strict=True)
         if not candidates:
             print("BLOCKER no_candidate"); return 2
