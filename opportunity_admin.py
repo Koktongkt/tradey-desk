@@ -498,20 +498,25 @@ def _claim_store_rows(root: Path) -> list[dict]:
 
 
 def record_reopening_claim(root: Path, claim: ReopeningClaim) -> dict:
-    """Trusted persistence of one sealed claim; idempotent on replay."""
+    """Trusted persistence of one sealed claim; idempotent on replay.
+
+    The check-then-append runs under the entry lock like every other
+    mutation, so concurrent invocations cannot both append the same row.
+    """
     if not claim_sealed(claim):
         raise OpportunityAdminError('claim_seal_invalid')
     row = {'record_type': 'reopening_claim', 'schema_version': 1,
            'timestamp': _utc_text(dt.datetime.now(dt.timezone.utc)),
            'claim': serialize_reopening_claim(claim),
            'claim_sha256': claim_digest(claim)}
-    if any(r.get('claim_sha256') == row['claim_sha256']
-           for r in _claim_store_rows(root)):
-        return {'recorded': False, 'claim_sha256': row['claim_sha256']}
-    try:
-        storage.append_jsonl(Path(root) / CLAIMS_STREAM, row)
-    except (storage.LedgerError, OSError) as error:
-        raise OpportunityAdminError('claim_append_failed') from error
+    with entry_state.lock(Path(root)):
+        if any(r.get('claim_sha256') == row['claim_sha256']
+               for r in _claim_store_rows(root)):
+            return {'recorded': False, 'claim_sha256': row['claim_sha256']}
+        try:
+            storage.append_jsonl(Path(root) / CLAIMS_STREAM, row)
+        except (storage.LedgerError, OSError) as error:
+            raise OpportunityAdminError('claim_append_failed') from error
     return {'recorded': True, 'claim_sha256': row['claim_sha256']}
 
 
@@ -524,13 +529,14 @@ def record_observation_evidence(root: Path,
            'timestamp': _utc_text(dt.datetime.now(dt.timezone.utc)),
            'observation': _lineage(observation),
            'observation_sha256': observation_digest(observation)}
-    if any(r.get('observation_sha256') == row['observation_sha256']
-           for r in _claim_store_rows(root)):
-        return {'recorded': False, 'observation_sha256': row['observation_sha256']}
-    try:
-        storage.append_jsonl(Path(root) / CLAIMS_STREAM, row)
-    except (storage.LedgerError, OSError) as error:
-        raise OpportunityAdminError('evidence_append_failed') from error
+    with entry_state.lock(Path(root)):
+        if any(r.get('observation_sha256') == row['observation_sha256']
+               for r in _claim_store_rows(root)):
+            return {'recorded': False, 'observation_sha256': row['observation_sha256']}
+        try:
+            storage.append_jsonl(Path(root) / CLAIMS_STREAM, row)
+        except (storage.LedgerError, OSError) as error:
+            raise OpportunityAdminError('evidence_append_failed') from error
     return {'recorded': True, 'observation_sha256': row['observation_sha256']}
 
 
@@ -722,7 +728,12 @@ def commit_reopening_claim(root: Path, claim: ReopeningClaim, *,
         if lineage is not None:
             for grant in index.grants.values():
                 if grant.get('lineage_sha256') == lineage:
-                    return grant['allowance_id']  # Lost-ack replay.
+                    # Lost-ack replay: the fast path enforces the same
+                    # dossier binding the slow path enforces.
+                    if index.dossier_allowances.get(dossier_hash) != \
+                            grant.get('prior_allowance_id'):
+                        raise OpportunityAdminError('claim_dossier_mismatch')
+                    return grant['allowance_id']
         _verify_claim_against_index(index, claim, now=now)
         if index.dossier_allowances.get(dossier_hash) != claim.prior_allowance_id:
             raise OpportunityAdminError('claim_dossier_mismatch')

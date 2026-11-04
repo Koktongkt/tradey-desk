@@ -693,5 +693,78 @@ class OpportunityAdminTests(unittest.TestCase):
                          state.allowance_identifier(resolution.event_id, 1))
 
 
+    def test_record_claim_and_evidence_append_inside_entry_lock(self):
+        """M1: the claims-stream check-then-append executes inside the
+        entry_state lock, so concurrent invocations serialize their duplicate
+        check against the append (sequential proof: instrumented lock observed
+        held across the whole check-then-append window)."""
+        import contextlib
+        import unittest.mock
+        import entry_state
+        import opportunity_admin as admin
+        import opportunity_state as state
+        resolution = self.build_history()
+        claim = self.sealed_claim(resolution)
+        observation = self.observation(resolution)
+        real_lock = entry_state.lock
+        held = []
+
+        @contextlib.contextmanager
+        def recording_lock(root):
+            with real_lock(root):
+                held.append(True)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        for record_call in (lambda: admin.record_reopening_claim(self.root, claim),
+                            lambda: admin.record_observation_evidence(
+                                self.root, observation)):
+            with unittest.mock.patch.object(entry_state, 'lock', recording_lock):
+                original_append = storage.append_jsonl
+
+                def locked_append(path, row, _original=original_append):
+                    self.assertTrue(held,
+                                    'claims append happened outside the entry lock')
+                    return _original(path, row)
+
+                with unittest.mock.patch.object(storage, 'append_jsonl',
+                                                locked_append):
+                    result = record_call()
+            self.assertTrue(result['recorded'])
+        # Sequential replay stays idempotent under the same lock discipline.
+        self.assertEqual(
+            len(storage.read_jsonl_stream_readonly(self.root / CLAIMS)), 2)
+        self.assertEqual(admin.record_reopening_claim(self.root, claim)['recorded'],
+                         False)
+        self.assertEqual(
+            len(storage.read_jsonl_stream_readonly(self.root / CLAIMS)), 2)
+
+    def test_replay_with_mismatched_dossier_fails_typed(self):
+        """M2: the lost-ack replay fast path enforces the same dossier
+        binding the slow path enforces."""
+        import opportunity_admin as admin
+        resolution = self.build_history()
+        claim = self.sealed_claim(resolution)
+        admin.record_reopening_claim(self.root, claim)
+        first = admin.commit_reopening_claim(self.root, claim,
+                                             dossier_hash=DOSSIER_A, now=self.now)
+        with self.assertRaises(admin.OpportunityAdminError) as caught:
+            admin.commit_reopening_claim(self.root, claim,
+                                         dossier_hash=DOSSIER_B, now=self.now)
+        self.assertIn('claim_dossier_mismatch', str(caught.exception))
+        # The replay refusal neither grants nor removes the durable allowance.
+        rows = storage.read_jsonl_stream_readonly(self.root / POLICY)
+        grants = [r for r in rows if r.get('record_type') == 'reopen_grant']
+        self.assertEqual(len(grants), 1)
+        self.assertEqual(grants[0]['allowance_id'], first)
+        # The correctly bound replay still returns the same allowance ID.
+        self.assertEqual(
+            admin.commit_reopening_claim(self.root, claim,
+                                         dossier_hash=DOSSIER_A, now=self.now),
+            first)
+
+
 if __name__ == '__main__':
     unittest.main()
