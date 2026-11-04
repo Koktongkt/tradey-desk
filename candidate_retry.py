@@ -12,11 +12,15 @@ RETRYABLE_EXECUTION_REASONS = frozenset({
 })
 
 
-def pre_submission_retryable(dossier_hash: str, reviews: list[dict], ledger_path: Path) -> bool:
+def pre_submission_retryable(dossier_hash: str, reviews: list[dict], ledger_path: Path,
+                             *, ledger_rows: list[dict] | None = None) -> bool:
     """Require an explicit retry marker, dual approval and a rejected order ledger.
 
     Any submission or uncertain broker state for this dossier makes reuse unsafe.
-    Missing or malformed ledgers cannot authorize a retry.
+    Missing or malformed ledgers cannot authorize a retry. Supplied
+    ``ledger_rows`` must come from the coherent canonical index (e.g. a
+    loaded snapshot) and undergo the unchanged exact proof below; without
+    supplied rows the ordinary strict reader contract applies.
     """
     if not isinstance(dossier_hash, str) or not dossier_hash:
         return False
@@ -46,10 +50,13 @@ def pre_submission_retryable(dossier_hash: str, reviews: list[dict], ledger_path
             or any(not isinstance(r, dict) or r.get("decision") != "APPROVE" for r in decisions)):
         return False
     ids = {r.get("evidence_id") for r in matching if isinstance(r.get("evidence_id"), str)}
-    try:
-        ledger = read_jsonl(ledger_path, strict=True)
-    except Exception:
-        return False
+    if ledger_rows is not None:
+        ledger = [r for r in ledger_rows if isinstance(r, dict)]
+    else:
+        try:
+            ledger = read_jsonl(ledger_path, strict=True)
+        except Exception:
+            return False
     linked = [r for r in ledger if isinstance(r, dict) and r.get("evidence_id") in ids]
     if not linked or any(r.get("status") not in {"proposed", "rejected"} for r in linked):
         return False

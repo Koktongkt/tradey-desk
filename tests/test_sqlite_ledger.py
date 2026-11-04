@@ -564,6 +564,74 @@ ledger.append_jsonl(path, {"event": stage})
                         module.read_jsonl_stream_readonly(target)
                 self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
 
+    def test_stream_snapshot_readonly_returns_typed_watermarked_rows_without_writes(self):
+        module = self.module()
+        self.assertTrue(callable(getattr(module, 'read_stream_snapshot_readonly', None)),
+                        'missing canonical snapshot read API')
+        for migrated in (False, True):
+            with self.subTest(migrated=migrated), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                policy = root / 'private/opportunity_policy.jsonl'
+                first = {'record_type': 'activation', 'policy_version': 1}
+                second = {'record_type': 'identity_resolution', 'value': 2}
+                for row in (first, second):
+                    module.append_jsonl(policy, row)
+                if migrated:
+                    module.append_jsonl(root / 'order_ledger.jsonl', {'status': 'new'})
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                          for p in root.rglob('*') if p.is_file()}
+                snapshot = module.read_stream_snapshot_readonly(
+                    root, ('private/opportunity_policy.jsonl',))
+                self.assertIsInstance(snapshot, module.LedgerSnapshot)
+                self.assertEqual(snapshot.root, root.resolve())
+                self.assertEqual(snapshot.rows['private/opportunity_policy.jsonl'],
+                                 (first, second))
+                self.assertEqual(
+                    snapshot.watermark,
+                    (('private/opportunity_policy.jsonl', 2,
+                      __import__('hashlib').sha256(
+                          (module._canonical(first) + module._canonical(second)).encode()
+                      ).hexdigest()),),
+                )
+                # Missing requested streams and absent databases stay typed and empty.
+                empty = module.read_stream_snapshot_readonly(
+                    root, ('private/research_diagnostics.jsonl',))
+                self.assertEqual(empty.rows['private/research_diagnostics.jsonl'], ())
+                self.assertEqual(empty.watermark,
+                                 (('private/research_diagnostics.jsonl', 0,
+                                   __import__('hashlib').sha256(b'').hexdigest()),))
+                # The typed rows view is immutable.
+                with self.assertRaises(TypeError):
+                    snapshot.rows['private/opportunity_policy.jsonl'] = ()
+                self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns)
+                                  for p in root.rglob('*') if p.is_file()}, before)
+
+    def test_stream_snapshot_readonly_rejects_history_and_health_damage(self):
+        module = self.module()
+        for damage in ('missing', 'malformed', 'tail', 'wal'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                target = root / 'private/opportunity_policy.jsonl'
+                module.append_jsonl(target, {'record_type': 'activation', 'policy_version': 1})
+                if damage == 'missing':
+                    target.unlink()
+                elif damage == 'malformed':
+                    target.write_text('not-json\n')
+                elif damage == 'tail':
+                    with target.open('a') as output:
+                        output.write('{"record_type":"extra"}\n')
+                else:
+                    Path(str(module.database_path(target)) + '-wal').write_bytes(b'x')
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                          for p in root.rglob('*') if p.is_file()}
+                expected = (module.LedgerRepairRequired if damage == 'tail'
+                            else module.LedgerError)
+                with self.assertRaises(expected):
+                    module.read_stream_snapshot_readonly(
+                        root, ('private/opportunity_policy.jsonl',))
+                self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns)
+                                  for p in root.rglob('*') if p.is_file()}, before)
+
     def test_operational_readers_and_writers_use_shared_sqlite_ledger_boundary(self):
         import alpha_radar
         import autotrader

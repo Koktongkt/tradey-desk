@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+from types import MappingProxyType
 from typing import Iterable
 
 
@@ -337,6 +339,102 @@ def read_jsonl_stream_readonly(path: Path | str) -> list[dict]:
     return _read_jsonl_readonly(path, whole_ledger=False)
 
 
+@dataclasses.dataclass(frozen=True)
+class LedgerSnapshot:
+    """Typed immutable multi-stream read of canonical ledger history.
+
+    ``rows`` maps each requested stream to its validated record tuple (an
+    immutable mapping); ``watermark`` carries one ``(stream, sequence,
+    digest)`` entry per requested stream, where the digest is the canonical
+    SHA-256 of the concatenated stored payloads.
+    """
+
+    root: Path
+    rows: dict
+    watermark: tuple
+
+    def __post_init__(self):
+        object.__setattr__(self, "rows", MappingProxyType(
+            {name: tuple(rows) for name, rows in self.rows.items()}))
+
+
+def _readonly_connection(db: Path) -> sqlite3.Connection:
+    """Shared read-only immutable view after health/recovery validation."""
+    if any(p.exists() and p.stat().st_size for p in
+           (Path(str(db) + '-wal'), Path(str(db) + '-journal'))):
+        raise LedgerRepairRequired('storage recovery required')
+    connection = sqlite3.connect(db.as_uri() + '?mode=ro&immutable=1', uri=True)
+    try:
+        if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
+            raise LedgerIntegrityError('unsupported ledger schema')
+        if connection.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+            raise LedgerIntegrityError('database integrity check failed')
+        if connection.execute('PRAGMA foreign_key_check').fetchall():
+            raise LedgerIntegrityError('foreign key integrity check failed')
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
+def _stream_digest(payloads: list[str]) -> str:
+    return hashlib.sha256(''.join(payloads).encode('utf-8')).hexdigest()
+
+
+def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) -> LedgerSnapshot:
+    """Read requested streams as one coherent validated snapshot, writing nothing.
+
+    Reuses the canonical projection/database validators under the writer lock
+    without schema-initializing connections. Unrelated projection damage
+    outside the requested streams is ignored; damage inside them requires the
+    operational import stage.
+    """
+    root = Path(root).resolve()
+    names = sorted({str(name) for name in streams})
+    if not names:
+        raise LedgerIntegrityError('no ledger streams requested')
+    db = database_path(root / 'order_ledger.jsonl')
+    lock_path = _lock_path(db)
+    _ensure_parent(lock_path)
+    with lock_path.open('a+') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        connection = None
+        try:
+            if db.exists():
+                connection = _readonly_connection(db)
+            rows: dict[str, tuple[dict, ...]] = {}
+            watermark: list[tuple[str, int, str]] = []
+            repair = False
+            for name in names:
+                selected = root / name
+                if _stream_name(selected, root) != name:
+                    raise LedgerIntegrityError('invalid ledger stream path')
+                projected = _parse_projection(selected, strict=True)
+                canonical = [_canonical(row) for row in projected]
+                stored = []
+                if connection is not None:
+                    stored = _database_rows(connection, name)
+                    sequences = [r[0] for r in connection.execute(
+                        'SELECT sequence FROM ledger_entries WHERE stream=? ORDER BY sequence',
+                        (name,))]
+                    if sequences != list(range(1, len(stored) + 1)):
+                        raise LedgerIntegrityError('invalid ledger sequence')
+                    if len(canonical) < len(stored) or canonical[:len(stored)] != stored:
+                        raise LedgerIntegrityError('compatibility projection diverged')
+                    repair |= len(canonical) != len(stored)
+                authoritative = stored if connection is not None else canonical
+                rows[name] = tuple(projected)
+                watermark.append((name, len(authoritative), _stream_digest(authoritative)))
+            if repair:
+                raise LedgerRepairRequired('projection import required')
+            return LedgerSnapshot(root, rows, tuple(watermark))
+        except sqlite3.Error as error:
+            raise LedgerIntegrityError('database unreadable') from error
+        finally:
+            if connection is not None:
+                connection.close()
+
+
 def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
     """Shared locked observation with either global or requested projection scope.
 
@@ -361,18 +459,9 @@ def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
         connection = None
         try:
             if db.exists():
-                if any(p.exists() and p.stat().st_size for p in
-                       (Path(str(db) + '-wal'), Path(str(db) + '-journal'))):
-                    raise LedgerRepairRequired('storage recovery required')
-                connection = sqlite3.connect(db.as_uri() + '?mode=ro&immutable=1', uri=True)
-                if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
-                    raise LedgerIntegrityError('unsupported ledger schema')
-                if connection.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
-                    raise LedgerIntegrityError('database integrity check failed')
-                if connection.execute('PRAGMA foreign_key_check').fetchall():
-                    raise LedgerIntegrityError('foreign key integrity check failed')
-                if whole_ledger:
-                    names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
+                connection = _readonly_connection(db)
+            if whole_ledger and connection is not None:
+                names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
             result = []
             repair = False
             for name in sorted(names):
