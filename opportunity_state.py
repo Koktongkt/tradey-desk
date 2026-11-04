@@ -465,6 +465,46 @@ def _reopening_pending(index: OpportunityIndex, claim: object) -> bool:
     return claim.prior_allowance_id in index.allowance_events
 
 
+def _baseline_exclusions(root: Path) -> frozenset[str]:
+    """Strictly read the broker baseline; it is a required durable file.
+
+    Missing or malformed baseline state fails closed: a missing local record
+    is never broker authorization that a symbol is flat.
+    """
+    path = Path(root) / 'private' / 'broker_baseline.json'
+    if not path.exists():
+        raise OpportunityStateError('broker_baseline_missing')
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+        symbols = value.get('preexisting_symbols')
+        if not isinstance(symbols, list):
+            raise OpportunityStateError('broker_baseline_invalid')
+        return frozenset(str(symbol).upper() for symbol in symbols)
+    except (OSError, ValueError, AttributeError) as error:
+        raise OpportunityStateError('broker_baseline_invalid') from error
+
+
+def local_entry_exclusions(index: OpportunityIndex) -> frozenset[str]:
+    """Symbols locally excluded from new-entry consideration.
+
+    Derived from exact durable lineage only: baseline preexisting symbols plus
+    symbols of events whose allowance already carries a spending review.
+    Absence from this set is not broker authorization; execution still proves
+    broker truth before intent.
+    """
+    if not isinstance(index, OpportunityIndex):
+        raise OpportunityStateError('opportunity_policy_state_unavailable')
+    exclusions = set(_baseline_exclusions(index.snapshot.root))
+    for allowance, rows in index.allowance_reviews.items():
+        event_id = index.allowance_events.get(allowance)
+        if event_id is None or not any(_spends(r) for r in rows):
+            continue
+        resolution = index.resolutions.get(event_id)
+        if resolution is not None and resolution.issuer is not None:
+            exclusions.add(resolution.issuer.symbol.upper())
+    return frozenset(exclusions)
+
+
 def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
                    dossier_hash: str | None = None,
                    current_attempt: AttemptAuthorization | None = None,

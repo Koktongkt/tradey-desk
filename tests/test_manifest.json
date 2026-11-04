@@ -13,6 +13,7 @@
    "test_earnings_calendar",
    "test_enrichment_diagnostics",
    "test_entry_expiry",
+   "test_entry_eligibility",
    "test_execution_policy",
    "test_managed_reconciliation",
    "test_market_data",

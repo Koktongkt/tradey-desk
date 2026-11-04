@@ -5,10 +5,11 @@ Only this process receives Alpaca credentials. It emits broker data/order
 responses as JSON. It never calls a decision model.
 """
 from __future__ import annotations
-import asyncio,json,math,re,sys
+import asyncio,json,math,re,sys,time
 from datetime import datetime,timezone,timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+import entry_eligibility
 from fastmcp import Client
 from broker_credentials import configured_alpaca_env
 from broker_normalization import average_volume, find_mapping_with_keys, latest_quote_request, symbol_mapping, tool_arguments
@@ -222,6 +223,8 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         symbol=str((p.get("order") or {}).get("symbol") or p.get("symbol") or "").upper()
         if not symbol:raise RuntimeError("symbol required")
         now=datetime.now(timezone.utc)
+        read_started=now
+        monotonic_start=time.monotonic()
         account,positions,orders,asset,quote,technical_bars=await asyncio.gather(
             a.call("get_account_info"),
             a.call("get_all_positions"),
@@ -253,6 +256,18 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
         # Earnings never defines required coverage: the holding period and
         # actual-session blackout proof below do. Distance may be non-exact.
         calendar=await a.call("get_calendar",{"start":calendar_start.isoformat(),"end":calendar_end.isoformat(),"date_type":"TRADING"})
+        # The entry observation binds start/end wall times and the actual
+        # monotonic read window around the existing snapshot/review reads;
+        # request counts, order and concurrency are unchanged.
+        read_finished=datetime.now(timezone.utc)
+        # Entry-authorization reads are strict on both transport paths:
+        # malformed non-envelope position payloads never normalize to [].
+        if not isinstance(positions,list) or any(not isinstance(row,dict) for row in positions):
+            raise RuntimeError("managed_positions_unverified")
+        entry_observation=entry_eligibility.entry_observation(
+            started_at=read_started,finished_at=read_finished,
+            duration_seconds=time.monotonic()-monotonic_start,
+            positions=listish(positions),open_orders=listish(orders))
         # Only broker regular open/close fields can authorize entry deadlines.
         # Never substitute extended-session fields or guessed weekday hours.
         import entry_expiry
@@ -299,6 +314,7 @@ async def operation(a:Alpaca,op:str,p:dict[str,Any])->Any:
             "buying_power_semantics":"available_net",
             "positions":listish(positions),
             "open_orders":listish(orders),
+            "entry_observation":entry_observation,
             "asset":{"symbol":symbol,"tradable":ar.get("tradable"),"class":ar.get("class") or ar.get("asset_class"),"exchange":ar.get("exchange"),"name":ar.get("name"),"fractionable":ar.get("fractionable"),"leveraged":ar.get("leveraged",False),"inverse":ar.get("inverse",False)} if ar else None,
             "quote":{"bid":q.get("bid_price") or q.get("bp") or q.get("bid"),"ask":q.get("ask_price") or q.get("ap") or q.get("ask"),"timestamp":q.get("timestamp") or q.get("t")} if q else None,
             "quote_feed":"alpaca_iex",

@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -314,6 +315,94 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         }]})
         self.assertIn("30", rows[0]["prices"])
         self.assertIn("30", rows[0]["spy_prices"])
+
+
+    async def test_snapshot_emits_trusted_entry_observation_with_unchanged_call_budget(self):
+        calls = []
+        positions = [{"symbol": "AAPL", "side": "long", "qty": "2",
+                      "avg_entry_price": "100", "current_price": "110",
+                      "market_value": "220", "cost_basis": "200"}]
+
+        class EntryAlpaca(_FakeAlpaca):
+            async def call(self, name, values=None):
+                calls.append(name)
+                if name == "get_all_positions":
+                    return positions
+                return await super().call(name, values)
+
+        with patch("broker_mcp_bridge.datetime", _FixedDateTime), \
+                patch("broker_mcp_bridge.consolidated_daily_bars", return_value=[]):
+            snap = await broker_mcp_bridge.operation(EntryAlpaca(), "snapshot", {"symbol": "AAPL"})
+        self.assertEqual(calls, ["get_account_info", "get_all_positions", "get_orders",
+                                 "get_asset", "get_stock_latest_quote", "get_calendar"])
+        observation = snap["entry_observation"]
+        self.assertEqual(observation["version"], 1)
+        for stamp in (observation["started_at"], observation["finished_at"]):
+            self.assertTrue(stamp.endswith("Z"))
+        import hashlib
+        digest = hashlib.sha256(json.dumps(
+            positions[0], sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode()).hexdigest()
+        self.assertEqual(observation["position_digests"], [digest])
+        self.assertGreater(observation["duration_seconds"], 0.0)
+        self.assertTrue(observation["positions_complete"])
+        self.assertTrue(observation["open_orders_complete"])
+        # Broker-owned rebinding carries the observation to the decision layer.
+        import autotrader
+        self.assertIn("entry_observation", autotrader.BROKER_FIELDS)
+        rebound = autotrader.replace_broker_fields({}, snap)
+        self.assertEqual(rebound["entry_observation"], observation)
+        self.assertEqual(autotrader.authoritative_bundle({}, snap, snap["captured_at"])
+                         ["broker_snapshot"]["entry_observation"], observation)
+
+    async def test_snapshot_get_all_positions_transport_is_strict_on_both_paths(self):
+        # The old behavior normalized malformed non-envelope position payloads
+        # to an empty list via listish(); entry authorization must fail closed.
+        for label, raw in (("dict", {"unexpected": []}), ("mixed_list", [None]),
+                           ("string", "nope"), ("empty_object", {})):
+            class BadPositions(_FakeAlpaca):
+                async def call(self, name, values=None):
+                    if name == "get_all_positions":
+                        return raw
+                    return await super().call(name, values)
+            with self.subTest(case=label), \
+                    patch("broker_mcp_bridge.datetime", _FixedDateTime), \
+                    patch("broker_mcp_bridge.consolidated_daily_bars", return_value=[]):
+                with self.assertRaisesRegex(RuntimeError, "managed_positions_unverified"):
+                    await broker_mcp_bridge.operation(BadPositions(), "snapshot", {"symbol": "AAPL"})
+
+    async def test_snapshot_malformed_position_rows_fail_entry_observation(self):
+        for label, row in (("short", {"symbol": "AAPL", "side": "short", "qty": "5"}),
+                           ("missing_side", {"symbol": "AAPL", "qty": "5"}),
+                           ("zero_qty", {"symbol": "AAPL", "side": "long", "qty": "0"})):
+            class BadRow(_FakeAlpaca):
+                async def call(self, name, values=None):
+                    if name == "get_all_positions":
+                        return [row]
+                    return await super().call(name, values)
+            with self.subTest(case=label), \
+                    patch("broker_mcp_bridge.datetime", _FixedDateTime), \
+                    patch("broker_mcp_bridge.consolidated_daily_bars", return_value=[]):
+                with self.assertRaises(RuntimeError):
+                    await broker_mcp_bridge.operation(BadRow(), "snapshot", {"symbol": "AAPL"})
+
+    async def test_portfolio_and_reconciliation_position_consumers_keep_original_semantics(self):
+        # Dashboard projection still filters unsupported rows without raising.
+        class MixedPositions(_FakeAlpaca):
+            async def call(self, name, values=None):
+                if name == "get_all_positions":
+                    return [{"symbol": "AAPL", "side": "long", "qty": "2",
+                             "avg_entry_price": "100", "current_price": "110",
+                             "market_value": "220", "cost_basis": "200"},
+                            {"symbol": "../BAD", "qty": "nan"}]
+                if name == "get_stock_snapshot":
+                    return {"SPY": {"dailyBar": {"c": 505}, "prevDailyBar": {"c": 500}}}
+                if name == "get_account_info":
+                    return {"equity": "10100", "last_equity": "10000"}
+                return await super().call(name, values)
+
+        result = await broker_mcp_bridge.operation(MixedPositions(), "portfolio", {})
+        self.assertEqual([row["symbol"] for row in result["holdings"]], ["AAPL"])
 
 
 if __name__ == "__main__":

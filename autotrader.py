@@ -40,6 +40,7 @@ BROKER_FIELDS = (
     "quote_feed", "average_volume", "volume_feed", "technical_bars", "technical_bars_feed",
     "earnings_status", "earnings_sessions_away", "earnings_sessions_lower_bound", "trading_sessions",
     "trading_calendar", "cash_semantics", "buying_power_semantics",
+    "entry_observation",
 )
 CANDIDATE_BROKER_OWNED_MARKET_FIELDS = {"average_volume", "volume_feed", "quote", "quote_feed", "technical_bars", "technical_bars_feed", "earnings_status", "earnings_sessions_away", "earnings_sessions_lower_bound"}
 REQUIRED_PLAN_FIELDS = ("action", "symbol", "stop", "target", "horizon", "confidence", "thesis", "risk_reward")
