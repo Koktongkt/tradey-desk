@@ -243,13 +243,15 @@ class OpportunityStateTests(unittest.TestCase):
         import opportunity_state as state
         from opportunity_state import ConditionObservation, ReopeningClaim
         import datetime as dt
+        from decimal import Decimal
         resolution = self.build()
         self.write(REVIEWS, [
             fixtures.review_row(DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}]),
         ])
         index = state.load_index(self.root)
         observation = ConditionObservation(
-            event_id=resolution.event_id, metric='synthetic_metric', value=1,
+            event_id=resolution.event_id, metric='synthetic_metric',
+            value=Decimal('1'),
             units='units', source_kind='synthetic',
             observed_at=dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc),
             evidence_ref='private/opportunity_evidence/' + 'b' * 64 + '.json',
@@ -296,17 +298,77 @@ class OpportunityStateTests(unittest.TestCase):
                 {'timestamp': '2026-11-04T12:00:00Z', 'evidence_id': EVIDENCE_1,
                  'status': 'proposed'}]))
 
+    def test_condition_observation_value_is_decimal_typed(self):
+        import datetime as dt
+        from decimal import Decimal
+        from opportunity_state import ConditionObservation
+        observation = ConditionObservation(
+            event_id='event', metric='m', value=Decimal('1.25'), units='u',
+            source_kind='synthetic',
+            observed_at=dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc),
+            evidence_ref='private/opportunity_evidence/' + 'b' * 64 + '.json',
+            seal=None)
+        self.assertEqual(observation.value, Decimal('1.25'))
+        # Non-numeric persisted values fail closed at validation, not later.
+        for bad in (1, 1.25, '1.25', None):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    ConditionObservation(
+                        event_id='event', metric='m', value=bad, units='u',
+                        source_kind='synthetic',
+                        observed_at=dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc),
+                        evidence_ref='private/opportunity_evidence/' + 'b' * 64 + '.json',
+                        seal=None)
+
+    def test_attempt_seal_covers_full_index_state(self):
+        import tempfile
+        import opportunity_state as state
+        base_root = self.root
+        additions = [
+            fixtures.policy_row('document_alias', alias='synthetic-alias',
+                                event_id=fixtures.synthetic_resolution().event_id),
+            fixtures.policy_row('condition_approval', condition_id='cond-1',
+                                event_id=fixtures.synthetic_resolution().event_id,
+                                condition={'metric': 'synthetic_metric'}),
+            fixtures.policy_row('identity_resolution',
+                                unresolved={'dossier_hash': DOSSIER_B,
+                                            'status': 'unknown', 'reason': 'no_history'}),
+        ]
+        for row in additions:
+            with self.subTest(record=row['record_type']):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.root = Path(temporary.name)
+                resolution = self.build()
+                self.approve(resolution)
+                index = state.load_index(self.root)
+                attempt = state.authorize_current_attempt(
+                    index, dossier_hash=DOSSIER_A, proposal_hash=PROPOSAL_1,
+                    evidence_id=EVIDENCE_1)
+                own = state.event_decision(index, resolution, dossier_hash=DOSSIER_A,
+                                           current_attempt=attempt)
+                self.assertEqual(own.outcome, 'eligible')
+                # A policy record appended after authorization must invalidate
+                # the previously issued attempt seal (exact index state).
+                self.write(POLICY, [row])
+                fresh = state.load_index(self.root)
+                result = state.event_decision(fresh, resolution, dossier_hash=DOSSIER_A,
+                                              current_attempt=attempt)
+                self.assertEqual((result.outcome, result.reason),
+                                 ('skip', 'current_attempt_unauthorized'))
+        self.root = base_root
+
     def test_snapshot_watermark_coherence_and_no_writes(self):
         import opportunity_state as state
         resolution = self.build()
         index = state.load_index(self.root)
-        before = {name: path.stat().st_mtime_ns for name, path in (
-            (POLICY, self.root / POLICY), (CANDIDATES, self.root / CANDIDATES))}
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in self.root.rglob('*') if path.is_file()}
         reloaded = state.event_decision(index, resolution, dossier_hash=DOSSIER_A)
         self.assertEqual((reloaded.outcome, reloaded.reason),
                          ('eligible', 'allowance_available'))
-        after = {name: path.stat().st_mtime_ns for name, path in (
-            (POLICY, self.root / POLICY), (CANDIDATES, self.root / CANDIDATES))}
+        after = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                 for path in self.root.rglob('*') if path.is_file()}
         self.assertEqual(before, after)
 
 

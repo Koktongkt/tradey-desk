@@ -632,6 +632,56 @@ ledger.append_jsonl(path, {"event": stage})
                 self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns)
                                   for p in root.rglob('*') if p.is_file()}, before)
 
+    def test_stream_snapshot_readonly_reads_custom_registered_stream(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            custom = root / 'private/custom_journal.jsonl'
+            rows = ({'event': 'original'}, {'event': 'second'})
+            for row in rows:
+                module.append_jsonl(custom, row)
+            # Registration is the writer's explicit migration, not a read path.
+            module.migrate_jsonl(root, [custom])
+            before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                      for p in root.rglob('*') if p.is_file()}
+            snapshot = module.read_stream_snapshot_readonly(
+                root, ('private/custom_journal.jsonl', 'private/other_custom.jsonl'))
+            self.assertEqual(snapshot.rows['private/custom_journal.jsonl'], rows)
+            self.assertEqual(snapshot.rows['private/other_custom.jsonl'], ())
+            watermarks = {name: (count, digest)
+                          for name, count, digest in snapshot.watermark}
+            self.assertEqual(watermarks['private/custom_journal.jsonl'][0], 2)
+            self.assertEqual(watermarks['private/other_custom.jsonl'][0], 0)
+            self.assertEqual(
+                watermarks['private/custom_journal.jsonl'][1],
+                __import__('hashlib').sha256(
+                    (module._canonical(rows[0]) + module._canonical(rows[1])).encode()
+                ).hexdigest())
+            self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns)
+                              for p in root.rglob('*') if p.is_file()}, before)
+
+    def test_stream_snapshot_readonly_selects_test_artifacts_storage_root(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'test_artifacts' / 'synthetic_root'
+            (root / 'private').mkdir(parents=True)
+            row = {'record_type': 'activation', 'policy_version': 1}
+            module.append_jsonl(root / 'private/opportunity_policy.jsonl', row)
+            # A root under test_artifacts binds the database to that ancestor.
+            self.assertEqual(module.database_path(root / 'order_ledger.jsonl'),
+                             Path(td) / 'test_artifacts' / 'private' /
+                             'trading_journal.sqlite3')
+            before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                      for p in root.rglob('*') if p.is_file()}
+            snapshot = module.read_stream_snapshot_readonly(
+                root, ('private/opportunity_policy.jsonl',))
+            self.assertEqual(snapshot.root, root.resolve())
+            self.assertEqual(snapshot.rows['private/opportunity_policy.jsonl'], (row,))
+            self.assertEqual(snapshot.watermark[0][0], 'private/opportunity_policy.jsonl')
+            self.assertEqual(snapshot.watermark[0][1], 1)
+            self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns)
+                              for p in root.rglob('*') if p.is_file()}, before)
+
     def test_operational_readers_and_writers_use_shared_sqlite_ledger_boundary(self):
         import alpha_radar
         import autotrader

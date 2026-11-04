@@ -394,6 +394,9 @@ def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) ->
     if not names:
         raise LedgerIntegrityError('no ledger streams requested')
     db = database_path(root / 'order_ledger.jsonl')
+    # Database rows are keyed relative to the storage root the writer used;
+    # for a root under a test_artifacts ancestor that is not the passed root.
+    storage = _storage_root(root / 'order_ledger.jsonl')
     lock_path = _lock_path(db)
     _ensure_parent(lock_path)
     with lock_path.open('a+') as lock:
@@ -413,10 +416,11 @@ def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) ->
                 canonical = [_canonical(row) for row in projected]
                 stored = []
                 if connection is not None:
-                    stored = _database_rows(connection, name)
+                    db_name = _stream_name(selected, storage)
+                    stored = _database_rows(connection, db_name)
                     sequences = [r[0] for r in connection.execute(
                         'SELECT sequence FROM ledger_entries WHERE stream=? ORDER BY sequence',
-                        (name,))]
+                        (db_name,))]
                     if sequences != list(range(1, len(stored) + 1)):
                         raise LedgerIntegrityError('invalid ledger sequence')
                     if len(canonical) < len(stored) or canonical[:len(stored)] != stored:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import datetime as dt
+from decimal import Decimal
 from hashlib import sha256
 import json
 import re
@@ -73,12 +74,18 @@ class PolicyDecision:
 class ConditionObservation:
     event_id: str
     metric: str
-    value: object
+    value: Decimal
     units: str
     source_kind: str
     observed_at: dt.datetime
     evidence_ref: str
     seal: object
+
+    def __post_init__(self):
+        # The brief's shared state contract types `value: Decimal`; persisted
+        # rows carrying non-numeric values fail closed here, at validation.
+        if not isinstance(self.value, Decimal):
+            raise ValueError('condition_observation_value_not_decimal')
 
 
 @dataclass(frozen=True)
@@ -268,6 +275,10 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
             'version': 1,
             'activated_version': version,
             'resolutions': sorted(resolutions),
+            'document_aliases': sorted(aliases.items()),
+            'conditions': [[key, _canonical(row).decode('ascii')]
+                           for key, row in sorted(conditions.items())],
+            'unresolved_dossiers': sorted(unresolved),
             'grants': sorted(grants),
             'dossier_allowances': sorted(dossier_allowances.items()),
             'allowance_reviews': [[_canonical(r).decode('ascii') for r in rows]
