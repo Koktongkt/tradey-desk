@@ -224,6 +224,8 @@ def _database_rows(connection: sqlite3.Connection, stream: str) -> list[str]:
     ).fetchall()
     payloads = []
     for payload, expected_digest in rows:
+        if not isinstance(payload, str):
+            raise LedgerIntegrityError(f"stored ledger payload is not text for {stream}")
         actual_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         if actual_digest != expected_digest:
             raise LedgerIntegrityError(f"stored ledger digest mismatch for {stream}")

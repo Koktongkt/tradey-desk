@@ -497,6 +497,45 @@ ledger.append_jsonl(path, {"event": stage})
                     module.read_jsonl_stream_readonly(target)
                 self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
 
+    def test_canonical_blob_payload_is_typed_corruption_without_changing_read_scope(self):
+        module = self.module()
+        for reader_name, unrelated_target in (
+            ('read_jsonl_stream_readonly', False),
+            ('read_jsonl_readonly', False),
+            ('read_jsonl_readonly', True),
+        ):
+            with self.subTest(reader=reader_name, unrelated_target=unrelated_target), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                policy = root / 'private/opportunity_policy.jsonl'
+                row = {'record_type': 'activation', 'policy_version': 1}
+                module.append_jsonl(policy, row)
+                target = root / 'order_ledger.jsonl' if unrelated_target else policy
+                reader = getattr(module, reader_name)
+                self.assertEqual(reader(target), [] if unrelated_target else [row])
+                db = module.database_path(policy)
+                with closing(sqlite3.connect(db)) as connection:
+                    self.assertEqual(connection.execute(
+                        'SELECT typeof(record_json) FROM ledger_entries WHERE stream=?',
+                        ('private/opportunity_policy.jsonl',),
+                    ).fetchall(), [('text',)])
+                    connection.execute(
+                        'UPDATE ledger_entries SET record_json=CAST(record_json AS BLOB) WHERE stream=?',
+                        ('private/opportunity_policy.jsonl',),
+                    )
+                    connection.commit()
+                    self.assertEqual(connection.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
+                    self.assertEqual(connection.execute(
+                        'SELECT typeof(record_json), json_valid(record_json) FROM ledger_entries WHERE stream=?',
+                        ('private/opportunity_policy.jsonl',),
+                    ).fetchall(), [('blob', 1)])
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob('*') if p.is_file()}
+                with self.assertRaises(module.LedgerIntegrityError):
+                    reader(target)
+                # Scoped observation still ignores unrelated canonical payload damage;
+                # the old whole-ledger API above must reject it even for another target.
+                self.assertEqual(module.read_jsonl_stream_readonly(root / 'order_ledger.jsonl'), [])
+                self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob('*') if p.is_file()}, before)
+
     def test_stream_readonly_retains_global_database_health_and_lock_checks(self):
         module = self.module()
         self.assertTrue(callable(getattr(module, 'read_jsonl_stream_readonly', None)),

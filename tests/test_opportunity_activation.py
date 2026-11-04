@@ -92,6 +92,33 @@ class ActivationTests(unittest.TestCase):
             activation.activation_version(self.root)
         self.assertEqual(before, (db.read_bytes(), db.stat().st_mtime_ns, self.path.read_bytes()))
 
+    def test_canonical_blob_payload_raises_typed_activation_failure_without_repair(self):
+        import sqlite3
+        storage.append_jsonl(self.path, self.record())
+        self.assertEqual(activation.activation_version(self.root), 1)
+        activation.require_supported_activation(self.root, supported=1)
+        db = storage.database_path(self.path)
+        with contextlib.closing(sqlite3.connect(db)) as connection:
+            connection.execute(
+                'UPDATE ledger_entries SET record_json=CAST(record_json AS BLOB) WHERE stream=?',
+                (activation.POLICY_STREAM,),
+            )
+            connection.commit()
+            self.assertEqual(connection.execute('PRAGMA integrity_check').fetchall(), [('ok',)])
+            self.assertEqual(connection.execute(
+                'SELECT typeof(record_json), json_valid(record_json) FROM ledger_entries WHERE stream=?',
+                (activation.POLICY_STREAM,),
+            ).fetchall(), [('blob', 1)])
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()}
+        for read in (lambda: activation.activation_version(self.root),
+                     lambda: activation.require_supported_activation(self.root, supported=1)):
+            with self.subTest(read=read):
+                with self.assertRaisesRegex(
+                        activation.ActivationStateError, '^opportunity_policy_state_unavailable$') as raised:
+                    read()
+                self.assertIsInstance(raised.exception.__cause__, storage.LedgerIntegrityError)
+        self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()}, before)
+
     def test_unimported_projection_blocks_without_initializing_database(self):
         storage.migrate_jsonl(self.root)
         self.write([self.record()])
