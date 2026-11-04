@@ -37,6 +37,13 @@ def digest_of(value):
 
 class OpportunityAdminTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        for target in ('socket.socket.connect', 'socket.socket.connect_ex',
+                       'socket.socket.sendto', 'socket.socket.sendmsg',
+                       'socket.getaddrinfo', 'socket.gethostbyname',
+                       'socket.gethostbyname_ex', 'socket.gethostbyaddr',
+                       'urllib.request.urlopen'):
+            self.enterContext(patch(target, side_effect=AssertionError('synthetic network forbidden')))
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -131,6 +138,187 @@ class OpportunityAdminTests(unittest.TestCase):
         observation = self.observation(resolution)
         index = state.load_index(self.root)
         return admin.make_reopening_claim(index, resolution, observation, now=self.now)
+
+    def scoped_history(self):
+        resolution = self.build_history()
+        source = fixtures.review_row(DOSSIER_B, 'unresolved-review', [{'decision': 'HOLD'}])
+        self.write(REVIEWS, [source])
+        unresolved = {'dossier_hash': DOSSIER_B, 'status': 'unknown', 'reason': 'missing original'}
+        self.write(POLICY, [fixtures.policy_row('identity_resolution', unresolved=unresolved)])
+        record = fixtures.policy_row('identity_resolution', unresolved={
+            **unresolved, 'issuer_scope': {'binding_event_id': resolution.event_id,
+                                         'issuer_cik': resolution.issuer.cik}},
+            source={'stream': REVIEWS, 'sequence': 2, 'row_sha256': digest_of(source)})
+        return resolution, {'manifest_version': 1, 'records': [record]}
+
+    def other_issuer_payload(self):
+        payload = fixtures.synthetic_resolution_payload(period='2026-Q2', cik='0001888888')
+        # Change the fictional SEC locator too; a CIK alone is not evidence.
+        return json.loads(json.dumps(payload).replace('1999999', '1888888'))
+
+    def test_reviewed_scope_import_replay_unrelated_and_same_issuer(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        resolution, manifest = self.scoped_history()
+        (self.root / 'private/broker_baseline.json').write_text('{"preexisting_symbols":[]}')
+        before = self.snapshot_bytes()
+        report = admin.validate_manifest(self.root, manifest)
+        self.assertTrue(report['valid'], report)
+        audit = admin.audit_history(self.root)
+        self.assertEqual(audit['unscoped_unresolved_cases'], [DOSSIER_B])
+        self.assertEqual(self.snapshot_bytes(), before)
+        for digest in (None, '0' * 64):
+            with self.assertRaises(admin.OpportunityAdminError):
+                admin.import_manifest(self.root, manifest, approved_manifest_sha256=digest)
+        self.assertEqual(self.snapshot_bytes(), before)
+        digest = admin.canonical_manifest_digest(manifest)
+        self.assertEqual(admin.import_manifest(self.root, manifest, approved_manifest_sha256=digest)['appended'], 1)
+        index = state.load_index(self.root)
+        scope = manifest['records'][0]['unresolved']['issuer_scope']
+        self.assertEqual(index.unresolved_issuer_scopes[DOSSIER_B], scope)
+        after = self.snapshot_bytes()
+        self.assertEqual(admin.import_manifest(self.root, manifest, approved_manifest_sha256=digest)['appended'], 0)
+        self.assertEqual(admin.audit_history(self.root)['unresolved_issuer_scopes'][DOSSIER_B], scope)
+        self.assertEqual(self.snapshot_bytes(), after)
+        context = state.load_policy_context(self.root)
+        from opportunity_identity import _load_binding
+        other = _load_binding(self.other_issuer_payload())
+        same = fixtures.synthetic_resolution(period='2026-Q2')
+        self.assertEqual(state.candidate_policy(context, other, symbol=fixtures.SYMBOL).outcome, 'eligible')
+        self.assertEqual(state.candidate_policy(context, same, symbol=fixtures.SYMBOL).outcome, 'unknown')
+        self.assertIn(DOSSIER_B, state.load_index(self.root).unresolved_dossiers)
+        self.assertEqual(state.event_decision(index, resolution, dossier_hash=DOSSIER_B).outcome, 'unknown')
+
+    def test_unscoped_history_is_typed_unavailable_and_activation_insufficient(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        _, manifest = self.scoped_history()
+        (self.root / 'private/broker_baseline.json').write_text('{"preexisting_symbols":[]}')
+        context = state.load_policy_context(self.root)
+        with self.assertRaisesRegex(state.OpportunityStateError, 'opportunity_policy_state_unavailable'):
+            state.candidate_policy(context, fixtures.synthetic_resolution(period='2026-Q2'), symbol=fixtures.SYMBOL)
+        empty = {'manifest_version': 1, 'records': [], 'activation': {'policy_version': 1}}
+        before = self.snapshot_bytes()
+        self.assertFalse(admin.validate_manifest(self.root, empty)['valid'])
+        with self.assertRaises(admin.OpportunityAdminError):
+            admin.activate(self.root, empty, approved_manifest_sha256=admin.canonical_manifest_digest(empty))
+        self.assertEqual(self.snapshot_bytes(), before)
+        manifest['activation'] = {'policy_version': 1}
+        self.assertTrue(admin.validate_manifest(self.root, manifest)['valid'])
+
+    def test_scopes_reject_bad_binding_cik_source_and_model_metadata(self):
+        import copy
+        import dataclasses
+        import opportunity_admin as admin
+        import opportunity_state as state
+        _, manifest = self.scoped_history()
+        mutations = [
+            lambda r: r['unresolved']['issuer_scope'].update(issuer_cik='0001888888'),
+            lambda r: r['unresolved']['issuer_scope'].update(binding_event_id='oe1:' + '0' * 64),
+            lambda r: r['unresolved']['issuer_scope'].update(extra=True),
+            lambda r: r['unresolved'].update(issuer_scope=None),
+            lambda r: r['unresolved'].update(dossier_hash='c' * 64),
+            lambda r: r['source'].update(row_sha256='0' * 64),
+            lambda r: r['source'].update(sequence=True),
+            lambda r: r['source'].update(extra='model'),
+            lambda r: r.pop('source'),
+            lambda r: r.update(resolution=fixtures.synthetic_resolution_payload()),
+        ]
+        # A valid digest of a different dossier's source is still not association.
+        first = storage.read_jsonl_stream_readonly(self.root / REVIEWS)[0]
+        mutations.append(lambda r: r.update(source={'stream': REVIEWS, 'sequence': 1, 'row_sha256': digest_of(first)}))
+        before = self.snapshot_bytes()
+        index = state.load_index(self.root)
+        for mutation in mutations:
+            bad = copy.deepcopy(manifest)
+            mutation(bad['records'][0])
+            with self.subTest(record=bad):
+                self.assertFalse(admin.validate_manifest(self.root, bad)['valid'])
+                with self.assertRaises(admin.OpportunityAdminError):
+                    admin.import_manifest(self.root, bad, approved_manifest_sha256=admin.canonical_manifest_digest(bad))
+                rows = dict(index.snapshot.rows)
+                rows[POLICY] += tuple(bad['records'])
+                with self.assertRaises(state.OpportunityStateError):
+                    state._build(dataclasses.replace(index.snapshot, rows=rows))
+        self.assertEqual(self.snapshot_bytes(), before)
+
+    def test_scope_conflict_erasure_and_seal_tamper_fail_closed(self):
+        import copy
+        import dataclasses
+        import opportunity_admin as admin
+        import opportunity_state as state
+        _, manifest = self.scoped_history()
+        other = self.other_issuer_payload()
+        self.write(POLICY, [fixtures.policy_row('identity_resolution', resolution=other)])
+        admin.import_manifest(self.root, manifest, approved_manifest_sha256=admin.canonical_manifest_digest(manifest))
+        index = state.load_index(self.root)
+        for mutation in ('erase', 'repoint'):
+            bad = copy.deepcopy(manifest)
+            unresolved = bad['records'][0]['unresolved']
+            if mutation == 'erase':
+                unresolved.pop('issuer_scope')
+            else:
+                unresolved['issuer_scope'] = {'binding_event_id': other['event_id'], 'issuer_cik': other['issuer']['cik']}
+            before = self.snapshot_bytes()
+            self.assertFalse(admin.validate_manifest(self.root, bad)['valid'])
+            self.assertEqual(self.snapshot_bytes(), before)
+            rows = dict(index.snapshot.rows)
+            rows[POLICY] += tuple(bad['records'])
+            with self.assertRaises(state.OpportunityStateError):
+                state._build(dataclasses.replace(index.snapshot, rows=rows))
+        # Seal explicitly includes scope even with an identical supplied watermark.
+        rows = dict(index.snapshot.rows)
+        alternate = copy.deepcopy(manifest['records'][0])
+        alternate['unresolved']['issuer_scope'] = {'binding_event_id': other['event_id'], 'issuer_cik': other['issuer']['cik']}
+        rows[POLICY] = rows[POLICY][:-1] + (alternate,)
+        changed = state._build(dataclasses.replace(index.snapshot, rows=rows))
+        self.assertNotEqual(index.state_digest, changed.state_digest)
+
+    def test_scope_cannot_contradict_existing_canonical_dossier_issuer(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        from opportunity_identity import _load_binding
+        _, manifest = self.scoped_history()
+        other = self.other_issuer_payload()
+        self.write(POLICY, [fixtures.policy_row('identity_resolution', resolution=other)])
+        resolution = _load_binding(other)
+        self.write(CANDIDATES, [fixtures.candidate_link(
+            DOSSIER_B, resolution.event_id, state.allowance_identifier(resolution.event_id, 0))])
+        before = self.snapshot_bytes()
+        self.assertFalse(admin.validate_manifest(self.root, manifest)['valid'])
+        with self.assertRaises(admin.OpportunityAdminError):
+            admin.import_manifest(self.root, manifest, approved_manifest_sha256=admin.canonical_manifest_digest(manifest))
+        self.assertEqual(self.snapshot_bytes(), before)
+
+    def test_model_only_scope_and_unrepresented_review_never_supply_coverage(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        resolution = self.build_history()
+        (self.root / 'private/broker_baseline.json').write_text('{"preexisting_symbols":[]}')
+        self.write(REVIEWS, [fixtures.review_row(DOSSIER_B, 'missing-history', [{'decision': 'HOLD'}])])
+        # Model-shaped scope has no canonical identity-resolution authority.
+        self.write(CANDIDATES, [{'symbol': 'ACME', 'issuer_scope': {
+            'binding_event_id': resolution.event_id, 'issuer_cik': resolution.issuer.cik}}])
+        before = self.snapshot_bytes()
+        audit = admin.audit_history(self.root)
+        self.assertEqual(audit['incomplete_history_cases'], [DOSSIER_B])
+        manifest = {'manifest_version': 1, 'records': [], 'activation': {'policy_version': 1}}
+        self.assertFalse(admin.validate_manifest(self.root, manifest)['valid'])
+        with self.assertRaises(state.OpportunityStateError):
+            state.candidate_policy(state.load_policy_context(self.root),
+                                   fixtures.synthetic_resolution(period='2026-Q2'), symbol='ACME')
+        self.assertEqual(self.snapshot_bytes(), before)
+
+    def test_scope_index_defensively_copies_reviewed_metadata(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        _, manifest = self.scoped_history()
+        admin.import_manifest(self.root, manifest, approved_manifest_sha256=admin.canonical_manifest_digest(manifest))
+        index = state.load_index(self.root)
+        with self.assertRaises(TypeError):
+            index.unresolved_issuer_scopes[DOSSIER_B]['issuer_cik'] = '0001888888'
+        with self.assertRaises(TypeError):
+            index.unresolved_issuer_scopes[DOSSIER_A] = {}
 
     # --- Step 1 core: model text never satisfies an approved condition. ---
 

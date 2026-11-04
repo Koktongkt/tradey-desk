@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -42,6 +43,10 @@ from opportunity_state import (
     seal_claim,
     seal_observation,
     _spends,
+    _source_row,
+    _unresolved_record,
+    _build,
+    incomplete_history,
 )
 import sqlite_ledger as storage
 
@@ -272,6 +277,9 @@ def audit_history(root: Path) -> dict:
         'proposed_bindings': bindings,
         'document_aliases': dict(sorted(index.document_aliases.items())),
         'unresolved_cases': sorted(index.unresolved_dossiers),
+        'unresolved_issuer_scopes': {key: dict(value) for key, value in sorted(index.unresolved_issuer_scopes.items())},
+        'unscoped_unresolved_cases': sorted(index.unresolved_dossiers - index.unresolved_issuer_scopes.keys()),
+        'incomplete_history_cases': sorted(incomplete_history(index)),
         'condition_approvals': sorted(index.conditions),
         'consumed_conditions': sorted(
             {grant.get('condition_id') for grant in index.grants.values()
@@ -293,23 +301,31 @@ def _manifest_records(manifest) -> list:
 
 def _validated_identity_record(record: dict, index: OpportunityIndex,
                                snapshot_rows: dict) -> dict:
+    if 'resolution' in record and 'unresolved' in record:
+        raise OpportunityAdminError('invalid_manifest_resolution')
+    try:
+        row = _source_row(record.get('source'), snapshot_rows)
+        if 'unresolved' in record:
+            _unresolved_record(record, index.resolutions, set(index.unresolved_dossiers),
+                               dict(index.unresolved_issuer_scopes), snapshot_rows)
+            dossier = record['unresolved']['dossier_hash']
+            source_dossier = row.get('dossier_hash')
+            if row.get('record_type') == 'identity_resolution' and isinstance(row.get('unresolved'), dict):
+                source_dossier = row['unresolved'].get('dossier_hash')
+            if source_dossier != dossier:
+                raise OpportunityStateError('unresolved_scope_source_mismatch')
+            return {'record_type': 'identity_resolution', 'schema_version': 1,
+                    'timestamp': record.get('timestamp'),
+                    'unresolved': json.loads(_canonical(record['unresolved'])),
+                    'source': dict(record['source'])}
+    except OpportunityStateError as error:
+        raise OpportunityAdminError(str(error)) from error
     resolution_payload = record.get('resolution')
     try:
         resolution = _load_binding(resolution_payload)
     except (ValueError, TypeError, KeyError) as error:
         raise OpportunityAdminError('invalid_manifest_resolution') from error
-    source = record.get('source')
-    if not isinstance(source, dict):
-        raise OpportunityAdminError('invalid_manifest_source_reference')
-    stream, sequence = source.get('stream'), source.get('sequence')
-    if stream not in INDEX_STREAMS or type(sequence) is not int or sequence < 1:
-        raise OpportunityAdminError('invalid_manifest_source_reference')
-    rows = snapshot_rows.get(stream)
-    if not isinstance(rows, tuple) or sequence > len(rows):
-        raise OpportunityAdminError('manifest_source_sequence_out_of_range')
-    row = rows[sequence - 1]
-    if hashlib.sha256(_canonical(row)).hexdigest() != source.get('row_sha256'):
-        raise OpportunityAdminError('manifest_source_digest_mismatch')
+    source = record['source']
     # No hidden resets: a dossier already bound to a different event stays bound.
     dossier = row.get('dossier_hash') if isinstance(row, dict) else None
     if isinstance(dossier, str) and dossier in index.dossier_allowances:
@@ -391,6 +407,17 @@ def validate_manifest(root: Path, manifest: dict) -> dict:
         if key in seen:
             errors.append(f"duplicate_record:{record['record_type']}")
         seen.add(key)
+    if not errors:
+        try:
+            # Validate the ordered aggregate too: separate records in one
+            # manifest cannot conflict/erase scope or evade canonical checks.
+            projected_rows = dict(snapshot_rows)
+            projected_rows[POLICY_STREAM] = snapshot_rows.get(POLICY_STREAM, ()) + tuple(records)
+            projected = _build(replace(index.snapshot, rows=projected_rows))
+            if 'activation' in manifest and incomplete_history(projected):
+                errors.append('activation_incomplete_history')
+        except OpportunityStateError as error:
+            errors.append(str(error))
     return {'valid': not errors, 'errors': errors,
             'records': records, 'record_count': len(records)}
 
@@ -462,6 +489,8 @@ def activate(root: Path, manifest: dict, *,
                                approved_manifest_sha256=approved_manifest_sha256)
     appended = False
     with entry_state.lock(Path(root)):
+        if incomplete_history(_index_or_fail(root)):
+            raise OpportunityAdminError('activation_incomplete_history')
         rows = _policy_rows(root)
         if not any(row.get('record_type') == 'activation'
                    and row.get('manifest_sha256') == approved_manifest_sha256

@@ -17,6 +17,7 @@ from hashlib import sha256
 import json
 import re
 from pathlib import Path
+from types import MappingProxyType
 
 from opportunity_activation import _KNOWN_RECORD_TYPES
 from opportunity_identity import EventResolution, _load_binding, candidate_identity
@@ -238,11 +239,83 @@ class OpportunityIndex:
     unresolved_dossiers: frozenset[str]
     allowance_events: dict[str, str] = field(default_factory=dict, repr=False)
     state_digest: str = ''
+    unresolved_issuer_scopes: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, 'unresolved_issuer_scopes', MappingProxyType({
+            key: MappingProxyType(dict(scope))
+            for key, scope in self.unresolved_issuer_scopes.items()}))
+
+
+def _source_row(source, snapshot_rows: dict) -> dict:
+    """Exact existing manifest source boundary (UTF-8 canonical row digest)."""
+    if (not isinstance(source, dict)
+            or set(source) != {'stream', 'sequence', 'row_sha256'}
+            or not isinstance(source['stream'], str)
+            or source['stream'] not in INDEX_STREAMS
+            or type(source['sequence']) is not int or source['sequence'] < 1
+            or not isinstance(source['row_sha256'], str)
+            or _DOSSIER_HASH.fullmatch(source['row_sha256']) is None):
+        raise OpportunityStateError('invalid_manifest_source_reference')
+    rows = snapshot_rows.get(source['stream'], ())
+    if source['sequence'] > len(rows):
+        raise OpportunityStateError('manifest_source_sequence_out_of_range')
+    row = rows[source['sequence'] - 1]
+    digest = sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
+                              ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest()
+    if digest != source['row_sha256']:
+        raise OpportunityStateError('manifest_source_digest_mismatch')
+    return row
+
+
+def _unresolved_record(row: dict, resolutions: dict, unresolved: set,
+                       scopes: dict, snapshot_rows: dict) -> None:
+    """Validate explicit reviewed scope; never infer an issuer from a source."""
+    record = row.get('unresolved')
+    keys = {'dossier_hash', 'status', 'reason'}
+    if (not isinstance(record, dict) or set(record) not in (keys, keys | {'issuer_scope'})
+            or not isinstance(record.get('dossier_hash'), str)
+            or _DOSSIER_HASH.fullmatch(record['dossier_hash']) is None
+            or record.get('status') not in ('unknown', 'conflict')
+            or not isinstance(record.get('reason'), str)):
+        raise OpportunityStateError('invalid_unresolved_record')
+    dossier = record['dossier_hash']
+    if 'issuer_scope' in record:
+        scope = record['issuer_scope']
+        if (set(row) != {'record_type', 'schema_version', 'timestamp', 'unresolved', 'source'}
+                or dossier not in unresolved
+                or not isinstance(scope, dict)
+                or set(scope) != {'binding_event_id', 'issuer_cik'}
+                or not all(isinstance(value, str) for value in scope.values())):
+            raise OpportunityStateError('invalid_unresolved_issuer_scope')
+        binding = resolutions.get(scope['binding_event_id'])
+        if (binding is None or binding.issuer is None
+                or binding.issuer.cik != scope['issuer_cik']):
+            raise OpportunityStateError('unresolved_scope_binding_mismatch')
+        source = _source_row(row.get('source'), snapshot_rows)
+        source_dossier = source.get('dossier_hash')
+        if source.get('record_type') == 'identity_resolution' and isinstance(source.get('unresolved'), dict):
+            source_dossier = source['unresolved'].get('dossier_hash')
+        if source_dossier != dossier:
+            raise OpportunityStateError('unresolved_scope_source_mismatch')
+        if dossier in scopes and scopes[dossier] != scope:
+            raise OpportunityStateError('unresolved_scope_conflict')
+        scopes[dossier] = dict(scope)
+    elif dossier in scopes:
+        raise OpportunityStateError('unresolved_scope_erasure')
+    unresolved.add(dossier)
+
+
+def incomplete_history(index: OpportunityIndex) -> frozenset[str]:
+    """Unscoped/unrepresented historical reviews cannot imply a clean install."""
+    reviewed = {row['dossier_hash'] for row in index.snapshot.rows.get(REVIEWS_STREAM, ())}
+    return frozenset((index.unresolved_dossiers | (reviewed - index.dossier_allowances.keys()))
+                     - index.unresolved_issuer_scopes.keys())
 
 
 def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
                   grants: dict, conditions: dict, unresolved: set,
-                  allowance_events: dict) -> int:
+                  allowance_events: dict, scopes: dict, snapshot_rows: dict) -> int:
     version = 0
     for row in rows:
         if not isinstance(row, dict) or row.get('record_type') not in _KNOWN_RECORD_TYPES \
@@ -255,6 +328,8 @@ def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             version = max(version, row['policy_version'])
         elif kind == 'identity_resolution':
+            if 'resolution' in row and 'unresolved' in row:
+                raise OpportunityStateError('opportunity_policy_state_unavailable')
             if 'resolution' in row:
                 try:
                     resolution = _load_binding(row['resolution'])
@@ -264,14 +339,7 @@ def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
                 allowance_events.setdefault(
                     allowance_identifier(resolution.event_id, 0), resolution.event_id)
             elif 'unresolved' in row:
-                record = row['unresolved']
-                if (not isinstance(record, dict)
-                        or not isinstance(record.get('dossier_hash'), str)
-                        or _DOSSIER_HASH.fullmatch(record['dossier_hash']) is None
-                        or record.get('status') not in ('unknown', 'conflict')
-                        or not isinstance(record.get('reason'), str)):
-                    raise OpportunityStateError('opportunity_policy_state_unavailable')
-                unresolved.add(record['dossier_hash'])
+                _unresolved_record(row, resolutions, unresolved, scopes, snapshot_rows)
             else:
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
         elif kind == 'document_alias':
@@ -315,8 +383,9 @@ def _candidate_links(rows: tuple[dict, ...], allowance_events: dict,
                 or not isinstance(event_id, str) or not isinstance(allowance, str)
                 or allowance_events.get(allowance) != event_id):
             raise OpportunityStateError('opportunity_policy_state_unavailable')
+        # A hash has one immutable generation; replay may never relocate reviews.
         if (dossier in dossier_allowances
-                and allowance_events.get(dossier_allowances[dossier]) != event_id):
+                and dossier_allowances[dossier] != allowance):
             raise OpportunityStateError('opportunity_policy_state_unavailable')
         dossier_allowances[dossier] = allowance
 
@@ -328,12 +397,22 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
         grants: dict[str, dict] = {}
         conditions: dict[str, dict] = {}
         unresolved: set[str] = set()
+        scopes: dict[str, dict[str, str]] = {}
         allowance_events: dict[str, str] = {}
         version = _policy_state(snapshot.rows.get(POLICY_STREAM, ()), resolutions,
-                                aliases, grants, conditions, unresolved, allowance_events)
+                                aliases, grants, conditions, unresolved, allowance_events,
+                                scopes, snapshot.rows)
+        # A later binding row cannot silently change a previously scoped issuer.
+        for scope in scopes.values():
+            if resolutions[scope['binding_event_id']].issuer.cik != scope['issuer_cik']:
+                raise OpportunityStateError('opportunity_policy_state_unavailable')
         dossier_allowances: dict[str, str] = {}
         _candidate_links(snapshot.rows.get(CANDIDATES_STREAM, ()), allowance_events,
                          dossier_allowances)
+        for dossier, scope in scopes.items():
+            allowance = dossier_allowances.get(dossier)
+            if allowance is not None and resolutions[allowance_events[allowance]].issuer.cik != scope['issuer_cik']:
+                raise OpportunityStateError('unresolved_scope_binding_mismatch')
         allowance_reviews: dict[str, tuple[dict, ...]] = {}
         for row in snapshot.rows.get(REVIEWS_STREAM, ()):
             if not isinstance(row, dict):
@@ -353,6 +432,7 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
             'conditions': [[key, _canonical(row).decode('ascii')]
                            for key, row in sorted(conditions.items())],
             'unresolved_dossiers': sorted(unresolved),
+            'unresolved_issuer_scopes': sorted(scopes.items()),
             'grants': sorted(grants),
             'dossier_allowances': sorted(dossier_allowances.items()),
             'allowance_reviews': [[_canonical(r).decode('ascii') for r in rows]
@@ -365,7 +445,7 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     return OpportunityIndex(snapshot, version, resolutions, aliases,
                             dossier_allowances, allowance_reviews, grants,
-                            conditions, frozenset(unresolved), allowance_events, digest)
+                            conditions, frozenset(unresolved), allowance_events, digest, scopes)
 
 
 def load_index(root: Path) -> OpportunityIndex:
@@ -633,7 +713,11 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
             return PolicyDecision('skip', 'unchanged_opportunity', resolution.event_id, None)
     if resolution.event_id not in index.resolutions:
         # No historic binding may be silently erased by a prospective capture.
-        if (dossier_hash is not None or index.unresolved_dossiers
+        if incomplete_history(index):
+            raise OpportunityStateError('opportunity_policy_state_unavailable')
+        if (dossier_hash is not None
+                or any(scope['issuer_cik'] == resolution.issuer.cik
+                       for scope in index.unresolved_issuer_scopes.values())
                 or resolution.reason != 'current_report_cover'):
             return PolicyDecision('unknown', 'opportunity_identity_unknown', resolution.event_id, None)
         return PolicyDecision('eligible', 'allowance_available', resolution.event_id,

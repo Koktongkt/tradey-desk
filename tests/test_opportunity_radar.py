@@ -23,6 +23,11 @@ NOW = dt.datetime(2026, 11, 4, 14, tzinfo=dt.timezone.utc)
 
 class RadarPolicyTests(unittest.TestCase):
     def setUp(self):
+        for target in ('socket.socket.connect', 'socket.socket.connect_ex',
+                       'socket.socket.sendto', 'socket.socket.sendmsg',
+                       'socket.getaddrinfo', 'socket.gethostbyname',
+                       'socket.gethostbyname_ex', 'socket.gethostbyaddr'):
+            self.enterContext(patch(target, side_effect=AssertionError('synthetic network forbidden')))
         self.stack = self.enterContext(ExitStack())
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         fixtures.make_root(self.root, active=True)
@@ -80,6 +85,52 @@ class RadarPolicyTests(unittest.TestCase):
             if legacy:s.enter_context(patch.object(radar,'_run_policy_context',return_value=None,create=True))
             for module,name,options in overrides:s.enter_context(patch.object(module,name,**options))
             return radar.live_research({'discovery_v2_enabled':v2,'focused_retrieval_enabled':focused}, intake=intake)
+
+    def prospective_with_history(self):
+        self.scouts = self.scouts[:1]
+        pages = fixtures.earnings_pages(period='2026-Q2')
+        raw = original_text(pages[0])
+        page = {k: v for k, v in pages[0].items() if not k.startswith('_')}
+        page['url'] = page['returned_url'] = page['url'].replace('000001', '000003')
+        pages = [retain_article(page, raw)]
+        self.bundles = [pages + self.bundles[0][1:]]
+        self.scouts[0]['urls'][0] = pages[0]['url']
+        source = fixtures.review_row('b' * 64, 'unresolved', [{'decision': 'HOLD'}])
+        storage.append_jsonl(self.root/state.REVIEWS_STREAM, source)
+        unresolved = {'dossier_hash': 'b' * 64, 'status': 'unknown', 'reason': 'missing history'}
+        storage.append_jsonl(self.root/state.POLICY_STREAM, fixtures.policy_row('identity_resolution', unresolved=unresolved))
+        return source, unresolved
+
+    def test_unscoped_prospective_history_is_failure_not_healthy_exhaustion(self):
+        self.prospective_with_history()
+        with self.assertRaisesRegex(state.OpportunityStateError, 'opportunity_policy_state_unavailable') as caught:
+            self.run_research()
+        self.assertEqual(self.synthesized, [])
+        import run_cycle
+        with patch.object(radar, 'reusable_fresh_candidate', return_value=None), patch.object(
+                radar, 'live_research', side_effect=caught.exception), patch('sys.stdout', new_callable=io.StringIO) as out:
+            code = radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual((code, out.getvalue()), (3, 'SYSTEM_FAILURE opportunity_policy_state_unavailable\n'))
+        audit = self.root / 'private/scoped-history-cycle.jsonl'
+        with patch.object(run_cycle.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                [], code, out.getvalue(), '')), patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(run_cycle.execute(['synthetic'], audit_mode='radar', audit_stage='research', audit_path=audit), 3)
+        self.assertEqual(storage.read_jsonl(audit)[0]['reason'], 'opportunity_policy_state_unavailable')
+
+    def test_explicit_other_issuer_scope_allows_prospective_radar_only(self):
+        import opportunity_admin as admin
+        import hashlib
+        source, unresolved = self.prospective_with_history()
+        other = self.resolutions[1]
+        record = fixtures.policy_row('identity_resolution', unresolved={**unresolved, 'issuer_scope': {
+            'binding_event_id': other.event_id, 'issuer_cik': other.issuer.cik}}, source={
+                'stream': state.REVIEWS_STREAM, 'sequence': 1,
+                'row_sha256': hashlib.sha256(admin._canonical(source)).hexdigest()})
+        manifest = {'manifest_version': 1, 'records': [record]}
+        admin.import_manifest(self.root, manifest, approved_manifest_sha256=admin.canonical_manifest_digest(manifest))
+        self.assertEqual(self.run_research()['symbol'], 'ACME')
+        self.assertEqual(self.synthesized, ['ACME'])
+        self.assertEqual(self.discovery_calls, 1)
 
     def test_old_runtime_control_repeated_first_lead_wins_with_valid_second(self):
         self.spend()

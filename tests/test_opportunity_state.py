@@ -19,6 +19,13 @@ EVIDENCE_2 = 'evidence-2'
 
 class OpportunityStateTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        for target in ('socket.socket.connect', 'socket.socket.connect_ex',
+                       'socket.socket.sendto', 'socket.socket.sendmsg',
+                       'socket.getaddrinfo', 'socket.gethostbyname',
+                       'socket.gethostbyname_ex', 'socket.gethostbyaddr',
+                       'urllib.request.urlopen'):
+            self.enterContext(patch(target, side_effect=AssertionError('synthetic network forbidden')))
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -209,22 +216,59 @@ class OpportunityStateTests(unittest.TestCase):
             fixtures.review_row(DOSSIER_A, EVIDENCE_1,
                                 [{'decision': 'APPROVE'}, {'decision': 'APPROVE'}],
                                 proposal_hash=PROPOSAL_1),
-            fixtures.review_row(DOSSIER_A, EVIDENCE_2,
+            fixtures.review_row(DOSSIER_B, EVIDENCE_2,
                                 [{'decision': 'APPROVE'}, {'decision': 'APPROVE'}],
                                 proposal_hash=PROPOSAL_2),
         ])
         self.write(CANDIDATES, [
-            fixtures.candidate_link(DOSSIER_A, resolution.event_id, second),
+            fixtures.candidate_link(DOSSIER_B, resolution.event_id, second),
         ])
         index = state.load_index(self.root)
         attempt = state.authorize_current_attempt(
-            index, dossier_hash=DOSSIER_A, proposal_hash=PROPOSAL_2,
+            index, dossier_hash=DOSSIER_B, proposal_hash=PROPOSAL_2,
             evidence_id=EVIDENCE_2)
         self.assertEqual(attempt.allowance_id, second)
-        result = state.event_decision(index, resolution, dossier_hash=DOSSIER_A,
+        result = state.event_decision(index, resolution, dossier_hash=DOSSIER_B,
                                       current_attempt=attempt)
         self.assertEqual((result.outcome, result.reason),
                          ('eligible', 'current_attempt_authorized'))
+
+    def test_forward_rebind_rejects_relocation_of_old_review(self):
+        import opportunity_state as state
+        resolution = self.build()
+        self.approve(resolution)
+        first = state.allowance_identifier(resolution.event_id, 0)
+        second = state.allowance_identifier(resolution.event_id, 1)
+        self.write(POLICY, [fixtures.policy_row(
+            'reopen_grant', event_id=resolution.event_id, generation=1,
+            prior_allowance_id=first, allowance_id=second)])
+        before = storage.read_jsonl_stream_readonly(self.root / REVIEWS)
+        self.write(CANDIDATES, [fixtures.candidate_link(DOSSIER_A, resolution.event_id, second)])
+        with self.assertRaises(state.OpportunityStateError):
+            state.load_index(self.root)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root / REVIEWS), before)
+
+    def test_backward_rebind_cannot_erase_current_generation_spending(self):
+        import opportunity_state as state
+        resolution = self.build()
+        first = state.allowance_identifier(resolution.event_id, 0)
+        second = state.allowance_identifier(resolution.event_id, 1)
+        self.write(REVIEWS, [fixtures.review_row(DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}])])
+        self.write(POLICY, [fixtures.policy_row(
+            'reopen_grant', event_id=resolution.event_id, generation=1,
+            prior_allowance_id=first, allowance_id=second)])
+        link = fixtures.candidate_link(DOSSIER_B, resolution.event_id, second)
+        self.write(CANDIDATES, [link, link])  # Exact replay is idempotent.
+        self.assertEqual(state.event_decision(state.load_index(self.root), resolution).outcome, 'eligible')
+        self.write(REVIEWS, [fixtures.review_row(DOSSIER_B, EVIDENCE_2, [{'decision': 'HOLD'}])])
+        index = state.load_index(self.root)
+        self.assertEqual(len(index.allowance_reviews[second]), 1)
+        self.assertEqual(state.event_decision(index, resolution).outcome, 'skip')
+        before = storage.read_jsonl_stream_readonly(self.root / REVIEWS)
+        self.write(CANDIDATES, [fixtures.candidate_link(DOSSIER_B, resolution.event_id, first)])
+        with self.assertRaises(state.OpportunityStateError):
+            state.load_index(self.root)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root / REVIEWS), before)
 
     def test_grant_opens_only_current_generation_and_new_hold_spends_it(self):
         import opportunity_state as state
