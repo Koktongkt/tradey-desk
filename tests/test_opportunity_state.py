@@ -226,6 +226,108 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual((result.outcome, result.reason),
                          ('eligible', 'current_attempt_authorized'))
 
+    def test_grant_opens_only_current_generation_and_new_hold_spends_it(self):
+        import opportunity_state as state
+        resolution = self.build()
+        first = state.allowance_identifier(resolution.event_id, 0)
+        second = state.allowance_identifier(resolution.event_id, 1)
+        dissent = fixtures.review_row(DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}])
+        self.write(REVIEWS, [dissent])
+        stale = state.load_index(self.root)
+        self.assertEqual(state.event_decision(stale, resolution).outcome, 'skip')
+        self.write(POLICY, [fixtures.policy_row(
+            'reopen_grant', event_id=resolution.event_id, generation=1,
+            prior_allowance_id=first, allowance_id=second)])
+        # A genuinely new canonical dossier, not a rewrite/rebind of old history.
+        self.write(CANDIDATES, [fixtures.candidate_link(
+            DOSSIER_B, resolution.event_id, second)])
+        for dossier in (None, DOSSIER_B):
+            with self.subTest(dossier=dossier):
+                decision = state.event_decision(stale, resolution, dossier_hash=dossier)
+                self.assertEqual((decision.outcome, decision.reason, decision.allowance_id),
+                                 ('eligible', 'allowance_available', second))
+        # Later markers/approval on the old generation cannot spend the new one.
+        self.write(REVIEWS, [
+            fixtures.review_row(DOSSIER_A, 'old-approval',
+                                [{'decision': 'APPROVE'}, {'decision': 'APPROVE'}],
+                                proposal_hash=PROPOSAL_1),
+            fixtures.review_row(DOSSIER_A, 'old-approval', [{'decision': 'execution_retryable'}]),
+        ])
+        self.assertEqual(state.event_decision(stale, resolution,
+                                              dossier_hash=DOSSIER_B).outcome, 'eligible')
+        old = state.event_decision(stale, resolution, dossier_hash=DOSSIER_A)
+        self.assertEqual((old.outcome, old.reason), ('unknown', 'dossier_binding_missing'))
+        current = state.load_index(self.root)
+        self.assertEqual(current.dossier_allowances[DOSSIER_A], first)
+        self.assertEqual(current.allowance_reviews[first][0], dissent)
+        self.write(REVIEWS, [fixtures.review_row(
+            DOSSIER_B, EVIDENCE_2, [{'decision': 'HOLD'}])])
+        self.write(CANDIDATES, [fixtures.candidate_link(
+            'c' * 64, resolution.event_id, second)])
+        for dossier in (None, DOSSIER_B, 'c' * 64):
+            with self.subTest(spent_dossier=dossier):
+                decision = state.event_decision(current, resolution, dossier_hash=dossier)
+                self.assertEqual((decision.outcome, decision.reason, decision.allowance_id),
+                                 ('skip', 'unchanged_opportunity', second))
+
+    def test_later_approval_markers_and_new_dossier_do_not_advance_generation(self):
+        import opportunity_state as state
+        resolution = self.build()
+        first = state.allowance_identifier(resolution.event_id, 0)
+        self.write(REVIEWS, [
+            fixtures.review_row(DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}]),
+            fixtures.review_row(DOSSIER_A, EVIDENCE_2,
+                                [{'decision': 'APPROVE'}, {'decision': 'APPROVE'}],
+                                proposal_hash=PROPOSAL_2),
+            fixtures.review_row(DOSSIER_A, EVIDENCE_2, [{'decision': 'execution_retryable'}]),
+        ])
+        self.write(CANDIDATES, [fixtures.candidate_link(DOSSIER_B, resolution.event_id, first)])
+        decision = state.event_decision(state.load_index(self.root), resolution,
+                                        dossier_hash=DOSSIER_B)
+        self.assertEqual((decision.outcome, decision.reason, decision.allowance_id),
+                         ('skip', 'unchanged_opportunity', first))
+
+    def test_new_generation_approval_is_an_exact_attempt_not_research_refill(self):
+        import opportunity_state as state
+        resolution = self.build()
+        self.approve(resolution)
+        index = state.load_index(self.root)
+        prior_attempt = state.authorize_current_attempt(
+            index, dossier_hash=DOSSIER_A, proposal_hash=PROPOSAL_1, evidence_id=EVIDENCE_1)
+        second = state.allowance_identifier(resolution.event_id, 1)
+        self.write(POLICY, [fixtures.policy_row(
+            'reopen_grant', event_id=resolution.event_id, generation=1,
+            prior_allowance_id=state.allowance_identifier(resolution.event_id, 0),
+            allowance_id=second)])
+        self.write(CANDIDATES, [fixtures.candidate_link(DOSSIER_B, resolution.event_id, second)])
+        self.approve(resolution, dossier_hash=DOSSIER_B,
+                     evidence_id=EVIDENCE_2, proposal_hash=PROPOSAL_2)
+        current = state.load_index(self.root)
+        rejected = state.event_decision(current, resolution, dossier_hash=DOSSIER_A,
+                                        current_attempt=prior_attempt)
+        self.assertEqual(rejected.reason, 'current_attempt_unauthorized')
+        attempt = state.authorize_current_attempt(
+            current, dossier_hash=DOSSIER_B, proposal_hash=PROPOSAL_2, evidence_id=EVIDENCE_2)
+        own = state.event_decision(current, resolution, dossier_hash=DOSSIER_B,
+                                   current_attempt=attempt)
+        self.assertEqual((own.outcome, own.reason, own.allowance_id),
+                         ('eligible', 'current_attempt_authorized', second))
+        borrowed = state.event_decision(current, resolution, dossier_hash=DOSSIER_A,
+                                        current_attempt=attempt)
+        self.assertEqual(borrowed.reason, 'current_attempt_unauthorized')
+        spent = state.event_decision(current, resolution, dossier_hash=DOSSIER_B)
+        self.assertEqual((spent.outcome, spent.reason), ('skip', 'unchanged_opportunity'))
+
+    def test_grant_cannot_skip_a_missing_generation(self):
+        import opportunity_state as state
+        resolution = self.build()
+        self.write(POLICY, [fixtures.policy_row(
+            'reopen_grant', event_id=resolution.event_id, generation=2,
+            prior_allowance_id=state.allowance_identifier(resolution.event_id, 1),
+            allowance_id=state.allowance_identifier(resolution.event_id, 2))])
+        with self.assertRaises(state.OpportunityStateError):
+            state.load_index(self.root)
+
     def test_broken_chain_grant_is_a_typed_failure(self):
         import opportunity_state as state
         resolution = self.build()

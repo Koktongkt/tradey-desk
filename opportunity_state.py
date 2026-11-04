@@ -285,7 +285,8 @@ def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
             if not isinstance(event_id, str) or type(generation) is not int or generation < 1:
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             if (row.get('prior_allowance_id') != allowance_identifier(event_id, generation - 1)
-                    or row.get('allowance_id') != allowance_identifier(event_id, generation)):
+                    or row.get('allowance_id') != allowance_identifier(event_id, generation)
+                    or allowance_events.get(row.get('prior_allowance_id')) != event_id):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             grants[row['allowance_id']] = row
             allowance_events[row['allowance_id']] = event_id
@@ -538,16 +539,16 @@ def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
                                   event_id, current_attempt.allowance_id)
         return PolicyDecision('skip', 'current_attempt_unauthorized', event_id,
                               getattr(current_attempt, 'allowance_id', None))
-    allowance_reviews = [r for a, rows in index.allowance_reviews.items()
-                         for r in rows if index.allowance_events.get(a) == event_id]
-    spent = [r for r in allowance_reviews if _spends(r)]
+    # Dissent remains attached to its canonical generation. Only the durable
+    # validated grant chain advances the allowance; old spending is audit
+    # history, not a veto of the explicitly authorized next consideration.
+    current = _current_allowance(index, event_id)
+    spent = [r for r in index.allowance_reviews.get(current, ()) if _spends(r)]
     if spent:
         if _reopening_pending(index, reopening_claim):
             return PolicyDecision('reopening_pending', 'reopening_claim_pending',
-                                  event_id, _current_allowance(index, event_id))
-        return PolicyDecision('skip', 'unchanged_opportunity', event_id,
-                              _current_allowance(index, event_id))
-    current = _current_allowance(index, event_id)
+                                  event_id, current)
+        return PolicyDecision('skip', 'unchanged_opportunity', event_id, current)
     if dossier_hash is not None and index.dossier_allowances.get(dossier_hash) != current:
         return PolicyDecision('unknown', 'dossier_binding_missing', event_id, None)
     return PolicyDecision('eligible', 'allowance_available', event_id, current)

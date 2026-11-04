@@ -445,6 +445,28 @@ class OpportunityAdminTests(unittest.TestCase):
             index, resolution, self.observation(resolution), now=self.now))
         with self.assertRaises(admin.OpportunityAdminError):
             admin.restore_reopening_claim(index, DOSSIER_A, now=self.now)
+        # Commit advances policy but deliberately does not rebind the old dossier.
+        old = state.event_decision(index, resolution, dossier_hash=DOSSIER_A)
+        self.assertEqual((old.outcome, old.reason), ('unknown', 'dossier_binding_missing'))
+        fresh = state.event_decision(index, resolution)
+        self.assertEqual((fresh.outcome, fresh.reason, fresh.allowance_id),
+                         ('eligible', 'allowance_available', expected))
+        # A genuinely new current-bound dossier can spend the grant; replay of
+        # the old claim must not refill it, even after the new HOLD.
+        self.write(CANDIDATES, [fixtures.candidate_link(
+            DOSSIER_B, resolution.event_id, expected)])
+        self.write(REVIEWS, [fixtures.review_row(
+            DOSSIER_B, 'evidence-2', [{'decision': 'HOLD'}])])
+        self.assertEqual(admin.commit_reopening_claim(
+            self.root, claim, dossier_hash=DOSSIER_A, now=self.now), expected)
+        current = state.load_index(self.root)
+        self.assertEqual(len(current.grants), 1)
+        spent = state.event_decision(current, resolution, dossier_hash=DOSSIER_B)
+        self.assertEqual((spent.outcome, spent.reason, spent.allowance_id),
+                         ('skip', 'unchanged_opportunity', expected))
+        with self.assertRaises(admin.OpportunityAdminError):
+            admin.commit_reopening_claim(self.root, claim,
+                                         dossier_hash=DOSSIER_B, now=self.now)
 
     def test_commit_refuses_unspent_or_unbacked_claims(self):
         import opportunity_admin as admin
@@ -510,6 +532,23 @@ class OpportunityAdminTests(unittest.TestCase):
                                           approved_manifest_sha256=digest)
         self.assertEqual(allowance,
                          state.allowance_identifier(resolution.event_id, 1))
+        # The real administrator grant makes only the new allowance usable.
+        before_candidates = storage.read_jsonl_stream_readonly(self.root / CANDIDATES)
+        before_reviews = storage.read_jsonl_stream_readonly(self.root / REVIEWS)
+        old = state.event_decision(state.load_index(self.root), resolution,
+                                   dossier_hash=DOSSIER_A)
+        self.assertEqual((old.outcome, old.reason), ('unknown', 'dossier_binding_missing'))
+        self.write(CANDIDATES, [fixtures.candidate_link(
+            DOSSIER_B, resolution.event_id, allowance)])
+        index = state.load_index(self.root)
+        for dossier in (None, DOSSIER_B):
+            with self.subTest(dossier=dossier):
+                result = state.event_decision(index, resolution, dossier_hash=dossier)
+                self.assertEqual((result.outcome, result.reason, result.allowance_id),
+                                 ('eligible', 'allowance_available', allowance))
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root / CANDIDATES)[:-1],
+                         before_candidates)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root / REVIEWS), before_reviews)
         # Idempotent re-grant returns the same durable allowance, no new row.
         again = admin.grant_reopening(self.root, approval,
                                       approved_manifest_sha256=digest)
@@ -664,6 +703,19 @@ class OpportunityAdminTests(unittest.TestCase):
         index = state.load_index(self.root)
         restored = admin.restore_reopening_claim(index, DOSSIER_A, now=self.now)
         self.assertEqual(restored.condition_id, claim.condition_id)
+        # Simulate a real lost acknowledgement *after* the canonical grant
+        # append succeeds; recovery must read it back rather than append again.
+        from unittest.mock import patch
+        append_grant = admin._append_grant
+
+        def append_then_lose_ack(root, record):
+            append_grant(root, record)
+            raise admin.OpportunityAdminError('synthetic_lost_ack')
+
+        with patch.object(admin, '_append_grant', side_effect=append_then_lose_ack):
+            with self.assertRaisesRegex(admin.OpportunityAdminError, 'synthetic_lost_ack'):
+                admin.commit_reopening_claim(self.root, restored,
+                                             dossier_hash=DOSSIER_A, now=self.now)
         first = admin.commit_reopening_claim(self.root, restored,
                                              dossier_hash=DOSSIER_A, now=self.now)
         second = admin.commit_reopening_claim(self.root, claim,
