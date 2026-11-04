@@ -479,7 +479,11 @@ def _baseline_exclusions(root: Path) -> frozenset[str]:
         symbols = value.get('preexisting_symbols')
         if not isinstance(symbols, list):
             raise OpportunityStateError('broker_baseline_invalid')
-        return frozenset(str(symbol).upper() for symbol in symbols)
+        if any(not isinstance(symbol, str)
+               or re.fullmatch(r'[A-Za-z][A-Za-z0-9.-]{0,9}', symbol) is None
+               for symbol in symbols):
+            raise OpportunityStateError('broker_baseline_invalid')
+        return frozenset(symbol.upper() for symbol in symbols)
     except (OSError, ValueError, AttributeError) as error:
         raise OpportunityStateError('broker_baseline_invalid') from error
 
@@ -487,22 +491,15 @@ def _baseline_exclusions(root: Path) -> frozenset[str]:
 def local_entry_exclusions(index: OpportunityIndex) -> frozenset[str]:
     """Symbols locally excluded from new-entry consideration.
 
-    Derived from exact durable lineage only: baseline preexisting symbols plus
-    symbols of events whose allowance already carries a spending review.
+    Only the validated durable baseline supplies local symbol exclusions.
+    Completed reviews spend event allowances, not ticker-wide permission.
+    This index has no authoritative current remaining-share/order accounting.
     Absence from this set is not broker authorization; execution still proves
     broker truth before intent.
     """
     if not isinstance(index, OpportunityIndex):
         raise OpportunityStateError('opportunity_policy_state_unavailable')
-    exclusions = set(_baseline_exclusions(index.snapshot.root))
-    for allowance, rows in index.allowance_reviews.items():
-        event_id = index.allowance_events.get(allowance)
-        if event_id is None or not any(_spends(r) for r in rows):
-            continue
-        resolution = index.resolutions.get(event_id)
-        if resolution is not None and resolution.issuer is not None:
-            exclusions.add(resolution.issuer.symbol.upper())
-    return frozenset(exclusions)
+    return _baseline_exclusions(index.snapshot.root)
 
 
 def event_decision(index: OpportunityIndex, resolution: EventResolution, *,

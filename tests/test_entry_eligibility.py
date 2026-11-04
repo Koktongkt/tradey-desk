@@ -115,14 +115,12 @@ class EntryFixtureBase(unittest.TestCase):
                 [p for p in parents
                  if p['client_order_id'] in payload['client_order_ids']])}
 
-        add()
+        # Arrange exact lineage for the snapshot already supplied by the caller.
+        # Qualification must never refresh or rewrite broker evidence.
+        for parent in snapshot['open_orders']:
+            add(parent['client_order_id'], parent['symbol'],
+                parent['status'], parent['filled_qty'])
         write()
-        snapshot['open_orders'] = copy.deepcopy(parents)
-        snapshot['entry_observation'] = entry_eligibility.entry_observation(
-            started_at=self.now - dt.timedelta(seconds=1),
-            finished_at=self.now - dt.timedelta(seconds=0.5),
-            duration_seconds=0.5, positions=list(snapshot['positions']),
-            open_orders=list(parents))
         return pending_policy.qualify(self.root, snapshot, broker)
 
 
@@ -170,7 +168,7 @@ class EvaluateBuyTests(EntryFixtureBase):
         self.assertEqual((result.outcome, result.reason), ('eligible', 'flat_complete'))
 
     def test_other_symbol_pending_capacity_and_protective_children_retain_semantics(self):
-        snapshot = self.snapshot()
+        snapshot = self.snapshot(open_orders=[pending_parent()[1]])
         proof = self.proof(snapshot)
         self.assertEqual(proof.pending[0][1], 'AAPL')
         result = entry_eligibility.evaluate_buy(
@@ -223,7 +221,8 @@ class EvaluateBuyTests(EntryFixtureBase):
 
     def test_missing_or_mismatched_proof_never_authorizes_entry(self):
         snapshot = self.snapshot()
-        for label, proof in (('missing', None), ('mismatched', self.proof(self.snapshot()))):
+        other = self.snapshot(captured_at='2026-11-04T11:59:58Z')
+        for label, proof in (('missing', None), ('mismatched', self.proof(other))):
             with self.subTest(case=label):
                 result = entry_eligibility.evaluate_buy(
                     'ACME', snapshot, pending_proof=proof, now=self.now)
@@ -231,7 +230,9 @@ class EvaluateBuyTests(EntryFixtureBase):
                                  ('pending', 'pending_qualification_required'))
 
     def test_stale_proof_over_old_positions_does_not_pretend_refresh(self):
-        old = self.snapshot()
+        old = self.snapshot(started_seconds_ago=121,
+                            open_orders=[pending_parent()[1]])
+        before = copy.deepcopy(old['entry_observation'])
         proof = self.proof(old)
         refreshed = self.snapshot(positions=[position_row('BRKV', '4')])
         result = entry_eligibility.evaluate_buy(
@@ -241,6 +242,11 @@ class EvaluateBuyTests(EntryFixtureBase):
         # Repeat qualification over the same unchanged old portfolio yields the
         # identical bound proof; it never claims the refreshed portfolio state.
         again = self.proof(old)
+        self.assertEqual(old['entry_observation'], before)
+        stale = entry_eligibility.evaluate_buy(
+            'ACME', old, pending_proof=again, now=self.now)
+        self.assertEqual((stale.outcome, stale.reason),
+                         ('unknown', 'entry_evidence_stale'))
         self.assertEqual(again.snapshot_hash, proof.snapshot_hash)
         self.assertNotEqual(proof.snapshot_hash, pending_policy.digest(refreshed))
 
@@ -384,7 +390,7 @@ class EvaluateBuyFailClosedTests(EntryFixtureBase):
                                  ('unknown', 'entry_symbol_invalid'))
 
 
-class LocalEntryExclusionsTests(EntryFixtureBase):
+class LocalEntryFixtureBase(EntryFixtureBase):
     POLICY = 'private/opportunity_policy.jsonl'
     REVIEWS = 'private/reviews.jsonl'
     CANDIDATES = 'candidates.jsonl'
@@ -414,12 +420,14 @@ class LocalEntryExclusionsTests(EntryFixtureBase):
             ])
         return state.load_index(self.root), resolution
 
-    def test_durable_lineage_and_baseline_symbols_are_excluded(self):
+
+class LocalEntryExclusionsTests(LocalEntryFixtureBase):
+    def test_only_baseline_symbols_are_excluded_not_spent_event_lineage(self):
         import opportunity_state as state
         index, _ = self.build()
         (self.root / 'private/broker_baseline.json').write_text(
             json.dumps({'preexisting_symbols': ['PREX', 'prey']}))
-        self.assertEqual(state.local_entry_exclusions(index), frozenset({'ACME', 'PREX', 'PREY'}))
+        self.assertEqual(state.local_entry_exclusions(index), frozenset({'PREX', 'PREY'}))
 
     def test_unspent_lineage_is_not_an_exclusion(self):
         import opportunity_state as state
@@ -437,6 +445,159 @@ class LocalEntryExclusionsTests(EntryFixtureBase):
             state.local_entry_exclusions(index)
         with self.assertRaises(state.OpportunityStateError):
             state.local_entry_exclusions(object())
+
+
+class ReviewRegressionTests(EntryFixtureBase):
+    """I2–I5/I7: exact proof seals are not observation validation."""
+
+    def qualify_unchanged(self, snapshot):
+        before = copy.deepcopy(snapshot)
+        proof = pending_policy.qualify(
+            self.root, snapshot,
+            lambda op, payload: {'orders': copy.deepcopy(snapshot['open_orders'])})
+        self.assertEqual(snapshot, before)
+        self.assertTrue(pending_policy.valid(proof, snapshot))
+        return proof
+
+    def decision(self, snapshot, **kwargs):
+        return entry_eligibility.evaluate_buy(
+            'ACME', snapshot, pending_proof=self.qualify_unchanged(snapshot),
+            now=self.now, **kwargs)
+
+    def test_i2_metadata_is_required_typed_and_exact_with_genuine_proof(self):
+        for key in ('position_count', 'open_order_count',
+                    'position_digests', 'open_order_digests', 'version'):
+            invalid = (None, True, False, 0.0, 1.0, '0', -1, 99, {}, (), ['bad'])
+            for value in ('MISSING', *invalid):
+                # Integer version 1 and counts 0 alone are supported, not bool/float aliases.
+                with self.subTest(key=key, value=value):
+                    snapshot = self.snapshot()
+                    observation = snapshot['entry_observation']
+                    if value == 'MISSING':
+                        observation.pop(key)
+                    else:
+                        observation[key] = value
+                    result = self.decision(snapshot)
+                    self.assertEqual((result.outcome, result.reason),
+                                     ('unknown', 'entry_evidence_unverified'))
+
+    def test_i2_coherence_checks_both_canonical_row_collections(self):
+        snapshot = self.snapshot(open_orders=[pending_parent()[1]])
+        self.proof(snapshot)  # Existing pending fixture with real exact-parent lineage.
+        for collection, count, digests in (
+                ('positions', 'position_count', 'position_digests'),
+                ('open_orders', 'open_order_count', 'open_order_digests')):
+            for variant in ('snapshot_changed', 'digest_changed', 'observed_changed'):
+                with self.subTest(collection=collection, variant=variant):
+                    changed = copy.deepcopy(snapshot)
+                    observed = changed['entry_observation']
+                    if variant == 'snapshot_changed':
+                        if collection == 'positions':
+                            changed[collection] = [position_row('ACME', '2')]
+                            (self.root / 'private/broker_baseline.json').write_text(
+                                json.dumps({'preexisting_symbols': ['ACME']}))
+                        else:
+                            changed[collection][0]['synthetic_note'] = 'changed'
+                    elif variant == 'digest_changed':
+                        observed[digests] = ['0' * 64]
+                    else:
+                        observed[collection] = ([position_row('ACME', '2')]
+                                                if collection == 'positions' else [])
+                        observed[count] = len(observed[collection])
+                        observed[digests] = [canonical_digest(r) for r in observed[collection]]
+                    result = self.decision(changed)
+                    self.assertEqual(result.outcome, 'unknown')
+
+    def test_i3_future_finish_with_past_start_fails(self):
+        snapshot = self.snapshot(finished_seconds_ago=-1)
+        self.assertEqual(vars(self.decision(snapshot)),
+                         {'outcome': 'unknown', 'reason': 'entry_evidence_future'})
+
+    def test_i4_nonidentical_duplicate_symbols_or_assets_never_net(self):
+        first = position_row('ACME', '2')
+        for other in (position_row('ACME', '3'),
+                      position_row('ACME', '2', market_value='999'),
+                      position_row('ACME', '3', asset_id='different'),
+                      position_row('OTHER', '3', asset_id=first['asset_id'])):
+            with self.subTest(other=other):
+                with self.assertRaises(entry_eligibility.EntryStateError):
+                    entry_eligibility.strict_positions([first, other])
+
+    def test_i5_finite_decimal_extremes_keep_original_values_and_block(self):
+        for qty in ('1e-1000', '1e1000', 2, 0.125, '0.0000001'):
+            with self.subTest(qty=qty):
+                row = position_row('ACME', qty)
+                self.assertEqual(entry_eligibility.strict_positions([row]), [row])
+                snapshot = self.snapshot(positions=[row])
+                result = entry_eligibility.evaluate_buy(
+                    'ACME', snapshot, pending_proof=None, now=self.now)
+                self.assertEqual((result.outcome, result.reason),
+                                 ('held', 'position_already_held'))
+        for qty in (True, None, '', 'NaN', 'Infinity', '-1e-1000', '0', [], {}):
+            with self.subTest(invalid=qty):
+                with self.assertRaises(entry_eligibility.EntryStateError):
+                    entry_eligibility.strict_positions([position_row('ACME', qty)])
+
+    def test_i7_proof_helper_must_preserve_explicit_observation(self):
+        snapshot = self.snapshot(started_seconds_ago=120, finished_seconds_ago=0,
+                                 duration=120)
+        before = copy.deepcopy(snapshot)
+        self.proof(snapshot)
+        self.assertEqual(snapshot, before)
+
+    def test_i7_independent_age_and_duration_boundaries_unchanged(self):
+        for age, duration, expected in (
+                (120, 0.5, ('eligible', 'flat_complete')),
+                (120.000001, 0.5, ('unknown', 'entry_evidence_stale')),
+                (1, 120, ('eligible', 'flat_complete')),
+                (1, 120.000001, ('unknown', 'entry_evidence_overlong'))):
+            with self.subTest(age=age, duration=duration):
+                snapshot = self.snapshot(started_seconds_ago=age, duration=duration)
+                before = copy.deepcopy(snapshot['entry_observation'])
+                result = self.decision(snapshot)
+                self.assertEqual((result.outcome, result.reason), expected)
+                self.assertEqual(snapshot['entry_observation'], before)
+
+    def test_i7_wall_window_branch_independent_of_age(self):
+        snapshot = self.snapshot(started_seconds_ago=121, finished_seconds_ago=0,
+                                 duration=0.5)
+        result = self.decision(snapshot, max_age_seconds=240)
+        self.assertEqual((result.outcome, result.reason),
+                         ('unknown', 'entry_evidence_stale'))
+
+
+class LocalReviewRegressionTests(LocalEntryFixtureBase):
+    def test_i1_spent_event_does_not_ban_distinct_future_event_or_closed_parent(self):
+        import opportunity_state as state
+        index, prior = self.build()
+        future = fixtures.synthetic_resolution(period='2026-Q4')
+        self.write(self.POLICY, [fixtures.policy_row(
+            'identity_resolution', resolution=fixtures.synthetic_resolution_payload(period='2026-Q4'))])
+        # A fully closed historical parent supplies no current holding authority.
+        self.write('order_ledger.jsonl', [{'client_order_id': 'synthetic-closed',
+                                          'symbol': 'ACME', 'status': 'filled'}])
+        self.write('trade_journal.jsonl', [
+            {'symbol': 'ACME', 'status': 'filled', 'side': 'buy', 'qty': '2',
+             'client_order_id': 'synthetic-closed'},
+            {'symbol': 'ACME', 'status': 'filled', 'side': 'sell', 'qty': '2',
+             'client_order_id': 'synthetic-close-sell'}])
+        index = state.load_index(self.root)
+        self.assertEqual((state.event_decision(index, prior).outcome,
+                          state.event_decision(index, prior).reason),
+                         ('skip', 'unchanged_opportunity'))
+        self.assertEqual(state.event_decision(index, future).outcome, 'eligible')
+        self.assertEqual(state.local_entry_exclusions(index), frozenset())
+
+    def test_i6_baseline_members_require_exact_supported_symbol_tokens(self):
+        import opportunity_state as state
+        index, _ = self.build(spent=False)
+        for member in (None, {}, [], True, 123, '', 'bad/symbol', ' ACME',
+                       'ACME ', 'TOOLONGSYMBOL', 'ＡＣＭＥ'):
+            with self.subTest(member=member):
+                (self.root / 'private/broker_baseline.json').write_text(
+                    json.dumps({'preexisting_symbols': [member]}))
+                with self.assertRaises(state.OpportunityStateError):
+                    state.local_entry_exclusions(index)
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ closed even when the quote is fresh.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -49,13 +50,13 @@ def row_digest(row: dict) -> str:
 
 
 def _finite_positive(value: Any) -> bool:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return False
     try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
         return False
-    return math.isfinite(number) and number > 0
+    return number.is_finite() and number > 0
 
 
 def _aware_utc(value: Any) -> datetime:
@@ -86,6 +87,7 @@ def strict_positions(normalized: Any) -> list[dict]:
         raise EntryStateError('positions_unverified')
     validated: list[dict] = []
     seen: set[str] = set()
+    assets: set[str] = set()
     for row in normalized:
         symbol = row.get('symbol')
         if not isinstance(symbol, str) or SYMBOL.fullmatch(symbol) is None:
@@ -95,12 +97,15 @@ def strict_positions(normalized: Any) -> list[dict]:
         if not _finite_positive(row.get('qty')):
             raise EntryStateError('positions_unverified')
         try:
-            digest = row_digest(row)
+            row_digest(row)
         except (ValueError, TypeError, OverflowError) as error:
             raise EntryStateError('positions_unverified') from error
-        if digest in seen:
+        asset = row.get('asset_id')
+        if symbol in seen or (isinstance(asset, str) and asset in assets):
             raise EntryStateError('positions_unverified')
-        seen.add(digest)
+        seen.add(symbol)
+        if isinstance(asset, str):
+            assets.add(asset)
         validated.append(dict(row))
     return validated
 
@@ -143,7 +148,8 @@ def _unknown(reason: str) -> EntryDecision:
 def _evidence(observation: Any, *, now: datetime, max_age_seconds: int,
               max_read_seconds: int) -> dict:
     """Bounded, coherent evidence window or a typed unknown decision."""
-    if not isinstance(observation, dict) or observation.get('version') != 1 \
+    if not isinstance(observation, dict) or type(observation.get('version')) is not int \
+            or observation.get('version') != 1 \
             or observation.get('positions_complete') is not True \
             or observation.get('open_orders_complete') is not True \
             or not isinstance(observation.get('positions'), list) \
@@ -158,7 +164,7 @@ def _evidence(observation: Any, *, now: datetime, max_age_seconds: int,
         raise EntryStateError('entry_evidence_invalid')
     now = now.astimezone(timezone.utc)
     age = now - started
-    if age < timedelta(0):
+    if age < timedelta(0) or finished > now:
         raise EntryStateError('entry_evidence_future')
     if age > timedelta(seconds=max_age_seconds):
         raise EntryStateError('entry_evidence_stale')
@@ -195,6 +201,25 @@ def evaluate_buy(symbol: str, snapshot: dict, *, pending_proof: pending_policy.P
         positions = strict_positions(observation.get('positions'))
         if strict_positions(snapshot.get('positions')) != positions:
             raise EntryStateError('positions_unverified')
+        for collection, count_key, digest_key in (
+                ('positions', 'position_count', 'position_digests'),
+                ('open_orders', 'open_order_count', 'open_order_digests')):
+            rows = observation[collection]
+            actual = snapshot.get(collection)
+            count = observation.get(count_key)
+            digests = observation.get(digest_key)
+            if type(count) is not int or count != len(rows) \
+                    or not isinstance(digests, list) \
+                    or not isinstance(actual, list) \
+                    or any(not isinstance(row, dict) for row in rows + actual):
+                raise EntryStateError('entry_evidence_unverified')
+            try:
+                expected = [row_digest(row) for row in rows]
+                actual_digests = [row_digest(row) for row in actual]
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EntryStateError('entry_evidence_unverified') from error
+            if digests != expected or actual_digests != expected:
+                raise EntryStateError('entry_evidence_unverified')
     except EntryStateError as error:
         return _unknown(str(error))
     # Any positive position, dust or not, and regardless of market value,
