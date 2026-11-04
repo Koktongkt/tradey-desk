@@ -97,6 +97,78 @@ class ReopeningClaim:
 
 
 @dataclass(frozen=True)
+class _ObservationSeal:
+    """Module-private seal binding an observation to its exact field lineage."""
+    digest: str
+
+
+@dataclass(frozen=True)
+class _ClaimSeal:
+    """Module-private seal binding a reopening claim to sealed observation lineage."""
+    digest: str
+
+
+def observation_digest(observation) -> str:
+    if not isinstance(observation, ConditionObservation):
+        raise ValueError('condition_observation_required')
+    return sha256(_canonical({
+        'version': 1, 'kind': 'condition_observation',
+        'event_id': observation.event_id, 'metric': observation.metric,
+        'value': str(observation.value), 'units': observation.units,
+        'source_kind': observation.source_kind,
+        'observed_at': observation.observed_at.isoformat(),
+        'evidence_ref': observation.evidence_ref})).hexdigest()
+
+
+def seal_observation(observation) -> ConditionObservation:
+    """Trusted server-side sealing; the unsealed input keeps its exact fields."""
+    if not isinstance(observation, ConditionObservation) or observation.seal is not None:
+        raise ValueError('unsealed_observation_input_required')
+    return ConditionObservation(
+        observation.event_id, observation.metric, observation.value,
+        observation.units, observation.source_kind, observation.observed_at,
+        observation.evidence_ref, _ObservationSeal(observation_digest(observation)))
+
+
+def observation_sealed(observation) -> bool:
+    return (isinstance(observation, ConditionObservation)
+            and isinstance(observation.seal, _ObservationSeal)
+            and observation.seal.digest == observation_digest(observation))
+
+
+def claim_digest(claim) -> str:
+    if not isinstance(claim, ReopeningClaim) or not observation_sealed(claim.observation):
+        raise ValueError('sealed_observation_required')
+    return sha256(_canonical({
+        'version': 1, 'kind': 'reopening_claim',
+        'condition_id': claim.condition_id,
+        'prior_allowance_id': claim.prior_allowance_id,
+        'observation': observation_digest(claim.observation)})).hexdigest()
+
+
+def seal_claim(claim) -> ReopeningClaim:
+    if not isinstance(claim, ReopeningClaim) or claim.seal is not None:
+        raise ValueError('unsealed_claim_input_required')
+    return ReopeningClaim(claim.condition_id, claim.prior_allowance_id,
+                          claim.observation, _ClaimSeal(claim_digest(claim)))
+
+
+def claim_sealed(claim) -> bool:
+    return (isinstance(claim, ReopeningClaim)
+            and isinstance(claim.seal, _ClaimSeal)
+            and claim.seal.digest == claim_digest(claim)
+            and observation_sealed(claim.observation))
+
+
+def condition_consumed(index: OpportunityIndex, condition_id: str) -> bool:
+    """A condition is consumed once any durable grant record references it."""
+    if not isinstance(condition_id, str):
+        raise ValueError('condition_id_required')
+    return any(grant.get('condition_id') == condition_id
+               for grant in index.grants.values())
+
+
+@dataclass(frozen=True)
 class _AttemptSeal:
     """Module-private seal binding an authorization to exact index state."""
     digest: str
@@ -388,10 +460,7 @@ def _attempt_authorized(index: OpportunityIndex, attempt: object,
 
 def _reopening_pending(index: OpportunityIndex, claim: object) -> bool:
     """Only a sealed claim bound to the spent prior allowance may advance research."""
-    if not isinstance(claim, ReopeningClaim) or claim.seal is None:
-        return False
-    if not isinstance(claim.observation, ConditionObservation) \
-            or claim.observation.seal is None:
+    if not isinstance(claim, ReopeningClaim) or not claim_sealed(claim):
         return False
     return claim.prior_allowance_id in index.allowance_events
 
