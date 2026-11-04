@@ -89,7 +89,8 @@ def _locator(url):
     if not match:return None
     cik, accession, filename = match.groups()
     canonical_cik = cik.zfill(10)  # Only after strict lexical validation of the SEC numeric locator.
-    if accession[:10] != canonical_cik:return None
+    # The accession prefix identifies the submitter (possibly a filing agent),
+    # not the registrant. Identity agreement uses this directory CIK instead.
     return canonical_cik, 'sec:' + accession + '/' + filename
 
 
@@ -143,7 +144,11 @@ class _Cover(HTMLParser):
             self.stack = self.stack[:index]
 
 
-def _cover(raw, symbol, cik):
+def _valid_legal_name(value):
+    return isinstance(value, str) and 1 <= len(value) <= 512 and value.strip() == value
+
+
+def _cover(raw, symbol, cik, legal_name=None):
     parser = _Cover()
     parser.feed(raw)
     parser.close()
@@ -155,6 +160,11 @@ def _cover(raw, symbol, cik):
         for name, expected in (('TradingSymbol', symbol), ('EntityCentralIndexKey', cik)):
             if 'dei:' + name in facts and set(facts['dei:' + name]) != {expected}:
                 return 'issuer_conflict', []
+    legal_names = {value for facts in parser.facts.values()
+                   for value in facts.get('dei:EntityRegistrantName', [])}
+    if (any(not _valid_legal_name(value) for value in legal_names) or len(legal_names) > 1
+            or (legal_name is not None and legal_names and legal_names != {legal_name})):
+        return 'issuer_conflict', []
     names = ('TradingSymbol', 'EntityCentralIndexKey', 'EntityRegistrantName', 'DocumentType',
              'DocumentFiscalYearFocus', 'DocumentFiscalPeriodFocus', 'DocumentPeriodEndDate')
     for context, facts in parser.facts.items():
@@ -164,7 +174,7 @@ def _cover(raw, symbol, cik):
         values = [facts['dei:' + name][0] for name in names]
         ticker, issuer_cik, legal, kind, year, quarter, end = values
         if ticker != symbol or issuer_cik != cik:return 'conflict', []
-        if (kind not in ('10-Q', '10-K') or not 1 <= len(legal) <= 512 or legal.strip() != legal
+        if (kind not in ('10-Q', '10-K') or not _valid_legal_name(legal)
                 or not re.fullmatch(r'[0-9]{4}', year) or quarter not in ('Q1','Q2','Q3','Q4','FY')):continue
         ctx = parser.contexts.get(context, {})
         if ctx.get('xbrli:identifier') != [cik] or ctx.get('xbrli:enddate', ctx.get('xbrli:instant')) != [end]:continue
@@ -213,7 +223,7 @@ def _load_binding(record):
     issuer = record['issuer']
     if not isinstance(issuer, dict) or set(issuer) != _ISSUER_KEYS or not all(isinstance(v,str) for v in issuer.values()):invalid()
     if not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,9}', issuer['symbol']) or not re.fullmatch(r'[0-9]{10}', issuer['cik']) or int(issuer['cik']) == 0:invalid()
-    if not 1 <= len(issuer['legal_name']) <= 512 or issuer['legal_name'].strip() != issuer['legal_name']:invalid()
+    if not _valid_legal_name(issuer['legal_name']):invalid()
     if record['family'] != 'earnings' or not isinstance(record['period'], str) or not re.fullmatch(r'[0-9]{4}-(?:Q[1-4]|FY)', record['period']):invalid()
     if record['event_id'] != _event_id(issuer['cik'], record['period']):invalid()
     if record['reason'] not in ('current_report_cover','explicit_binding'):invalid()
@@ -274,6 +284,28 @@ def _document(page, document_id):
         page['_retained_article']['projection_sha256'], value, precision, _capture_ref(page))
 
 
+def _binding_agreement(bindings):
+    """Typed invalid state when same-identity reviewed records disagree."""
+    issuers = {(r.issuer.symbol, r.issuer.cik, r.issuer.legal_name) for r in bindings}
+    if len(issuers) > 1:raise ValueError('conflicting_known_bindings')
+    periods = {r.period for r in bindings}
+    if len(periods) > 1:raise ValueError('conflicting_known_bindings')
+
+
+def _merged_binding(bindings, document):
+    """Order-independent merge of agreeable reviewed bindings (provenance only)."""
+    _binding_agreement(bindings)
+    documents = tuple(sorted({d for r in bindings for d in r.documents}
+                             | ({document} if document is not None else set()),
+                             key=lambda d:(d.document_id, d.retained_ref)))
+    refs = tuple(sorted({s for r in bindings for s in r.support_refs}))
+    # Agreed issuer fields; support_ref is provenance, chosen deterministically.
+    anchor = min(bindings, key=lambda r:r.issuer.support_ref)
+    return EventResolution('verified', anchor.event_id, anchor.issuer,
+                           anchor.family, anchor.period, documents, refs,
+                           'explicit_binding')
+
+
 def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[dict, ...]) -> EventResolution:
     """Resolve only retained primary evidence. Index bindings are a trusted input."""
     def unresolved(status, reason):return EventResolution(status, None, None, None, None, (), (), reason)
@@ -307,7 +339,17 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
             (d.document_id == document_id if locator else d.url == document.url and d.returned_url == document.returned_url and d.retained_ref == document.retained_ref)
             for d in r.documents)]
         if len({r.event_id for r in bindings}) > 1:return unresolved('conflict', 'alias_collision')
-        status, matches = _cover(raw, symbol, locator[0]) if locator else ('unknown', [])
+        if bindings:
+            signature = lambda r:(r.event_id, r.period, r.issuer.symbol, r.issuer.cik, r.issuer.legal_name)
+            if any(signature(r) != signature(bindings[0]) for r in bindings):
+                return unresolved('conflict', 'conflicting_known_bindings')
+            expected_legal = bindings[0].issuer.legal_name
+        else:
+            expected_legal = None
+        try:
+            status, matches = _cover(raw, symbol, locator[0], expected_legal) if locator else ('unknown', [])
+        except ValueError:
+            return unresolved('conflict', 'conflicting_known_bindings')
         if status == 'issuer_conflict':return unresolved('conflict', 'issuer_conflict')
         if status == 'conflict':
             exact = [r for r in bindings if any(d.document_id == document_id and d.retained_ref == document.retained_ref for d in r.documents)]
@@ -322,19 +364,17 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
             resolutions.append(EventResolution('verified', _event_id(cik, period), issuer, 'earnings', period,
                 (document,), (issuer.support_ref,), 'current_report_cover'))
         elif bindings and status not in ('incomplete','invalid'):
-            binding = bindings[0]
-            documents = tuple(sorted(set(binding.documents + (document,)), key=lambda d:(d.document_id,d.retained_ref)))
-            resolutions.append(EventResolution('verified', binding.event_id, binding.issuer, binding.family,
-                binding.period, documents, binding.support_refs, 'explicit_binding'))
+            resolutions.append(_merged_binding(bindings, document))
         else:unresolved_primary |= primary
     if unresolved_primary:return unresolved('unknown', 'unresolved_primary_evidence')
     if not resolutions:return unresolved('unknown', 'unsupported_or_missing_primary_support')
     if len({r.event_id for r in resolutions}) != 1 or len({r.issuer.legal_name for r in resolutions}) != 1:
         return unresolved('conflict', 'multiple_report_subjects')
-    first = sorted(resolutions, key=lambda r:r.issuer.support_ref)[0]
-    documents = tuple(sorted({d for r in resolutions for d in r.documents}, key=lambda d:(d.document_id,d.retained_ref)))
-    refs = tuple(sorted({s for r in resolutions for s in r.support_refs}))
-    return EventResolution('verified', first.event_id, first.issuer, first.family, first.period, documents, refs, first.reason)
+    merged = _merged_binding(resolutions, None)
+    merged = EventResolution('verified', merged.event_id, merged.issuer, merged.family, merged.period,
+                             merged.documents, merged.support_refs,
+                             'current_report_cover' if any(r.reason == 'current_report_cover' for r in resolutions) else 'explicit_binding')
+    return merged
 
 
 def _open_root(root):

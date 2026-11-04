@@ -52,10 +52,41 @@ class IdentityTests(unittest.TestCase):
         for symbol in ('acme', ' ACME', 'ACME ', '', None):
             self.assertEqual(resolve_event(symbol, pages, known_resolutions=()).status, 'unknown')
         for url in (URL.replace('/1999999/', '/01999999/'), URL + '?changed=1', URL.replace('https:', 'http:'),
-                    URL.replace('000199999926000001', '000188888826000001')):
+                    URL.replace('000199999926000001', '00018888882600000x'),
+                    URL.replace('000199999926000001', '00018888882600001')):
             page = {**pages[0], 'url':url, 'returned_url':url}
             page = retain_article(page, pages[0]['_retained_article']['text'])
             self.assertNotEqual(resolve_event('ACME', [page], known_resolutions=()).status, 'verified')
+
+    def test_filing_agent_accession_binds_registrant_not_submitter(self):
+        pages = earnings_pages()
+        base = resolve_event('ACME', pages, known_resolutions=())
+        url = URL.replace('000199999926000001', '000188888826000001')
+        page = retain_article({**pages[0], 'url':url, 'returned_url':url},
+                              pages[0]['_retained_article']['text'])
+        automatic = resolve_event('ACME', [page], known_resolutions=())
+        self.assertEqual((automatic.status, automatic.event_id), ('verified', base.event_id))
+
+    def test_reviewed_filing_agent_accession_preserves_identity_checks(self):
+        pages = earnings_pages()
+        known = identity.candidate_identity(resolve_event('ACME', pages, known_resolutions=()))
+        url = URL.replace('000199999926000001', '000188888826000001')
+        known['documents'][0].update(url=url, returned_url=url,
+            document_id='sec:000188888826000001/report.htm')
+        page = retain_article({**pages[0], 'url':url, 'returned_url':url},
+                              pages[0]['_retained_article']['text'])
+        historical = edited([page], 'dei:DocumentFiscalPeriodFocus', 'not:Period')
+        self.assertEqual(resolve_event('ACME', historical, known_resolutions=(known,)).event_id,
+                         known['event_id'])
+        wrong_directory = copy.deepcopy(known)
+        wrong_directory['documents'][0]['url'] = url.replace('/1999999/', '/1888888/')
+        wrong_directory['documents'][0]['returned_url'] = wrong_directory['documents'][0]['url']
+        with self.assertRaises(ValueError):
+            resolve_event('ACME', historical, known_resolutions=(wrong_directory,))
+        for old,new in (('>0001999999<', '>0001888888<'), ('>ACME<', '>OTHER<')):
+            with self.subTest(fact=old):
+                self.assertEqual(resolve_event('ACME', edited([page], old, new),
+                                              known_resolutions=()).status, 'conflict')
 
     def test_models_dates_and_unsupported_captures_cannot_bind(self):
         page = {'url':'https://issuer.test/results', 'text':'Next earnings 2026-Q3; exit 2026-10-21',
@@ -127,6 +158,44 @@ class IdentityTests(unittest.TestCase):
         for records in ((first,second), (second,first)):
             self.assertEqual(resolve_event('ACME', unknown, known_resolutions=records).status, 'conflict')
 
+    def test_same_event_reviewed_issuer_conflicts_are_order_independent(self):
+        pages = earnings_pages()
+        first = identity.candidate_identity(resolve_event('ACME', pages, known_resolutions=()))
+        second = copy.deepcopy(first)
+        second['issuer']['legal_name'] = 'Different Fictional Registrant Inc.'
+        variants = {
+            'full':pages,
+            'partial':edited(pages, 'dei:DocumentFiscalPeriodFocus', 'not:Period'),
+            'absent': [retain_article(pages[0], '<html><body>No cover facts</body></html>')],
+            'incomplete':edited(pages, '</body></html>', ''),
+            'invalid':edited(pages, '>Q3<', '>QQ<'),
+        }
+        for label,rows in variants.items():
+            results = []
+            for records in ((first, second), (second, first)):
+                with self.subTest(cover=label, first_name=records[0]['issuer']['legal_name']):
+                    result = resolve_event('ACME', rows, known_resolutions=records)
+                    results.append(result)
+                    self.assertEqual(result.status, 'conflict')
+            with self.subTest(cover=label, check='order_invariance'):
+                self.assertEqual(results[0], results[1])
+
+    def test_consistent_reviewed_bindings_merge_provenance_order_independently(self):
+        pages = earnings_pages()
+        first = identity.candidate_identity(resolve_event('ACME', pages, known_resolutions=()))
+        second = copy.deepcopy(first)
+        extra = second['documents'][0]['retained_ref'] + '#review:second'
+        second['issuer']['support_ref'] = extra
+        second['support_refs'] = [extra]
+        partial = edited(pages, 'dei:DocumentFiscalPeriodFocus', 'not:Period')
+        for rows in (partial, pages):
+            a = resolve_event('ACME', rows, known_resolutions=(first,second))
+            b = resolve_event('ACME', rows, known_resolutions=(second,first))
+            self.assertEqual(a.status, 'verified')
+            self.assertEqual(a, b)
+        fallback = resolve_event('ACME', partial, known_resolutions=(first,second))
+        self.assertEqual(set(fallback.support_refs), set(first['support_refs'] + second['support_refs']))
+
     def test_unknown_serialization_is_bounded_and_contains_no_model_text(self):
         result = resolve_event('ACME', [], known_resolutions=())
         data = identity.candidate_identity(result)
@@ -191,6 +260,22 @@ class IdentityTests(unittest.TestCase):
                      edited(pages, '>2026-09-30<', '>2026-02-31<')):
             with self.subTest(raw=rows[0]['_retained_article']['sha256']):
                 self.assertEqual(resolve_event('ACME', rows, known_resolutions=(known,)).status, 'unknown')
+
+    def test_partial_legal_identity_cannot_be_hidden_by_reviewed_binding(self):
+        pages = earnings_pages()
+        known = identity.candidate_identity(resolve_event('ACME', pages, known_resolutions=()))
+        partial = edited(pages, 'dei:DocumentFiscalPeriodFocus', 'not:Period')
+        original = 'Fictional Acme Laboratory Inc.'
+        for legal in ('Different Fictional Registrant Inc.', '', ' ' + original, original + ' ', 'X'*513):
+            with self.subTest(legal=legal):
+                rows = edited(partial, '>' + original + '<', '>' + legal + '<')
+                self.assertEqual(resolve_event('ACME', rows, known_resolutions=(known,)).status, 'conflict')
+        duplicate = '<ix:nonNumeric name="dei:EntityRegistrantName" contextRef="current">Different Fictional Registrant Inc.</ix:nonNumeric>'
+        rows = edited(partial, '</body>', duplicate + '</body>')
+        self.assertEqual(resolve_event('ACME', rows, known_resolutions=(known,)).status, 'conflict')
+        self.assertEqual(resolve_event('ACME', partial, known_resolutions=(known,)).status, 'verified')
+        absent = edited(partial, 'dei:EntityRegistrantName', 'not:Name')
+        self.assertEqual(resolve_event('ACME', absent, known_resolutions=(known,)).status, 'verified')
 
     def test_resolution_collections_are_defensive_and_unresolved_cannot_carry_documents(self):
         result = resolve_event('ACME', earnings_pages(), known_resolutions=())
