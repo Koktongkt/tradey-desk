@@ -584,6 +584,53 @@ def local_entry_exclusions(index: OpportunityIndex) -> frozenset[str]:
     return _baseline_exclusions(index.snapshot.root)
 
 
+def require_current_allowance(root: Path, candidate: dict, *,
+                              attempt: AttemptAuthorization | None = None) -> PolicyDecision:
+    """Reload authoritative state at a safety boundary and decide entry authority.
+
+    The exact current-attempt exception is preserved: a sealed authorization
+    matching the coherent index returns eligible even when the caller's view
+    is stale. Without an attempt, only an unspent eligible allowance or a
+    verified provisional reopening claim (durable, sealed, condition-backed)
+    may pass; unknown, skip and absent bindings never authorize entry.
+    Absent activation keeps the legacy compatibility floor with no new-entry
+    denial; once activated, malformed or incompatible state fails closed.
+    """
+    root = Path(root)
+    try:
+        version = activation_version(root)
+    except ActivationStateError as error:
+        raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+    if version <= 0:
+        return PolicyDecision('eligible', 'legacy_policy_floor', None, None)
+    if version > 1:
+        raise OpportunityStateError('opportunity_policy_version_unsupported')
+    index = load_index(root)
+    if not isinstance(candidate, dict):
+        raise OpportunityStateError('opportunity_identity_unknown')
+    try:
+        resolution = _load_binding(candidate.get('opportunity_identity'))
+    except (ValueError, TypeError, KeyError) as error:
+        raise OpportunityStateError('opportunity_identity_unknown') from error
+    dossier = candidate.get('dossier_hash')
+    valid_dossier = (isinstance(dossier, str)
+                     and _DOSSIER_HASH.fullmatch(dossier) is not None)
+    claim = None
+    if attempt is None and isinstance(dossier, str) and valid_dossier:
+        # A claim is restored only from durable server-created rows; absence
+        # of a claim is never authorization and never an entry permission.
+        from opportunity_admin import restore_reopening_claim, OpportunityAdminError
+        try:
+            claim = restore_reopening_claim(
+                index, dossier, now=dt.datetime.now(dt.timezone.utc))
+        except (OpportunityAdminError, OpportunityStateError, ValueError,
+                TypeError, KeyError):
+            claim = None
+    return event_decision(index, resolution,
+                          dossier_hash=dossier if valid_dossier else None,
+                          current_attempt=attempt, reopening_claim=claim)
+
+
 def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
                    dossier_hash: str | None = None,
                    current_attempt: AttemptAuthorization | None = None,

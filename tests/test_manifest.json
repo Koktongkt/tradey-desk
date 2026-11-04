@@ -77,6 +77,7 @@
    "test_opportunity_radar",
    "test_order_notifications",
    "test_pending_capacity",
+   "test_opportunity_execution",
    "test_pipeline",
    "test_dashboard_mcp",
    "test_public_dashboard",

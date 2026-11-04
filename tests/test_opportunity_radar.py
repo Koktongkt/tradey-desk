@@ -447,7 +447,7 @@ class RadarPolicyTests(unittest.TestCase):
 
     def test_policy_floor_and_baseline_failures_never_use_legacy(self):
         import opportunity_activation
-        self.assertEqual(opportunity_activation.SUPPORTED_POLICY_VERSION,0)
+        self.assertEqual(opportunity_activation.SUPPORTED_POLICY_VERSION,1)
         baseline=self.root/'private/broker_baseline.json'
         for payload in (None,'{broken',json.dumps({'preexisting_symbols':[False]})):
             with self.subTest(payload=payload):

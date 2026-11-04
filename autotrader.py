@@ -1263,10 +1263,12 @@ def record_shadow_if_live(args:argparse.Namespace,candidate:dict[str,Any],propos
 
 def pre_review_validation(proposal, snapshot, cfg, daily, exposure, preexisting_symbols, *, pending_proof=None):
     """Check the initial snapshot before paying for independent reviews."""
-    return validate_order_with_details(
+    errors, details = validate_order_with_details(
         {**proposal, "confidence": 1.0}, snapshot, cfg, daily, exposure, preexisting_symbols,
         pending_proof=pending_proof,
     )
+    return buy_eligibility_errors(proposal.get("symbol"), snapshot,
+                                  pending_proof=pending_proof) + errors, details
 
 def post_review_validation(plan, snapshot, cfg, daily, exposure, preexisting_symbols, scope_errors, *, pending_proof=None):
     """Check the approved plan and retain managed-scope blockers first."""
@@ -1274,7 +1276,9 @@ def post_review_validation(plan, snapshot, cfg, daily, exposure, preexisting_sym
         plan, snapshot, cfg, daily, exposure, preexisting_symbols,
         pending_proof=pending_proof,
     )
-    return scope_errors + errors, details
+    return (buy_eligibility_errors(plan.get("symbol"), snapshot,
+                                   pending_proof=pending_proof)
+            + scope_errors + errors, details)
 
 def broker_review_validation(plan, fresh, cfg, daily, fresh_exposure, preexisting_symbols, fresh_scope_errors, *, pending_proof=None):
     """Check the same reviewed plan against fresh broker truth before intent."""
@@ -1282,6 +1286,101 @@ def broker_review_validation(plan, fresh, cfg, daily, fresh_exposure, preexistin
         plan, fresh, cfg, daily, fresh_exposure, preexisting_symbols, fresh_scope_errors,
         pending_proof=pending_proof,
     )
+
+def entry_policy_version(root: Path) -> int:
+    """Activated opportunity policy version; absent activation stays legacy 0."""
+    from opportunity_activation import activation_version, ActivationStateError
+    from opportunity_state import OpportunityStateError
+    try:
+        return activation_version(Path(root))
+    except ActivationStateError as error:
+        raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+
+
+def buy_eligibility_errors(symbol, snapshot, *, pending_proof=None, now=None, root=None):
+    """Shared BUY predicate mapped to deterministic blocker codes.
+
+    Applied before sizing and attached by every entry validation wrapper.
+    Only an activated policy enforces the strict bounded-observation
+    envelope, so the accepted legacy compatibility floor keeps its exact
+    behavior when no activation exists.
+    """
+    try:
+        active = entry_policy_version(root or ROOT) > 0
+    except Exception:
+        return ['opportunity_policy_state_unavailable']
+    if not active:
+        return []
+    from entry_eligibility import evaluate_buy, EntryStateError
+    try:
+        decision = evaluate_buy(symbol, snapshot, pending_proof=pending_proof,
+                                now=now or dt.datetime.now(dt.timezone.utc))
+    except EntryStateError as error:
+        return [str(error) or 'entry_evidence_unverified']
+    return {'held': ['position_already_held'],
+            'pending': ['pending_qualification_required'],
+            'unknown': [decision.reason]}.get(decision.outcome, [])
+
+
+def require_entry_allowance(root: Path, candidate: dict, *, attempt=None):
+    """Reload authoritative state; accept only an eligible allowance or a
+    verified provisional reopening claim (never unknown/skip/absent binding)."""
+    import opportunity_state
+    return opportunity_state.require_current_allowance(root, candidate, attempt=attempt)
+
+
+def _verified_reopening_claim(root: Path, candidate: dict):
+    """Restore the durable server-recorded claim bound to this exact dossier."""
+    import opportunity_state
+    from opportunity_admin import restore_reopening_claim, OpportunityAdminError
+    try:
+        index = opportunity_state.load_index(Path(root))
+        dossier = candidate.get('dossier_hash')
+        if not isinstance(dossier, str):
+            return None
+        return restore_reopening_claim(
+            index, dossier, now=dt.datetime.now(dt.timezone.utc))
+    except (opportunity_state.OpportunityStateError, OpportunityAdminError,
+            ValueError, TypeError, KeyError, OSError):
+        return None
+
+
+def _authorize_current_attempt(root: Path, candidate: dict, proposal_hash: str, evidence_id: str):
+    """Bind the exact approved attempt to the coherent current allowance.
+
+    Only the persisted dual approval of this exact proposal and evidence ID,
+    still bound to the current grant chain, authorizes execution.
+    """
+    import opportunity_state
+    index = opportunity_state.load_index(Path(root))
+    return opportunity_state.authorize_current_attempt(
+        index, dossier_hash=str(candidate.get('dossier_hash')),
+        proposal_hash=str(proposal_hash), evidence_id=str(evidence_id))
+
+
+def _final_entry_recheck_errors(root: Path, candidate: dict, plan: dict,
+                                fresh: dict, fresh_proof, attempt, policy_version: int):
+    """Final pre-intent entry recheck under the entry lock.
+
+    Rechecks event state, fresh broker positions/orders and the exact
+    pending/state proof with 120-second evidence bounds immediately before
+    intent; changed, stale or repair-requiring evidence aborts without a
+    second fetch, and no intent is written before this assertion passes.
+    """
+    if not policy_version:
+        return []
+    with entry_state.lock(Path(root)):
+        errors = buy_eligibility_errors(plan.get('symbol'), fresh,
+                                        pending_proof=fresh_proof, root=root)
+        if errors:
+            return errors
+        try:
+            decision = require_entry_allowance(root, candidate, attempt=attempt)
+        except Exception:
+            return ['opportunity_policy_state_unavailable']
+        if decision.outcome != 'eligible':
+            return [decision.reason]
+    return []
 
 def run(args: argparse.Namespace) -> int:
     from earnings_spending import SpendingStateError, SpendingPersistenceError
@@ -1304,6 +1403,8 @@ def _run_locked(args: argparse.Namespace) -> int:
     from earnings_spending import rejection, persist_rejection, SpendingPersistenceError
     cfg=load_json(ROOT/"autonomy_config.json")
     proof = None
+    policy_version=0
+    reopening_claim=None
     ledger,reviews_path,disagreements_path=output_paths(ROOT,args.dry_run_fixture or args.live_dry_run)
     if args.dry_run_fixture:
         fixture=load_json(ROOT/"fixtures"/"dry_run_bundle.json")
@@ -1367,10 +1468,28 @@ def _run_locked(args: argparse.Namespace) -> int:
         from earnings_spending import is_spent
         if is_spent(candidate,ledger):
             print("DECISION skipped near_term_earnings"); return 0
-        if not args.live_dry_run and dossier_already_reviewed(candidate,reviews_path):
+        policy_version=entry_policy_version(ROOT)
+        reopening_claim=None
+        if policy_version:
+            # Entry boundary: before the initial snapshot, accept only an
+            # eligible allowance or a verified provisional reopening claim.
+            # Unknown, skip and absent bindings are never entry permission;
+            # lifecycle/protection/reconciliation above already ran first.
+            try:
+                entry_decision=require_entry_allowance(ROOT,candidate)
+            except RuntimeError as error:
+                print("BLOCKER " + str(error)); return 2
+            if entry_decision.outcome=='reopening_pending':
+                reopening_claim=_verified_reopening_claim(ROOT,candidate)
+                if reopening_claim is None:
+                    print("BLOCKER reopening_claim_unverified"); return 2
+            elif entry_decision.outcome!='eligible':
+                print("BLOCKER " + str(entry_decision.reason)); return 2
+        if (not args.live_dry_run and reopening_claim is None
+                and dossier_already_reviewed(candidate,reviews_path)):
             print("DECISION skipped already_reviewed"); return 0
         try:
-            snapshot=_broker_bridge("snapshot", {"symbol":candidate["symbol"], "earnings_event_at":candidate.get("earnings_event_at"), "planned_exit_at":candidate.get("planned_exit_at"), "earnings_blackout_sessions":cfg.get("earnings_blackout_sessions",2)})
+            snapshot=_broker_bridge("snapshot",{"symbol":candidate["symbol"], "earnings_event_at":candidate.get("earnings_event_at"), "planned_exit_at":candidate.get("planned_exit_at"), "earnings_blackout_sessions":cfg.get("earnings_blackout_sessions",2)})
         except Exception as error:
             message,code=snapshot_failure(error)
             print(message); return code
@@ -1388,6 +1507,35 @@ def _run_locked(args: argparse.Namespace) -> int:
         except RuntimeError as error:
             print("BLOCKER managed_reconciliation:" + str(error)); return 2
     proof_args = {"pending_proof": proof} if proof is not None else {}
+    if policy_version and reopening_claim is None:
+        # Shared BUY predicate before sizing: held/pending/unknown broker
+        # truth never reaches sizing, wrappers or paid review.
+        gate_errors=sorted(set(buy_eligibility_errors(candidate.get("symbol"),snapshot,**proof_args)))
+        if gate_errors:
+            print("BLOCKER " + ",".join(gate_errors)); return 2
+    if reopening_claim is not None:
+        # Two-phase transition (controller ruling): a verified provisional
+        # reopening claim permits only the existing broker prechecks. When
+        # held/pending/risk checks pass, its one-shot grant commits under the
+        # entry lock and this attempt ends deterministically without paid
+        # review — no same-run replacement dossier, no rebind, and the grant
+        # ID is never paid-review permission. The next bounded Radar run
+        # regenerates research bound to the new allowance via existing intake.
+        proposal,proposal_errors=build_canonical_proposal(candidate,snapshot,cfg,exposure,**proof_args)
+        if proposal_errors or proposal is None:
+            print("BLOCKER " + ",".join(proposal_errors)); return 2
+        daily=_daily_order_count(ledger)
+        precheck,precheck_details=pre_review_validation(proposal,snapshot,cfg,daily,exposure,preexisting_symbols,**proof_args)
+        precheck=sorted(set(precheck))
+        if precheck:
+            record_blocker_diagnostics("precheck",proposal.get("symbol"),proposal.get("action"),precheck,precheck_details,dry_run=args.dry_run_fixture or args.live_dry_run)
+            print("BLOCKER " + ",".join(precheck)); return 2
+        from opportunity_admin import commit_reopening_claim, OpportunityAdminError
+        try:
+            commit_reopening_claim(ROOT,reopening_claim,dossier_hash=str(candidate.get("dossier_hash")),now=dt.datetime.now(dt.timezone.utc))
+        except (OpportunityAdminError,RuntimeError) as error:
+            print("BLOCKER reopening_commit:" + str(error)); return 2
+        print("DECISION reopening_committed"); return 0
     proposal,proposal_errors=build_canonical_proposal(candidate,snapshot,cfg,exposure,**proof_args)
     if proposal_errors or proposal is None:
         print("BLOCKER " + ",".join(proposal_errors)); return 2
@@ -1414,6 +1562,15 @@ def _run_locked(args: argparse.Namespace) -> int:
         row={"timestamp":utcnow(),"status":"rejected","reason":con["reason"],"evidence_id":private_id,"symbol":proposal["symbol"],"action":proposal["action"],"reviews":[_sanitize_review(x) for x in reviews]}
         append_jsonl(ledger,{**row,**lineage}); append_jsonl(disagreements_path,row)
         print("BLOCKER " + con["reason"]); return 2
+    attempt=None
+    if policy_version:
+        # Only the current exact approved attempt may proceed: the persisted
+        # dual approval of this exact proposal/evidence pair, still bound to
+        # the current allowance, is re-proven against a fresh coherent index.
+        try:
+            attempt=_authorize_current_attempt(ROOT,candidate,proposal["proposal_hash"],private_id)
+        except RuntimeError:
+            print("BLOCKER current_attempt_unauthorized"); return 2
     plan=normalize_order_metrics({k:con["order"].get(k) for k in con["order"] if k not in BROKER_FIELDS})
     daily=_daily_order_count(ledger)
     errors,final_details=post_review_validation(plan,snapshot,cfg,daily,exposure,preexisting_symbols,scope_errors,**proof_args)
@@ -1444,6 +1601,8 @@ def _run_locked(args: argparse.Namespace) -> int:
         fresh_proof = pending_policy.qualify(ROOT, fresh, _broker_bridge) if pending_policy.enabled(cfg) else None
         fresh_args = {"pending_proof": fresh_proof} if fresh_proof is not None else {}
         fresh_errors,fresh_details=broker_review_validation(plan,fresh,cfg,daily,fresh_exposure,preexisting_symbols,fresh_scope_errors,**fresh_args)
+        fresh_errors = fresh_errors + _final_entry_recheck_errors(
+            ROOT,candidate,plan,fresh,fresh_proof,attempt,policy_version)
         fresh_errors += runtime_blockers(cfg)
         if fresh_errors:
             fresh_errors=sorted(set(fresh_errors))

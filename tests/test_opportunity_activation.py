@@ -30,7 +30,7 @@ class ActivationTests(unittest.TestCase):
         self.path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
 
     def test_absent_and_empty_history_allow_legacy_without_activation_writes(self):
-        self.assertEqual(activation.SUPPORTED_POLICY_VERSION, 0)
+        self.assertEqual(activation.SUPPORTED_POLICY_VERSION, 1)
         self.assertEqual(activation.POLICY_STREAM, 'private/opportunity_policy.jsonl')
         for rows in (None, []):
             with self.subTest(rows=rows):
@@ -206,8 +206,11 @@ class ActivationOrderingTests(unittest.TestCase):
     def test_activated_floor_blocks_before_candidate_snapshot_or_review(self):
         self.activate()
         code, output = self.run_entry()
+        # Task 6 ruling: a supported v1 activation is enforced at the entry
+        # boundary, not rejected as unsupported. A legacy unbound candidate in
+        # an activated root fails closed before snapshot or review.
         self.assertEqual((code, output),
-                         (2, 'BLOCKER opportunity_policy_version_unsupported\n'))
+                         (2, 'BLOCKER opportunity_policy_state_unavailable\n'))
         self.assertNotIn('snapshot', [op for op, _ in self.fixture.calls])
         self.assertFalse((self.root / 'private/reviews.jsonl').exists())
 
@@ -219,8 +222,11 @@ class ActivationOrderingTests(unittest.TestCase):
                                    timestamp='2026-10-15T14:00:00Z')) + '\n'
         path.write_text(envelope + active + envelope)
         code, output = self.run_entry()
+        # Task 6 ruling: a supported v1 activation is enforced at the entry
+        # boundary, not rejected as unsupported. A legacy unbound candidate in
+        # an activated root fails closed before snapshot or review.
         self.assertEqual((code, output),
-                         (2, 'BLOCKER opportunity_policy_version_unsupported\n'))
+                         (2, 'BLOCKER opportunity_policy_state_unavailable\n'))
         self.assertNotIn('snapshot', [op for op, _ in self.fixture.calls])
 
     def test_canonical_activation_projection_loss_blocks_actual_entry(self):
@@ -279,8 +285,11 @@ class ActivationOrderingTests(unittest.TestCase):
     def test_real_pending_continuation_precedes_activation_block(self):
         self.activate()
         code, output = self.run_entry()
+        # Task 6 ruling: a supported v1 activation is enforced at the entry
+        # boundary, not rejected as unsupported. A legacy unbound candidate in
+        # an activated root fails closed before snapshot or review.
         self.assertEqual((code, output),
-                         (2, 'BLOCKER opportunity_policy_version_unsupported\n'))
+                         (2, 'BLOCKER opportunity_policy_state_unavailable\n'))
         # Existing exact-parent continuation must still read its own parent.
         self.assertTrue(any('one' in payload.get('client_order_ids', [])
                             or payload.get('client_order_id') == 'one'
