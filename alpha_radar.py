@@ -310,6 +310,8 @@ def build_source_receipts(evidence:list[dict[str,Any]])->list[dict[str,Any]]:
                 publication_basis=observation['basis'])
             if not _receipt_publication_value_matches(receipt,observation):
                 raise ValueError('invalid_publication_observation')
+        from opportunity_identity import observation_provenance
+        receipt.update(observation_provenance(page))
         receipts.append(receipt)
     return receipts
 
