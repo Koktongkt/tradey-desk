@@ -1031,6 +1031,9 @@ class AlphaRadarTests(unittest.TestCase):
         scout=subprocess.CompletedProcess([],0,structured_scout("SNOW"),"")
         model_candidate={
             "symbol":"SNOW","price":1.0,"spy_price":2.0,"instrument_type":"cash_equity",
+            'opportunity_identity':{'event_id':'model-forged'},'event_id':'model-forged',
+            'allowance_id':'model-forged','reopening_claim':{'approved':True},
+            'condition_observation':{'market_prices_at':'2099-01-01T00:00:00Z'},
             "planned_exit_at":(alpha_radar.dt.datetime.now(alpha_radar.dt.timezone.utc)+alpha_radar.dt.timedelta(days=10)).isoformat(),
             "earnings_event_at":"2026-09-01","setup_type":"event_momentum","horizon_rationale":"Post-event continuation",
             "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
@@ -1055,6 +1058,8 @@ class AlphaRadarTests(unittest.TestCase):
         self.assertEqual(candidate["spy_price"],770.19)
         self.assertEqual(candidate["market_prices_at"],"2026-09-04T20:00:00Z")
         self.assertEqual(candidate["market_price_feed"],"massive_consolidated_completed_daily")
+        for field in ('opportunity_identity','event_id','allowance_id','reopening_claim','condition_observation'):
+            self.assertNotIn(field,candidate)
         self.assertEqual(candidate["sources"],[
             {"url":"https://a.example/1","title":"A","published_at":"2026-09-08T14:57:00Z"},
             {"url":"https://b.example/2","title":"B","published_at":"2026-09-08T15:00:00Z"},

@@ -28,6 +28,28 @@ def raw(rows=None, **declarations):
 
 
 class FocusedReuseTests(unittest.TestCase):
+    def test_opportunity_receipts_keep_durable_original_refs_through_shared_intake(self):
+        import opportunity_fixtures as fixtures
+        import opportunity_identity as identity
+        import opportunity_state as state
+        import sqlite_ledger as storage
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);fixtures.make_root(root,active=True)
+            (root/'private/broker_baseline.json').write_text(json.dumps({'preexisting_symbols':[]}))
+            pages=fixtures.earnings_pages()
+            resolution=identity.resolve_event('ACME',pages,known_resolutions=())
+            receipts=radar.build_source_receipts(pages)
+            token=radar._policy_acquisition.set((root,resolution,pages,None))
+            try:
+                with patch.object(radar,'ROOT',root),patch.object(radar,'candidate_preflight',return_value=[]),patch.object(radar,'qualified',return_value=True):
+                    result=radar.prepare_candidate({'symbol':'ACME','_source_receipts':receipts,'condition_id':'forged','opportunity_identity':{'approved':True}}, {},verify_sources=False,ledger_path=root/'order_ledger.jsonl')
+            finally:radar._policy_acquisition.reset(token)
+            self.assertNotIn('condition_id',result)
+            self.assertEqual(result['_source_receipts'],receipts)
+            self.assertEqual(result['opportunity_identity'],identity.candidate_identity(resolution))
+            for receipt in receipts:self.assertTrue((root/receipt['retained_ref']).is_file())
+            self.assertFalse(storage.read_jsonl_stream_readonly(root/state.POLICY_STREAM)[0].get('condition_id'))
+
     def test_focused_contract_bounds_historical_limits_and_restores_schema(self):
         # Catch retained stock schemas and pre-network refusals of historical
         # 10k-18k requests. Keep real registry, dispatcher, projection and receipts;

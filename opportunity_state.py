@@ -19,7 +19,8 @@ import re
 from pathlib import Path
 
 from opportunity_activation import _KNOWN_RECORD_TYPES
-from opportunity_identity import EventResolution, _load_binding
+from opportunity_identity import EventResolution, _load_binding, candidate_identity
+from opportunity_activation import activation_version, ActivationStateError
 from sqlite_ledger import (
     LedgerError,
     LedgerSnapshot,
@@ -550,3 +551,94 @@ def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
     if dossier_hash is not None and index.dossier_allowances.get(dossier_hash) != current:
         return PolicyDecision('unknown', 'dossier_binding_missing', event_id, None)
     return PolicyDecision('eligible', 'allowance_available', event_id, current)
+
+
+@dataclass(frozen=True)
+class PolicyContext:
+    """Root-bound read-only Radar context; no absence implies broker flatness."""
+    root: Path
+    index: OpportunityIndex
+    known_exclusions: frozenset[str]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'root', Path(self.root).resolve())
+        object.__setattr__(self, 'known_exclusions', frozenset(self.known_exclusions))
+
+
+def load_policy_context(root: Path) -> PolicyContext:
+    root = Path(root).resolve()
+    try:
+        version = activation_version(root)
+        if version > 1:
+            raise OpportunityStateError('opportunity_policy_version_unsupported')
+        index = load_index(root)
+        if index.activated_version != version:
+            raise OpportunityStateError('opportunity_policy_state_changed')
+        exclusions = local_entry_exclusions(index) if version else frozenset()
+        return PolicyContext(root, index, exclusions)
+    except ActivationStateError as error:
+        raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+
+
+def refresh_policy_context(context: PolicyContext) -> PolicyContext:
+    if (not isinstance(context, PolicyContext)
+            or Path(context.index.snapshot.root).resolve() != context.root):
+        raise OpportunityStateError('opportunity_policy_root_mismatch')
+    fresh = load_policy_context(context.root)
+    if fresh.index.activated_version < context.index.activated_version:
+        raise OpportunityStateError('opportunity_policy_state_regressed')
+    return fresh
+
+
+def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
+                     symbol: str, dossier_hash: str | None = None,
+                     reopening_claim: ReopeningClaim | None = None) -> PolicyDecision:
+    """Research gate, never entry authority. Positive baseline facts dominate.
+
+    A newly acquired current-report cover can establish a prospective identity;
+    historical/index bindings still belong to the read-only canonical index.
+    Reopening claims must satisfy the approved condition, not merely be sealed.
+    """
+    context = refresh_policy_context(context)
+    index = context.index
+    if symbol in context.known_exclusions:
+        return PolicyDecision('skip', 'position_already_held', None, None)
+    if index.activated_version != 1:
+        return PolicyDecision('unknown', 'policy_not_activated', None, None)
+    if not isinstance(resolution, EventResolution) or resolution.status != 'verified':
+        reason = ('opportunity_identity_conflict' if isinstance(resolution, EventResolution)
+                  and resolution.status == 'conflict' else 'opportunity_identity_unknown')
+        return PolicyDecision('unknown', reason, None, None)
+    try:
+        candidate_identity(resolution)
+    except (ValueError, TypeError, KeyError):
+        return PolicyDecision('unknown', 'opportunity_identity_unknown', None, None)
+    if resolution.issuer.symbol != symbol:
+        return PolicyDecision('unknown', 'opportunity_identity_conflict', None, None)
+    known = index.resolutions.get(resolution.event_id)
+    if known is not None and (known.issuer.symbol, known.issuer.cik, known.issuer.legal_name,
+                              known.family, known.period) != (
+            resolution.issuer.symbol, resolution.issuer.cik, resolution.issuer.legal_name,
+            resolution.family, resolution.period):
+        return PolicyDecision('unknown', 'opportunity_identity_conflict', resolution.event_id, None)
+    if reopening_claim is not None:
+        from opportunity_admin import _verify_claim_against_index, OpportunityAdminError
+        try:
+            if reopening_claim.observation.event_id != resolution.event_id:
+                raise ValueError('claim_event_mismatch')
+            _verify_claim_against_index(index, reopening_claim,
+                                       now=dt.datetime.now(dt.timezone.utc))
+        except (OpportunityAdminError, ValueError, AttributeError):
+            return PolicyDecision('skip', 'unchanged_opportunity', resolution.event_id, None)
+    if resolution.event_id not in index.resolutions:
+        # No historic binding may be silently erased by a prospective capture.
+        if (dossier_hash is not None or index.unresolved_dossiers
+                or resolution.reason != 'current_report_cover'):
+            return PolicyDecision('unknown', 'opportunity_identity_unknown', resolution.event_id, None)
+        return PolicyDecision('eligible', 'allowance_available', resolution.event_id,
+                              allowance_identifier(resolution.event_id, 0))
+    result = event_decision(index, resolution, dossier_hash=dossier_hash,
+                            reopening_claim=reopening_claim)
+    if result.reason in {'event_binding_missing', 'historical_binding_missing', 'dossier_binding_missing'}:
+        return PolicyDecision('unknown', 'opportunity_identity_unknown', result.event_id, None)
+    return result

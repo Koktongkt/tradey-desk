@@ -26,7 +26,7 @@ TRADE_EVENT_RE=re.compile(
 DECISION_EVENT_RE=re.compile(
     r"DECISION (?:(?P<event>candidate_qualified|reused_fresh_candidate) "
     r"(?P<symbol>[A-Z]{1,6})|skipped (?P<reason>outside_window|already_completed|"
-    r"already_reviewed|near_term_earnings|no_fresh_setup|no_valid_discovery_candidate))"
+    r"already_reviewed|near_term_earnings|no_fresh_setup|no_valid_discovery_candidate|no_new_eligible_opportunity))"
 )
 ALLOWED_FAILURE_TOKENS=frozenset({
     "dashboard_build_failed","dashboard_deploy_failed","dashboard_timeout",
@@ -70,6 +70,7 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "research_earnings_timestamp_unverified","research_evidence_insufficient",
     "research_focused_retrieval_timeout","research_focused_retrieval_unavailable",
     "research_enrichment_timeout","research_market_data_unavailable","research_parse_failure","research_persistence_failure",
+    'opportunity_policy_state_unavailable',
     "research_policy_constraints_unmet","research_rescue_unavailable",
     "research_scout_parse_failure","research_scout_schema_rejected","research_scout_timeout",
     "research_scout_unavailable","research_source_freshness_insufficient",
@@ -183,7 +184,9 @@ def execute(cmd:list[str],timeout_seconds:int=600,attempts:int=1,audit_mode:str|
             if audit_mode:audit_result(audit_mode,audit_stage,0,result.stdout,audit_path)
             if audit_mode in {"premarket","radar"} and audit_stage=="research":
                 notice_name="Premarket Research" if audit_mode=="premarket" else "Alpha Radar"
-                if result.stdout.strip()=="DECISION skipped no_fresh_setup":
+                if result.stdout.strip()=='DECISION skipped no_new_eligible_opportunity':
+                    print(f'{notice_name}: No new eligible opportunity (no_new_eligible_opportunity). Research only; no order placed by this scan.')
+                elif result.stdout.strip()=="DECISION skipped no_fresh_setup":
                     print(f"{notice_name}: No new qualified candidate (no_fresh_setup). Research only; no order placed by this scan.")
                 elif result.stdout.strip()=="DECISION skipped no_valid_discovery_candidate":
                     print(f"{notice_name}: No new qualified candidate (none passed discovery format validation). Research only; no order placed by this scan.")

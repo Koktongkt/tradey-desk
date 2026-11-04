@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse, datetime as dt, hashlib, html, ipaddress, json, re, socket, subprocess, threading, urllib.error, urllib.parse, urllib.request
 from functools import lru_cache, wraps
+from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -1805,9 +1806,177 @@ class SynthesisWindowExhausted(ResearchFailure):
     """No model launched: preserve a prior candidate rejection when available."""
 
 
+def _run_policy_context(root:Path):
+    from opportunity_state import load_policy_context,OpportunityStateError
+    from opportunity_activation import activation_version,ActivationStateError
+    try:
+        # Legacy dossiers have no event links. Do not feed them to the active
+        # index, but always read the non-repairing activation floor first.
+        if activation_version(Path(root))==0:return None
+    except ActivationStateError as error:
+        raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+    return load_policy_context(root)
+
+
+_POLICY_METADATA=frozenset({'opportunity_identity','event_id','allowance_id','reopening_claim',
+    'condition_observation','opportunity_observations','condition_approval','_radar_authority',
+    'condition','condition_id','observation','claim_sha256','prior_allowance_id',
+    'reopening_pending','reopening_condition','condition_evidence','current_attempt','opportunity_policy'})
+_policy_acquisition:ContextVar[Any]=ContextVar('radar_policy_acquisition',default=None)
+_trusted_market_prices:ContextVar[Any]=ContextVar('radar_trusted_market_prices',default=None)
+
+
+@dataclass(frozen=True)
+class _RadarAuthority:
+    context: Any
+    resolution: Any
+    claim: Any
+
+
+def _final_policy_check(candidate):
+    from opportunity_state import candidate_policy,OpportunityStateError
+    authority=candidate.pop('_radar_authority',None)
+    context=_run_policy_context(ROOT)
+    if isinstance(authority,_RadarAuthority):
+        if authority.context.root!=ROOT.resolve():raise OpportunityStateError('opportunity_policy_root_mismatch')
+        # Re-read even if the activation projection disappeared since intake.
+        result=candidate_policy(authority.context,authority.resolution,
+            symbol=str(candidate.get('symbol') or '').upper(),reopening_claim=authority.claim)
+        if result.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(result.reason)
+        from opportunity_identity import candidate_identity
+        if (candidate.get('opportunity_identity')!=candidate_identity(authority.resolution)
+                or candidate.get('event_id')!=result.event_id
+                or candidate.get('allowance_id')!=result.allowance_id):
+            raise OpportunityStateError('opportunity_candidate_binding_changed')
+    elif context is not None:raise CandidateRejection('opportunity_identity_unknown')
+
+
+def _condition_enrichment(context,resolution,symbol,budget):
+    """Spend only the existing aggregate-price enrichment allowance, once."""
+    from opportunity_state import candidate_policy,refresh_policy_context
+    from opportunity_admin import observe_completed_close,make_reopening_claim
+    context=refresh_policy_context(context)
+    decision=candidate_policy(context,resolution,symbol=symbol)
+    if decision.reason!='unchanged_opportunity':return None,None
+    if not any(row.get('event_id')==resolution.event_id for row in context.index.conditions.values()):
+        return None,None
+    start=monotonic()
+    deadline=min(float(budget['overall']),start+float(budget['remaining']))
+    try:
+        with active_deadline(deadline),enrichment_attempt(_timing_enabled.get(),ROOT,_research_run_id.get(),symbol):
+            budget_remaining(ENRICHMENT_BUDGET_SECONDS)
+            with enrichment_span('prices','massive'):prices=synchronized_completed_close_prices(symbol)
+            budget_remaining(ENRICHMENT_BUDGET_SECONDS)
+    except ResearchDeadlineExceeded as error:raise ResearchFailure('research_enrichment_timeout') from error
+    except Exception as error:
+        if isinstance(error,DurableAppendError):raise
+        raise ResearchFailure('research_market_data_unavailable') from error
+    finally:budget['remaining']=max(0.0,float(budget['remaining'])-max(0.0,monotonic()-start))
+    # Normalize only an adapter-owned result; never candidate/model fields.
+    adapter={'metric':'completed_close_usd','units':'USD','value':str(prices.get('price')),
+        'source':prices.get('market_price_feed'),'market_prices_at':prices.get('market_prices_at')}
+    ref='completed-close:'+hashlib.sha256(json.dumps(adapter,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    try:observation=observe_completed_close(adapter,event_id=resolution.event_id,evidence_ref=ref)
+    except (ValueError,TypeError):return None,prices
+    claim=make_reopening_claim(context.index,resolution,observation,now=dt.datetime.now(dt.timezone.utc))
+    return claim,prices
+
+
+def _strip_policy_metadata(candidate):
+    return {key:value for key,value in candidate.items() if key not in _POLICY_METADATA}
+
+
+def _resolve_policy(context,symbol,pages):
+    from opportunity_identity import resolve_event,candidate_identity
+    return resolve_event(symbol,pages,known_resolutions=tuple(
+        candidate_identity(r) for r in context.index.resolutions.values()))
+
+
+def _policy_reason(context,selected,pages=None):
+    """Cheap skips require immutable SEC anchors; mutable/mixed bundles retrieve."""
+    from opportunity_identity import _locator,_sec_archive
+    from opportunity_state import candidate_policy,refresh_policy_context
+    context=refresh_policy_context(context)
+    symbol=str(selected.get('symbol') or '').upper()
+    if symbol in context.known_exclusions:return 'position_already_held'
+    if pages is not None:
+        resolution=_resolve_policy(context,symbol,pages)
+        result=candidate_policy(context,resolution,symbol=symbol)
+        # An approved condition needs the existing bounded close enrichment;
+        # neither the URL nor a model price can satisfy it early.
+        if result.reason=='unchanged_opportunity' and any(
+            row.get('event_id')==resolution.event_id for row in context.index.conditions.values()):
+            return None
+        return result.reason if result.outcome not in {'eligible','reopening_pending'} else None
+    anchors=[]
+    for url in selected.get('urls',[]):
+        loc=_locator(url)
+        if loc is not None:
+            matches=[r for r in context.index.resolutions.values() if r.issuer.symbol==symbol
+                     and any(d.document_id==loc[1] and r.issuer.cik==loc[0] for d in r.documents)]
+            if len(matches)!=1:return None
+            anchors.append(matches[0])
+        elif _sec_archive(url) or any(d.url==url for r in context.index.resolutions.values() for d in r.documents):
+            return None  # Unknown SEC locators and mutable observations retrieve.
+    if not anchors or len({r.event_id for r in anchors})!=1:return None
+    resolution=anchors[0]
+    if any(row.get('event_id')==resolution.event_id for row in context.index.conditions.values()):return None
+    decision=candidate_policy(context,resolution,symbol=symbol)
+    return decision.reason if decision.outcome=='skip' else None
+
+
+def _record_policy_skip(reason):
+    # Public output receives only the final normalized outcome, not private IDs.
+    try:append_jsonl(ROOT/'private'/'research_policy_diagnostics.jsonl',{
+        'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),'reason':reason})
+    except OSError as error:raise ResearchFailure('research_persistence_failure') from error
+
+
+def _bind_policy_candidate(candidate,context):
+    from opportunity_identity import retain_observations,candidate_identity
+    from opportunity_state import candidate_policy,refresh_policy_context
+    context=refresh_policy_context(context)
+    acquisition=_policy_acquisition.get()
+    symbol=str(candidate.get('symbol') or '').upper()
+    if acquisition is None or acquisition[0]!=context.root:
+        raise CandidateRejection('opportunity_identity_unknown')
+    _,resolution,pages,claim=acquisition
+    decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
+    if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
+    try:retain_observations(context.root,resolution,pages)
+    except (OSError,ValueError) as error:raise ResearchFailure('research_persistence_failure') from error
+    context=refresh_policy_context(context)
+    decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
+    if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
+    if resolution.event_id not in context.index.resolutions:
+        # Publish only this trusted acquisition after every original capture is
+        # durable. Never infer index authority from candidate/model JSON shape.
+        try:append_jsonl(context.root/'private'/'opportunity_policy.jsonl',{
+            'record_type':'identity_resolution','schema_version':1,
+            'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),
+            'resolution':candidate_identity(resolution)})
+        except OSError as error:raise ResearchFailure('research_persistence_failure') from error
+        context=refresh_policy_context(context)
+        decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
+        if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
+    candidate['opportunity_identity']=candidate_identity(resolution)
+    candidate['event_id']=decision.event_id
+    candidate['allowance_id']=decision.allowance_id
+    candidate['opportunity_observations']=[dict(document) for document in candidate['opportunity_identity']['documents']]
+    if claim is not None:
+        from opportunity_admin import serialize_reopening_claim,record_reopening_claim,OpportunityAdminError
+        try:record_reopening_claim(context.root,claim)
+        except (OpportunityAdminError,OSError) as error:raise ResearchFailure('research_persistence_failure') from error
+        candidate['reopening_claim']=serialize_reopening_claim(claim)
+    candidate['_radar_authority']=_RadarAuthority(context,resolution,claim)
+    return candidate
+
+
 def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:bool=True,*,ledger_path:Path|None=None)->dict[str,Any]:
     """Shared one-attempt intake predicates; persistence belongs to the caller."""
-    c=ensure_researched_at(normalize_candidate(candidate))
+    context=_run_policy_context(ledger_path.parent if ledger_path is not None else ROOT)
+    c=ensure_researched_at(normalize_candidate(_strip_policy_metadata(candidate)))
+    if context is not None:c=_bind_policy_candidate(c,context)
     if ledger_path is not None:
         from earnings_spending import is_spent
         if is_spent(c,ledger_path):raise CandidateRejection("near_term_earnings")
@@ -1839,6 +2008,8 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
 
     The CLI injects the same intake to track completion without validating twice.
     """
+    context=_run_policy_context(ROOT)
+    policy_skipped_symbols=set()
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
     overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     if cfg.get('discovery_v2_enabled',False) is True:
@@ -1863,12 +2034,24 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             raise ResearchFailure("research_scout_timeout")
         if scout.returncode: raise ResearchFailure("research_scout_unavailable")
         scout_candidates,scout_diagnostic=scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)
+    scout_candidates=scout_candidates[:5]  # Policy skips never admit a sixth lead.
+    original_policy_urls={str(c.get('symbol') or '').upper():tuple(c.get('urls',[])) for c in scout_candidates}
     try:record_scout_diagnostic(scout_diagnostic)
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     if not scout_candidates:
         if scout_diagnostic["reason"] in {"no_discovered_candidate","stale_event_date_rejected"}:return {"status":"none","none_reason":"no_fresh_setup"}
         if scout_diagnostic["reason"]=="invalid_json":raise ResearchFailure("research_scout_parse_failure")
         raise ResearchFailure("research_scout_schema_rejected")
+    if context is not None:
+        remaining=[]
+        for scout_candidate in scout_candidates:
+            reason=_policy_reason(context,scout_candidate)
+            if reason:
+                policy_skipped_symbols.add(str(scout_candidate.get('symbol') or '').upper())
+                _record_policy_skip(reason)
+            else:remaining.append(scout_candidate)
+        scout_candidates=remaining
+        if not scout_candidates:return {'status':'none','none_reason':'no_new_eligible_opportunity'}
     focused_pages=None
     if cfg.get("focused_retrieval_enabled",False):
         focused=focused_retrieval(scout_candidates,deadline=overall_deadline)
@@ -1915,6 +2098,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             sec_dates[url]=sec_filing_date_for_url(url,deadline=evidence_deadline)
     fetched_evidence=attach_sec_filing_dates(fetched_evidence,sec_dates)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
+    def policy_bundle(selected):
+        # Missing acquired primary URLs are explicit unknown observations, not
+        # evidence that the remaining old anchor is the whole event bundle.
+        symbol=str(selected.get('symbol') or '').upper()
+        owned=dict.fromkeys((*original_policy_urls.get(symbol,()),*selected.get('urls',[])))
+        by_url={p.get('url'):p for p in fetched_evidence}
+        return [by_url.get(url,{'url':url}) for url in owned]
     def recover_stage(pages, *, allow_model, stage_deadline=None):
         nonlocal evidence_deadline
         # Pause ONLY unspent evidence work. Recovery charges its own cumulative
@@ -1965,6 +2155,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             pending=[]
             for scout_candidate in prioritize_thin_candidates(scout_candidates,filtered_evidence):
                 symbol=str(scout_candidate.get("symbol") or "")
+                if symbol.upper() in policy_skipped_symbols:continue
+                if context is not None:
+                    reason=_policy_reason(context,scout_candidate,policy_bundle(scout_candidate))
+                    # Unknown thin bundles still receive existing rescue; only
+                    # proven spent/held facts can prune before that retrieval.
+                    if reason in {'unchanged_opportunity','position_already_held','same_symbol_pending_entry'}:
+                        policy_skipped_symbols.add(symbol.upper());_record_policy_skip(reason);continue
                 candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
                 accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
                 if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
@@ -2035,6 +2232,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     ranked=initially_ranked if initially_ranked else ranked_candidate_evidence(scout_candidates,filtered_evidence)
     if not ranked:
+        if (context is not None and scout_candidates
+                and all(str(c.get('symbol') or '').upper() in policy_skipped_symbols for c in scout_candidates)
+                and not fetch_diagnostics):
+            return {'status':'none','none_reason':'no_new_eligible_opportunity'}
         blocker_urls=list(scout_candidates[0].get("urls",[])) if scout_candidates else []
         raise ResearchFailure(evidence_failure_code(
             fetch_diagnostics,quality_diagnostics,len(filtered_evidence),
@@ -2043,6 +2244,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         ))
     synthesis_remaining=float(SYNTHESIS_PHASE_BUDGET_SECONDS)
     enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"remaining":ENRICHMENT_BUDGET_SECONDS}
+    policy_transport_failure=None
+    last_synthesis_none=None
+    candidate={'status':'none','none_reason':'no_fresh_setup'}
     last_rejection=None
     attempted_symbols=set()
     # Reserve a viable synthesis window after deferred rescue within the original deadline.
@@ -2051,7 +2255,18 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     for batch in range(2):
         for selected,evidence in ranked:
             symbol=str(selected.get("symbol") or "").upper()
-            if symbol in attempted_symbols:continue
+            if symbol in attempted_symbols or symbol in policy_skipped_symbols:continue
+            if context is not None:
+                # Resolve the entire acquired primary bundle, not a ranker's
+                # truncated/subselected representation of it.
+                policy_pages=policy_bundle(selected)
+                owned={p.get('url') for p in policy_pages}
+                reason=_policy_reason(context,selected,policy_pages)
+                if reason:
+                    if reason in {'opportunity_identity_unknown','opportunity_identity_conflict'} and any(
+                        note.get('url') in owned and note.get('reason') in RETRIEVAL_DIAGNOSTIC_REASONS for note in source_diagnostics):
+                        policy_transport_failure=ResearchFailure('research_source_retrieval_failed')
+                    policy_skipped_symbols.add(symbol);_record_policy_skip(reason);continue
             if len(attempted_symbols)>=5:break
             now=monotonic()
             launch_remaining=min(synthesis_remaining,overall_deadline-now-float(enrichment_budget["remaining"] or 0.0))
@@ -2060,23 +2275,43 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 raise ResearchFailure("research_synthesis_timeout")
             attempted_symbols.add(symbol)
             try:
+                claim=None;trusted_prices=None
+                if context is not None:
+                    from opportunity_state import candidate_policy
+                    resolution=_resolve_policy(context,symbol,policy_pages)
+                    claim,trusted_prices=_condition_enrichment(context,resolution,symbol,enrichment_budget)
+                    decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
+                    if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
                 if float(enrichment_budget["remaining"] or 0)<=0 or monotonic()>=overall_deadline:
                     raise ResearchFailure("research_enrichment_timeout")
                 # A fresh candidate deadline uses only the unspent synthesis allowance.
                 # Enrichment pauses that clock; it still consumes the absolute deadline.
                 synthesis_started=monotonic()
                 enrichment_before=float(enrichment_budget["remaining"] or 0.0)
+                prices_token=_trusted_market_prices.set((symbol,trusted_prices) if trusted_prices is not None else None)
                 try:
                     candidate=synthesize_candidate(cfg,selected,evidence,
                         min(overall_deadline,synthesis_started+synthesis_remaining),enrichment_budget=enrichment_budget)
                 finally:
+                    _trusted_market_prices.reset(prices_token)
                     enrichment_spent=enrichment_before-float(enrichment_budget["remaining"] or 0.0)
                     synthesis_remaining=max(0.0,synthesis_remaining-max(0.0,monotonic()-synthesis_started-enrichment_spent))
                 if candidate.get("status")=="none":
+                    last_synthesis_none=candidate
                     last_rejection=None
                     continue
-                return intake(candidate)
-            except CandidateRejection as error:last_rejection=error
+                if context is None:return intake(_strip_policy_metadata(candidate))
+                resolution=_resolve_policy(context,symbol,policy_pages)
+                token=_policy_acquisition.set((context.root,resolution,policy_pages,claim))
+                try:
+                    # An injected intake cannot bypass the shared event gate.
+                    candidate=_bind_policy_candidate(_strip_policy_metadata(candidate),context)
+                    return intake(candidate)
+                finally:_policy_acquisition.reset(token)
+            except CandidateRejection as error:
+                if error.code in {'unchanged_opportunity','opportunity_identity_unknown','opportunity_identity_conflict','position_already_held','same_symbol_pending_entry'}:
+                    policy_skipped_symbols.add(symbol);_record_policy_skip(error.code)
+                else:last_rejection=error
             except SynthesisWindowExhausted:
                 if last_rejection is not None:raise last_rejection
                 raise
@@ -2099,6 +2334,9 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         ranked=ranked_candidate_evidence(scout_candidates,filtered_evidence)
     if last_rejection is not None:raise last_rejection
+    if policy_transport_failure is not None:raise policy_transport_failure
+    if last_synthesis_none is not None:return last_synthesis_none
+    if policy_skipped_symbols:return {'status':'none','none_reason':'no_new_eligible_opportunity'}
     return candidate
 
 
@@ -2115,9 +2353,10 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
     except subprocess.TimeoutExpired:
         raise ResearchFailure("research_synthesis_timeout")
     if synth.returncode: raise ResearchFailure("research_synthesis_unavailable")
-    try:candidate=extract_json(synth.stdout)
+    try:candidate=_strip_policy_metadata(extract_json(synth.stdout))
     except ValueError as error:raise ResearchFailure("research_parse_failure") from error
     if candidate.get("status")=="none":
+        candidate['none_reason']=synthesis_none_reason(candidate)
         try:record_synthesis_none(candidate,synthesis_prompt_text)
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         return candidate
@@ -2167,7 +2406,9 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
             candidate.pop("spy_price",None)
             try:
                 with enrichment_span('prices', 'massive'):
-                    candidate.update(synchronized_completed_close_prices(symbol))
+                    prefetched=_trusted_market_prices.get()
+                    candidate.update(prefetched[1] if prefetched is not None and prefetched[0]==symbol
+                                     else synchronized_completed_close_prices(symbol))
             except DurableAppendError:raise
             except ValueError as error:
                 # Only this exact adapter contract proves a candidate-local failure.
@@ -2183,17 +2424,45 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
     return candidate
 
 
+def _stored_policy_eligible(row,context,retryable_hashes=frozenset()):
+    from opportunity_identity import _load_binding
+    from opportunity_state import candidate_policy,refresh_policy_context
+    if context is None:return True
+    context=refresh_policy_context(context)
+    if not any(stored==row for stored in context.index.snapshot.rows.get('candidates.jsonl',())):return False
+    try:
+        resolution=_load_binding(row.get('opportunity_identity'))
+    except (ValueError,TypeError,KeyError):return False
+    dossier=row.get('dossier_hash')
+    if (row.get('event_id')!=resolution.event_id or not isinstance(dossier,str)
+            or context.index.dossier_allowances.get(dossier)!=row.get('allowance_id')):return False
+    claim=None
+    if 'reopening_claim' in row:
+        from opportunity_admin import restore_reopening_claim,serialize_reopening_claim,OpportunityAdminError
+        try:
+            claim=restore_reopening_claim(context.index,dossier,now=dt.datetime.now(dt.timezone.utc))
+            if serialize_reopening_claim(claim)!=row['reopening_claim']:return False
+        except OpportunityAdminError:return False
+    result=candidate_policy(context,resolution,symbol=str(row.get('symbol') or '').upper(),dossier_hash=dossier,reopening_claim=claim)
+    if result.outcome in {'eligible','reopening_pending'}:return True
+    # Preserve only the pre-existing exact-dossier ledger-proven safe retry.
+    # This never overrides held/pending or unknown policy state.
+    return (result.reason=='unchanged_opportunity' and dossier in retryable_hashes)
+
+
 def _select_fresh_candidate(
     rows:list[dict[str,Any]],cfg:dict[str,Any],now:dt.datetime,
     max_age_minutes:int,latest_review:str|None=None,
-    retryable_hashes:set[str]|None=None,
+    retryable_hashes:set[str]|None=None,*,root:Path|None=None,
 )->dict[str,Any]|None:
+    context=_run_policy_context(root if root is not None else ROOT)
     reuse_age_minutes=max(
         0,min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
         - EXECUTION_FRESHNESS_RESERVE_MINUTES,
     )
     for row in reversed(rows):
         if not isinstance(row,dict):continue
+        if not _stored_policy_eligible(row,context,retryable_hashes or set()):continue
         verified=row.get("sources_verified_at")
         if not isinstance(verified,str) or not verified:continue
         try:verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
@@ -2215,6 +2484,11 @@ def reusable_fresh_candidate(
     Completed reviews spend the dossier, except an explicitly approved plan
     rejected before broker submission and proved safe by its order ledger.
     """
+    context=_run_policy_context(candidates_path.parent)  # Outside permissive legacy read handlers.
+    if context is not None and (candidates_path.resolve()!=context.root/'candidates.jsonl'
+            or reviews_path.resolve()!=context.root/'private'/'reviews.jsonl'):
+        from opportunity_state import OpportunityStateError
+        raise OpportunityStateError('opportunity_policy_root_mismatch')
     cfg = json.loads((candidates_path.parent / "autonomy_config.json").read_text())
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
@@ -2240,18 +2514,19 @@ def reusable_fresh_candidate(
         if isinstance(row,dict) and isinstance(row.get("dossier_hash"),str)
         and pre_submission_retryable(row["dossier_hash"],review_rows,candidates_path.parent/"order_ledger.jsonl")
     }
-    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,latest_review,retryable_hashes)
+    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,latest_review,retryable_hashes,root=candidates_path.parent)
 
 
 def fresh_verified_candidate(candidates_path:Path,now:dt.datetime|None=None,max_age_minutes:int=60)->dict[str,Any]|None:
     """Newest candidate whose sources were verified within max_age_minutes."""
-    cfg=json.loads((ROOT/"autonomy_config.json").read_text())
+    _run_policy_context(candidates_path.parent)
+    cfg=json.loads((candidates_path.parent/"autonomy_config.json").read_text())
     now=now or dt.datetime.now(dt.timezone.utc)
     try:
         rows=read_jsonl(candidates_path, strict=True)
     except Exception:
         return None
-    return _select_fresh_candidate(rows,cfg,now,max_age_minutes)
+    return _select_fresh_candidate(rows,cfg,now,max_age_minutes,root=candidates_path.parent)
 
 
 def ensure_researched_at(candidate:dict[str,Any],now:str|None=None)->dict[str,Any]:
@@ -2281,12 +2556,18 @@ def ensure_researched_at(candidate:dict[str,Any],now:str|None=None)->dict[str,An
 
 def main_with_args(a:argparse.Namespace)->int:
     from earnings_spending import SpendingStateError
+    from opportunity_state import OpportunityStateError
+    try:_run_policy_context(ROOT)
+    except OpportunityStateError:
+        print('SYSTEM_FAILURE opportunity_policy_state_unavailable');return 3
     cfg=json.loads((ROOT/"autonomy_config.json").read_text())
     if not a.dry_run_fixture:
         try:
             reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
         except SpendingStateError:
             print("SYSTEM_FAILURE earnings_spending_state"); return 3
+        except OpportunityStateError:
+            print('SYSTEM_FAILURE opportunity_policy_state_unavailable');return 3
         except Exception:
             reused=None
         if reused is not None:
@@ -2301,21 +2582,28 @@ def main_with_args(a:argparse.Namespace)->int:
         raw=json.loads((ROOT/"fixtures"/"candidate.json").read_text()) if a.dry_run_fixture else live_research(cfg,intake=intake)
         c=normalize_candidate(raw)
         if c.get("status")=="none":
+            if c.get('none_reason')=='no_new_eligible_opportunity':
+                print('DECISION skipped no_new_eligible_opportunity');return 0
             none_reason=synthesis_none_reason(c)
             if none_reason=="no_fresh_setup":
                 print("DECISION skipped no_fresh_setup"); return 0
             print("BLOCKER research_"+none_reason); return 2
         if not intake_complete:c=prepare_candidate(c,cfg,verify_sources=not a.dry_run_fixture,ledger_path=ROOT/("test_artifacts/dry_run_order_ledger.jsonl" if a.dry_run_fixture else "order_ledger.jsonl"))
-        c.pop("_source_receipts",None)
+        if 'opportunity_identity' not in c:c.pop("_source_receipts",None)
         c["sources_verified_at"]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
         c["candidate_id"]=hashlib.sha256(f"{c['symbol']}|{c['researched_at']}".encode()).hexdigest()[:20]
+        _final_policy_check(c)
         c["dossier_hash"]=hashlib.sha256(json.dumps(c,sort_keys=True,separators=(",",":")).encode()).hexdigest()
         try:append(c)
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         print(decision_line(c)); return 0
     except Exception as e:
+        if isinstance(e,OpportunityStateError):
+            print('SYSTEM_FAILURE opportunity_policy_state_unavailable');return 3
         if isinstance(e,SpendingStateError):
             print("SYSTEM_FAILURE earnings_spending_state"); return 3
+        if isinstance(e,CandidateRejection) and e.code in {'unchanged_opportunity','opportunity_identity_unknown','opportunity_identity_conflict','position_already_held','same_symbol_pending_entry'}:
+            print('DECISION skipped no_new_eligible_opportunity');return 0
         if isinstance(e,CandidateRejection) and not e.code.startswith("research_"):
             print("BLOCKER "+e.code);return 2
         if isinstance(e,DurableAppendError) or (isinstance(e,ResearchFailure) and e.code=="research_persistence_failure"):
@@ -2326,6 +2614,8 @@ def main_with_args(a:argparse.Namespace)->int:
             reused=reusable_fresh_candidate(ROOT/"candidates.jsonl",ROOT/"private"/"reviews.jsonl")
         except SpendingStateError:
             print("SYSTEM_FAILURE earnings_spending_state"); return 3
+        except OpportunityStateError:
+            print('SYSTEM_FAILURE opportunity_policy_state_unavailable');return 3
         if reused is not None:
             print("DECISION reused_fresh_candidate "+str(reused.get("symbol","")).upper()); return 0
         if isinstance(e,ResearchFailure):
