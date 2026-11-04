@@ -101,6 +101,24 @@ Typed failures (`OpportunityStateError` / `ActivationStateError` /
   deterministically with `DECISION reopening_committed` and never reaches
   paid review in the same run.
 
+These tokens are mirrored in `run_cycle.py`'s `ALLOWED_FAILURE_TOKENS`, so a
+deterministic policy blocker audits as `{"decision": "blocked",
+"reason": <token>}` with exit 2 — never as an unspecified blocker and never
+as a success label or a market-condition retry reason.
+
+## Preconditions and run classification
+
+- Activated policy requires pending-entry qualification enabled: with an
+  activated policy, `evaluate_buy` hard-requires a valid pending proof even
+  when `pending_entry_policy` is disabled in config. Activation implicitly
+  requires pending qualification to be on; a disabled qualifier fails closed.
+- Run classification of a mixed run: if the last attempted candidate ends
+  with a non-policy `status: none` outcome while other candidates were
+  policy-skipped, the run classifies as the non-policy outcome
+  (`no_fresh_setup` family), not healthy policy exhaustion
+  (`no_new_eligible_opportunity`). Both are exit-0 classes; only the audit
+  reason differs.
+
 ## Entry evidence: bounded observation (new fields)
 
 With an activated policy, broker truth is carried as a versioned

@@ -60,6 +60,89 @@ class CycleTests(unittest.TestCase):
                     self.assertNotIn(private, json.dumps(row))
 
 
+    def test_policy_blocker_tokens_audit_blocked_with_own_reason(self):
+        # Exhaustive sweep of BLOCKER emitters reachable from autotrader.py
+        # and the entry-policy paths (entry_eligibility, opportunity_state,
+        # opportunity_admin, opportunity_activation): every deterministic
+        # policy blocker token must audit as decision=blocked with its own
+        # reason on exit 2, never reason=unspecified. These are skip/block
+        # classifications only, never success labels.
+        entry_decision = (
+            "position_already_held", "unchanged_opportunity",
+            "current_attempt_unauthorized", "dossier_binding_missing",
+            "historical_binding_missing", "event_binding_missing",
+            "opportunity_identity_unknown", "opportunity_identity_conflict",
+            "policy_not_activated", "opportunity_policy_not_activated",
+            "reopening_claim_unverified", "reopening_claim_pending",
+            "current_attempt_not_authorized",
+        )
+        entry_evidence = (
+            "entry_evidence_unverified", "entry_evidence_invalid",
+            "entry_evidence_stale", "entry_evidence_overlong",
+            "entry_evidence_future", "positions_unverified",
+            "entry_symbol_invalid",
+        )
+        entry_state = (
+            "opportunity_policy_version_unsupported",
+            "opportunity_policy_state_unavailable",
+            "opportunity_policy_root_mismatch",
+            "opportunity_policy_state_changed",
+            "opportunity_policy_state_regressed",
+            "reopening_commit",
+        )
+        index_validation = (
+            "invalid_manifest_source_reference",
+            "manifest_source_sequence_out_of_range",
+            "manifest_source_digest_mismatch", "invalid_unresolved_record",
+            "invalid_unresolved_issuer_scope",
+            "unresolved_scope_binding_mismatch",
+            "unresolved_scope_source_mismatch", "unresolved_scope_conflict",
+            "unresolved_scope_erasure",
+        )
+        reopening_admin = (
+            "canonical_encoding_failed", "manifest_object_required",
+            "aware_utc_clock_required", "unsupported_manifest_version",
+            "invalid_manifest_records", "invalid_manifest_resolution",
+            "manifest_hidden_reset", "invalid_manifest_alias",
+            "manifest_unknown_event", "invalid_manifest_condition",
+            "invalid_manifest_record", "unsupported_manifest_record_type",
+            "invalid_manifest_record_envelope",
+            "manifest_activation_version_required",
+            "activation_incomplete_history", "activation_version_regression",
+            "activation_append_failed", "policy_append_failed",
+            "manifest_validation_failed", "explicit_approved_digest_required",
+            "approval_digest_mismatch", "explicit_apply_flag_required",
+            "event_not_spent", "claim_store_unavailable",
+            "claim_seal_invalid", "claim_append_failed",
+            "observation_seal_invalid", "observation_evidence_missing",
+            "observation_lineage_mismatch", "evidence_append_failed",
+            "grant_append_failed", "claim_dossier_mismatch",
+            "claim_lineage_mismatch", "claim_not_durable",
+            "claim_prior_allowance_mismatch", "prior_allowance_mismatch",
+            "no_durable_claim", "invalid_reopening_approval", "unknown_event",
+            "condition_already_consumed", "condition_event_mismatch",
+            "condition_not_approved", "condition_not_satisfied",
+            "condition_unsupported", "dossier_hash_required",
+            "artifact_not_valid_json", "artifact_unreadable",
+            "canonical_artifact_digest_mismatch",
+            "raw_artifact_digest_mismatch",
+        )
+        groups = (
+            ("entry_decision", entry_decision), ("entry_evidence", entry_evidence),
+            ("entry_state", entry_state), ("index_validation", index_validation),
+            ("reopening_admin", reopening_admin),
+        )
+        for group, tokens in groups:
+            for token in tokens:
+                with self.subTest(group=group, token=token), \
+                        tempfile.TemporaryDirectory() as td:
+                    path = Path(td) / "decision_audit.jsonl"
+                    run_cycle.audit_result("autotrader", "execution", 2,
+                                           f"BLOCKER {token}\n", path)
+                    row = json.loads(path.read_text())
+                    self.assertEqual(row["decision"], "blocked")
+                    self.assertEqual(row["reason"], token)
+
     def test_execute_audits_the_final_result_after_retries(self):
         failed=subprocess.CompletedProcess([],3,"BLOCKER temporary_failure","")
         passed=subprocess.CompletedProcess([],0,"","")

@@ -86,6 +86,41 @@ ALLOWED_FAILURE_TOKENS=frozenset({
     "funding_state_invalid","managed_repair_required","entry_state_busy","entry_state_invalid",
     "entry_calendar_unavailable","entry_calendar_invalid","entry_placement_outside_session",
     "entry_expiry_invalid","entry_cancel_capability_unverified",
+    # Deterministic autotrader entry-policy blockers (exhaustive sweep of
+    # BLOCKER emitters in autotrader.py and the entry-policy modules):
+    # entry decisions, bounded-evidence failures, state/index validation and
+    # reopening-commit surfaces. Skip/block classifications only — never
+    # success labels and never market-condition retry-allowlist entries.
+    "position_already_held","unchanged_opportunity","current_attempt_unauthorized",
+    "dossier_binding_missing","historical_binding_missing","event_binding_missing",
+    "opportunity_identity_unknown","opportunity_identity_conflict","policy_not_activated",
+    "opportunity_policy_not_activated","reopening_claim_unverified","reopening_claim_pending",
+    "current_attempt_not_authorized","entry_evidence_unverified","entry_evidence_invalid",
+    "entry_evidence_stale","entry_evidence_overlong","entry_evidence_future",
+    "positions_unverified","entry_symbol_invalid","opportunity_policy_version_unsupported",
+    "opportunity_policy_root_mismatch","opportunity_policy_state_changed",
+    "opportunity_policy_state_regressed","reopening_commit",
+    "invalid_manifest_source_reference","manifest_source_sequence_out_of_range",
+    "manifest_source_digest_mismatch","invalid_unresolved_record",
+    "invalid_unresolved_issuer_scope","unresolved_scope_binding_mismatch",
+    "unresolved_scope_source_mismatch","unresolved_scope_conflict","unresolved_scope_erasure",
+    "canonical_encoding_failed","manifest_object_required","aware_utc_clock_required",
+    "unsupported_manifest_version","invalid_manifest_records","invalid_manifest_resolution",
+    "manifest_hidden_reset","invalid_manifest_alias","manifest_unknown_event",
+    "invalid_manifest_condition","invalid_manifest_record","unsupported_manifest_record_type",
+    "invalid_manifest_record_envelope","manifest_activation_version_required",
+    "activation_incomplete_history","activation_version_regression","activation_append_failed",
+    "policy_append_failed","manifest_validation_failed","explicit_approved_digest_required",
+    "approval_digest_mismatch","explicit_apply_flag_required","event_not_spent",
+    "claim_store_unavailable","claim_seal_invalid","claim_append_failed",
+    "observation_seal_invalid","observation_evidence_missing","observation_lineage_mismatch",
+    "evidence_append_failed","grant_append_failed","claim_dossier_mismatch",
+    "claim_lineage_mismatch","claim_not_durable","claim_prior_allowance_mismatch",
+    "prior_allowance_mismatch","no_durable_claim","invalid_reopening_approval","unknown_event",
+    "condition_already_consumed","condition_event_mismatch","condition_not_approved",
+    "condition_not_satisfied","condition_unsupported","dossier_hash_required",
+    "artifact_not_valid_json","artifact_unreadable","canonical_artifact_digest_mismatch",
+    "raw_artifact_digest_mismatch",
 })
 
 
