@@ -60,10 +60,15 @@ class OpportunityStateError(RuntimeError):
 class HistoricalDossierHashMissing(OpportunityStateError):
     """Read-only diagnostics only; never a usable/permission-bearing index."""
 
-    def __init__(self, snapshot: LedgerSnapshot, sequences: tuple[int, ...]):
+    def __init__(self, snapshot: LedgerSnapshot, sequences: tuple[int, ...],
+                 *, gaps: tuple[dict, ...] = (),
+                 sources: tuple[dict, ...] = (), state: dict | None = None):
         super().__init__('opportunity_policy_state_unavailable')
         self.snapshot = snapshot
         self.sequences = sequences
+        self.gaps = gaps
+        self.sources = sources
+        self.state = state
 
 
 def _canonical(value) -> bytes:
@@ -277,6 +282,7 @@ class OpportunityIndex:
     allowance_events: dict[str, str] = field(default_factory=dict, repr=False)
     state_digest: str = ''
     unresolved_issuer_scopes: dict[str, dict[str, str]] = field(default_factory=dict)
+    missing_history_gaps: tuple[dict, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, 'unresolved_issuer_scopes', MappingProxyType({
@@ -426,8 +432,13 @@ def _unresolved_record(row: dict, resolutions: dict, unresolved: set,
 
 
 def incomplete_history(index: OpportunityIndex) -> frozenset[str]:
-    """Unscoped/unrepresented historical reviews cannot imply a clean install."""
-    reviewed = {row['dossier_hash'] for row in index.snapshot.rows.get(REVIEWS_STREAM, ())}
+    """Unscoped/unrepresented historical reviews cannot imply a clean install.
+
+    Hashless gap rows carry no dossier hash; they are represented by
+    missing_history_gaps and never enter the reviewed-dossier set.
+    """
+    reviewed = {row['dossier_hash'] for row in index.snapshot.rows.get(REVIEWS_STREAM, ())
+                if isinstance(row, dict) and isinstance(row.get('dossier_hash'), str)}
     return frozenset((index.unresolved_dossiers | (reviewed - index.dossier_allowances.keys()))
                      - index.unresolved_issuer_scopes.keys())
 
@@ -515,7 +526,22 @@ def _candidate_links(rows: tuple[dict, ...], allowance_events: dict,
         dossier_allowances[dossier] = allowance
 
 
-def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
+def _gap_entry(snapshot_rows: dict, stream: str, sequence: int, record: dict) -> dict:
+    return {'stream': stream, 'sequence': sequence,
+            'row_sha256': _row_digest(snapshot_rows[stream][sequence - 1]),
+            'kind': record['kind'],
+            'symbol_evidence': record['symbol_evidence']}
+
+
+def _state_parts(snapshot: LedgerSnapshot) -> dict:
+    """Compute the full validated state; blockers/tolerance are reported, not raised.
+
+    Fail-closed ordering (I-2): every `missing_history` policy record is
+    validated against the referenced row's own canonical bytes BEFORE any
+    raise, then hashless gap rows are classified. Referenced gaps are
+    tolerated into `gaps`; unreferenced ones become typed blockers. Tolerance
+    never creates a dossier→allowance entry, allowance review, or permission.
+    """
     try:
         resolutions: dict[str, EventResolution] = {}
         aliases: dict[str, str] = {}
@@ -554,13 +580,35 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
             allowance = dossier_allowances.get(dossier)
             if allowance is not None and resolutions[allowance_events[allowance]].issuer.cik != scope['issuer_cik']:
                 raise OpportunityStateError('unresolved_scope_binding_mismatch')
+        # Gap validation precedes any raise (no partial index escape hatch).
+        gap_records: dict[tuple[str, int], dict] = {}
+        for row in snapshot.rows.get(POLICY_STREAM, ()):
+            if isinstance(row, dict) and row.get('record_type') == 'missing_history':
+                validated = _validate_gap_record(row, snapshot.rows)
+                key = (validated['source']['stream'], validated['source']['sequence'])
+                prior = gap_records.get(key)
+                if prior is not None and prior != validated:
+                    raise OpportunityStateError('missing_history_conflict')
+                gap_records[key] = validated
+        gaps: list[dict] = []
+        blockers: list[dict] = []
         allowance_reviews: dict[str, tuple[dict, ...]] = {}
         missing_dossier_sequences = []
+        matched: set[tuple[str, int]] = set()
         for sequence, row in enumerate(snapshot.rows.get(REVIEWS_STREAM, ()), 1):
             if not isinstance(row, dict) or not isinstance(row.get('evidence_id'), str):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             if 'dossier_hash' not in row:
-                missing_dossier_sequences.append(sequence)
+                key = (REVIEWS_STREAM, sequence)
+                record = gap_records.get(key)
+                if record is not None:
+                    gaps.append(_gap_entry(snapshot.rows, REVIEWS_STREAM,
+                                           sequence, record))
+                    matched.add(key)
+                else:
+                    missing_dossier_sequences.append(sequence)
+                    blockers.append({'stream': REVIEWS_STREAM, 'sequence': sequence,
+                                     'row_sha256': _row_digest(row)})
                 continue  # Retained as a typed whole-index blocker below, never ignored.
             dossier = row.get('dossier_hash')
             if not isinstance(dossier, str):
@@ -569,30 +617,68 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
                 continue  # Unbound historical dossiers fail closed at decision time.
             allowance_reviews.setdefault(dossier_allowances[dossier], ())
             allowance_reviews[dossier_allowances[dossier]] += (row,)
-        if missing_dossier_sequences:
-            raise HistoricalDossierHashMissing(snapshot, tuple(missing_dossier_sequences))
-        digest = sha256(_canonical({
-            'version': 1,
-            'activated_version': version,
-            'resolutions': sorted(resolutions),
-            'document_aliases': sorted(aliases.items()),
-            'conditions': [[key, _canonical(row).decode('ascii')]
-                           for key, row in sorted(conditions.items())],
-            'unresolved_dossiers': sorted(unresolved),
-            'unresolved_issuer_scopes': sorted(scopes.items()),
-            'grants': sorted(grants),
-            'dossier_allowances': sorted(dossier_allowances.items()),
-            'allowance_reviews': [[_canonical(r).decode('ascii') for r in rows]
-                                  for _, rows in sorted(allowance_reviews.items())],
-            'watermark': list(snapshot.watermark),
-        })).hexdigest()
+        # Only hashless filled BUY trade rows are gap-classified; hashless
+        # filled SELL rows are explicit non-blockers, asserted by test (I-2).
+        for sequence, row in enumerate(snapshot.rows.get(TRADE_JOURNAL_STREAM, ()), 1):
+            if (isinstance(row, dict) and 'dossier_hash' not in row
+                    and row.get('action') == 'BUY' and row.get('status') == 'filled'):
+                key = (TRADE_JOURNAL_STREAM, sequence)
+                record = gap_records.get(key)
+                if record is not None:
+                    gaps.append(_gap_entry(snapshot.rows, TRADE_JOURNAL_STREAM,
+                                           sequence, record))
+                    matched.add(key)
+                else:
+                    blockers.append({'stream': TRADE_JOURNAL_STREAM,
+                                     'sequence': sequence,
+                                     'row_sha256': _row_digest(row)})
+        unmatched = [key for key in gap_records if key not in matched]
+        if unmatched:
+            raise OpportunityStateError('missing_history_not_gap_row')
+        return {'version': version, 'resolutions': resolutions, 'aliases': aliases,
+                'grants': grants, 'conditions': conditions, 'unresolved': unresolved,
+                'scopes': scopes, 'allowance_events': allowance_events,
+                'dossier_allowances': dossier_allowances,
+                'allowance_reviews': allowance_reviews,
+                'missing_dossier_sequences': tuple(missing_dossier_sequences),
+                'gaps': tuple(gaps), 'blockers': tuple(blockers)}
     except (LedgerError, ValueError, TypeError, KeyError) as error:
         if isinstance(error, OpportunityStateError):
             raise
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
-    return OpportunityIndex(snapshot, version, resolutions, aliases,
-                            dossier_allowances, allowance_reviews, grants,
-                            conditions, frozenset(unresolved), allowance_events, digest, scopes)
+
+
+def _index_from_parts(snapshot: LedgerSnapshot, parts: dict) -> OpportunityIndex:
+    digest = sha256(_canonical({
+        'version': 1,
+        'activated_version': parts['version'],
+        'resolutions': sorted(parts['resolutions']),
+        'document_aliases': sorted(parts['aliases'].items()),
+        'conditions': [[key, _canonical(row).decode('ascii')]
+                       for key, row in sorted(parts['conditions'].items())],
+        'unresolved_dossiers': sorted(parts['unresolved']),
+        'unresolved_issuer_scopes': sorted(parts['scopes'].items()),
+        'grants': sorted(parts['grants']),
+        'dossier_allowances': sorted(parts['dossier_allowances'].items()),
+        'allowance_reviews': [[_canonical(r).decode('ascii') for r in rows]
+                              for _, rows in sorted(parts['allowance_reviews'].items())],
+        'watermark': list(snapshot.watermark),
+    })).hexdigest()
+    return OpportunityIndex(snapshot, parts['version'], parts['resolutions'],
+                            parts['aliases'], parts['dossier_allowances'],
+                            parts['allowance_reviews'], parts['grants'],
+                            parts['conditions'], frozenset(parts['unresolved']),
+                            parts['allowance_events'], digest, parts['scopes'],
+                            parts['gaps'])
+
+
+def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
+    parts = _state_parts(snapshot)
+    if parts['blockers']:
+        raise HistoricalDossierHashMissing(
+            snapshot, parts['missing_dossier_sequences'], gaps=parts['gaps'],
+            sources=parts['blockers'], state=parts)
+    return _index_from_parts(snapshot, parts)
 
 
 def load_index(root: Path) -> OpportunityIndex:

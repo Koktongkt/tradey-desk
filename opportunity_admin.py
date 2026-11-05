@@ -268,22 +268,27 @@ def audit_history(root: Path) -> dict:
     try:
         index = load_index(Path(root))
     except OpportunityStateError as error:
-        from opportunity_state import HistoricalDossierHashMissing, REVIEWS_STREAM
+        from opportunity_state import HistoricalDossierHashMissing
         if not isinstance(error, HistoricalDossierHashMissing):
             raise OpportunityAdminError('opportunity_policy_state_unavailable') from error
-        # Exact missing rows remain visible, but no policy index/permission is
-        # returned. Validation/import/activation still use _index_or_fail.
+        # Exact missing rows and tolerated gap records remain visible, but no
+        # policy index/permission is returned. Validation/import/activation
+        # still use _index_or_fail.
         snapshot = error.snapshot
+        from opportunity_state import REVIEWS_STREAM as _REVIEWS_STREAM
+        legacy_sources = [
+            {'stream': _REVIEWS_STREAM, 'sequence': sequence,
+             'row_sha256': hashlib.sha256(_canonical(
+                 snapshot.rows[_REVIEWS_STREAM][sequence - 1])).hexdigest()}
+            for sequence in error.sequences]
         return {
             'status': 'blocked', 'index_available': False,
             'blockers': ['historical_dossier_hash_missing'],
             'base_watermark': list(snapshot.watermark),
             'history_row_counts': {name: len(rows) for name, rows in snapshot.rows.items()},
-            'missing_dossier_sources': [
-                {'stream': REVIEWS_STREAM, 'sequence': sequence,
-                 'row_sha256': hashlib.sha256(_canonical(
-                     snapshot.rows[REVIEWS_STREAM][sequence - 1])).hexdigest()}
-                for sequence in error.sequences],
+            'missing_dossier_sources': ([dict(source) for source in error.sources]
+                                        if error.sources else legacy_sources),
+            'missing_history_gaps': [dict(gap) for gap in error.gaps],
         }
     bindings = {}
     for event_id, resolution in index.resolutions.items():
@@ -300,6 +305,7 @@ def audit_history(root: Path) -> dict:
         'unresolved_issuer_scopes': {key: dict(value) for key, value in sorted(index.unresolved_issuer_scopes.items())},
         'unscoped_unresolved_cases': sorted(index.unresolved_dossiers - index.unresolved_issuer_scopes.keys()),
         'incomplete_history_cases': sorted(incomplete_history(index)),
+        'missing_history_gaps': [dict(gap) for gap in index.missing_history_gaps],
         'condition_approvals': sorted(index.conditions),
         'consumed_conditions': sorted(
             {grant.get('condition_id') for grant in index.grants.values()
@@ -391,12 +397,29 @@ def _validated_condition_record(record: dict, index: OpportunityIndex) -> dict:
             'event_id': event_id, 'condition': condition.record()}
 
 
+def _validation_index(root: Path) -> OpportunityIndex:
+    """Validation-only index, tolerant of the typed blocked state.
+
+    On a root blocked by HistoricalDossierHashMissing, the typed exception
+    carries the fully validated pre-raise state; a read-only validation index
+    is rebuilt from it. This index never leaves validate_manifest/import and
+    never grants permission; activation keeps the strict _index_or_fail gate.
+    """
+    try:
+        return load_index(Path(root))
+    except OpportunityStateError as error:
+        from opportunity_state import HistoricalDossierHashMissing, _index_from_parts
+        if not isinstance(error, HistoricalDossierHashMissing) or error.state is None:
+            raise OpportunityAdminError('opportunity_policy_state_unavailable') from error
+        return _index_from_parts(error.snapshot, error.state)
+
+
 def validate_manifest(root: Path, manifest: dict) -> dict:
     """Read-only manifest validation. Writes nothing; failure is a report."""
     errors: list[str] = []
     records: list[dict] = []
     try:
-        index = _index_or_fail(root)
+        index = _validation_index(root)
         raw = _manifest_records(manifest)
     except OpportunityAdminError as error:
         return {'valid': False, 'errors': [str(error)], 'records': 0}
@@ -431,11 +454,22 @@ def validate_manifest(root: Path, manifest: dict) -> dict:
         try:
             # Validate the ordered aggregate too: separate records in one
             # manifest cannot conflict/erase scope or evade canonical checks.
+            # Remaining typed blockers are tolerated for import (the pre-
+            # migration root is blocked until every gap record has landed);
+            # any other projected-state error is a validation failure.
+            from opportunity_state import _state_parts, _index_from_parts
             projected_rows = dict(snapshot_rows)
             projected_rows[POLICY_STREAM] = snapshot_rows.get(POLICY_STREAM, ()) + tuple(records)
-            projected = _build(replace(index.snapshot, rows=projected_rows))
-            if 'activation' in manifest and incomplete_history(projected):
-                errors.append('activation_incomplete_history')
+            projected_snapshot = replace(index.snapshot, rows=projected_rows)
+            try:
+                parts = _state_parts(projected_snapshot)
+            except OpportunityStateError as error:
+                errors.append(str(error))
+                parts = None
+            if parts is not None:
+                projected = _index_from_parts(projected_snapshot, parts)
+                if 'activation' in manifest and incomplete_history(projected):
+                    errors.append('activation_incomplete_history')
         except OpportunityStateError as error:
             errors.append(str(error))
     return {'valid': not errors, 'errors': errors,
@@ -477,7 +511,7 @@ def import_manifest(root: Path, manifest: dict, *,
         if not report['valid']:
             raise OpportunityAdminError(
                 'manifest_validation_failed:' + ';'.join(report['errors']))
-        index = _index_or_fail(root)
+        _validation_index(root)
         existing = {_canonical(row) for row in _policy_rows(root)}
         for record in report['records']:
             if _canonical(record) not in existing:

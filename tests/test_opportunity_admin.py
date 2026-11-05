@@ -175,6 +175,52 @@ class OpportunityAdminTests(unittest.TestCase):
                 with self.assertRaises(state.OpportunityStateError):
                     state.load_index(self.root)
 
+    def test_blocked_audit_reports_referenced_gaps_and_remaining_blockers(self):
+        import opportunity_admin as admin
+        legacy = fixtures.gap_review_row(with_symbol=True, with_hint=False,
+                                         evidence_id='synthetic-old-review',
+                                         symbol='SYNTH')
+        trade = fixtures.gap_trade_row(action='BUY', symbol='ZZZSYNB')
+        self.write(REVIEWS, [legacy])
+        self.write('trade_journal.jsonl', [trade])
+        record = fixtures.missing_history_row(
+            kind='legacy_review_unlinked',
+            source={'stream': REVIEWS, 'sequence': 1,
+                    'row_sha256': digest_of(legacy)},
+            observed_fields=sorted(legacy),
+            issuer_evidence={'symbol': 'SYNTH'})
+        self.write(POLICY, [record])
+        before = self.snapshot_bytes()
+        report = admin.audit_history(self.root)
+        self.assertEqual(report['status'], 'blocked')
+        self.assertEqual(report['missing_history_gaps'], [
+            {'stream': REVIEWS, 'sequence': 1, 'row_sha256': digest_of(legacy),
+             'kind': 'legacy_review_unlinked', 'symbol_evidence': 'SYNTH'}])
+        self.assertEqual(report['missing_dossier_sources'], [
+            {'stream': 'trade_journal.jsonl', 'sequence': 1,
+             'row_sha256': digest_of(trade)}])
+        self.assertEqual(self.snapshot_bytes(), before)
+
+    def test_unblocked_audit_reports_gaps_alongside_incomplete_cases(self):
+        import opportunity_admin as admin
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_gap_root(Path(temporary.name), review_gaps=1,
+                                      hint_rows=0, buy_gaps=0, sell_rows=1,
+                                      bound_rows=1)
+        legacy = storage.read_jsonl_stream_readonly(root / REVIEWS)[0]
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_row(
+            kind='legacy_review_unlinked',
+            source={'stream': REVIEWS, 'sequence': 1,
+                    'row_sha256': digest_of(legacy)},
+            observed_fields=sorted(legacy),
+            issuer_evidence={'symbol': 'ZZZSYNR0'}))
+        report = admin.audit_history(root)
+        self.assertNotIn('status', report)
+        self.assertEqual([gap['symbol_evidence']
+                          for gap in report['missing_history_gaps']], ['ZZZSYNR0'])
+        self.assertEqual(report['incomplete_history_cases'], [DOSSIER_A])
+
     def test_manifest_source_binds_legacy_review_and_spends_without_rewriting(self):
         import opportunity_admin as admin
         import opportunity_state as state

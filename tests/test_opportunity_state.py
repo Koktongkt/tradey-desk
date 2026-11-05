@@ -690,6 +690,135 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
 
 
+    def _fresh_gap_root(self, **kwargs):
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return fixtures.make_gap_root(Path(temporary.name), **kwargs)
+
+    def _write_gap_record(self, root, stream, sequence, *, kind, **overrides):
+        """Write one validated gap record into the canonical policy stream."""
+        snapshot = storage.read_stream_snapshot_readonly(
+            root, ('private/reviews.jsonl', 'trade_journal.jsonl'))
+        row = snapshot.rows[stream][sequence - 1]
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_row(
+            kind=kind,
+            source={'stream': stream, 'sequence': sequence,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            **overrides))
+
+    def test_exact_gap_record_builds_index_without_permissions(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=1, hint_rows=0, buy_gaps=0,
+                                    sell_rows=0)
+        self._write_gap_record(root, 'private/reviews.jsonl', 1,
+                               kind='legacy_review_unlinked',
+                               issuer_evidence={'symbol': 'ZZZSYNR0'})
+        index = state.load_index(root)
+        self.assertEqual(len(index.missing_history_gaps), 1)
+        gap = index.missing_history_gaps[0]
+        self.assertEqual((gap['stream'], gap['sequence'], gap['kind'],
+                          gap['symbol_evidence']),
+                         ('private/reviews.jsonl', 1, 'legacy_review_unlinked',
+                          'ZZZSYNR0'))
+        # Tolerance never creates a dossier→allowance entry or permission.
+        self.assertEqual(index.dossier_allowances, {})
+        self.assertEqual(index.allowance_reviews, {})
+        self.assertEqual(index.grants, {})
+        # The hashless gap row carries no dossier, so it is absent from the
+        # reviewed-dossier set; tolerance adds no unresolved dossier either.
+        self.assertEqual(state.incomplete_history(index), frozenset())
+
+    def test_gap_digest_mutation_fails_closed_on_reload(self):
+        import opportunity_state as state
+        for stream, kind in (('private/reviews.jsonl', 'legacy_review_unlinked'),
+                             ('trade_journal.jsonl', 'filled_buy_unlinked')):
+            with self.subTest(stream=stream):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                root = fixtures.make_gap_root(
+                    Path(temporary.name), review_gaps=1, hint_rows=0,
+                    buy_gaps=1, sell_rows=0)
+                snapshot = storage.read_stream_snapshot_readonly(
+                    root, ('private/reviews.jsonl', 'trade_journal.jsonl'))
+                row = snapshot.rows[stream][1 - 1 if stream != 'trade_journal.jsonl' else 0]
+                storage.append_jsonl(root / POLICY, fixtures.missing_history_row(
+                    kind=kind,
+                    source={'stream': stream, 'sequence': 1,
+                            'row_sha256': '0' * 64},
+                    observed_fields=sorted(row)))
+                with self.assertRaisesRegex(state.OpportunityStateError,
+                                            'manifest_source_digest_mismatch'):
+                    state.load_index(root)
+
+    def test_mixed_root_still_raises_for_unreferenced_row(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=1, hint_rows=0, buy_gaps=1,
+                                    sell_rows=0)
+        self._write_gap_record(root, 'private/reviews.jsonl', 1,
+                               kind='legacy_review_unlinked',
+                               issuer_evidence={'symbol': 'ZZZSYNR0'})
+        with self.assertRaises(state.HistoricalDossierHashMissing) as caught:
+            state.load_index(root)
+        sources = [source['stream'] for source in caught.exception.sources]
+        self.assertEqual(sources, ['trade_journal.jsonl'])
+        self.assertEqual([source['sequence'] for source in caught.exception.sources],
+                         [1])
+
+    def test_gap_record_referencing_dossier_row_fails(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=0, hint_rows=0, buy_gaps=0,
+                                    sell_rows=0, bound_rows=1)
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'missing_history_not_gap_row'):
+            self._write_gap_record(root, 'private/reviews.jsonl', 1,
+                                   kind='legacy_review_unlinked',
+                                   issuer_evidence={'symbol': 'ZZZSYNA'})
+            state.load_index(root)
+
+    def test_gap_record_non_migration_stream_fails(self):
+        import opportunity_state as state
+        record = fixtures.missing_history_row(
+            source={'stream': 'candidates.jsonl', 'sequence': 1,
+                    'row_sha256': 'e' * 64},
+            observed_fields=[])
+        self.write(POLICY, [record])
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'invalid_manifest_source_reference'):
+            state.load_index(self.root)
+
+    def test_gap_record_unsubstantiated_symbol_fails_on_reload(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=1, hint_rows=0, buy_gaps=0,
+                                    sell_rows=0)
+        with self.assertRaisesRegex(
+                state.OpportunityStateError,
+                'missing_history_symbol_evidence_unsubstantiated'):
+            self._write_gap_record(root, 'private/reviews.jsonl', 1,
+                                   kind='legacy_review_unlinked',
+                                   issuer_evidence={'symbol': 'ZZZNOTINROW'})
+            state.load_index(root)
+
+    def test_sell_rows_never_raise_or_grant(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=0, hint_rows=0, buy_gaps=0,
+                                    sell_rows=2)
+        index = state.load_index(root)
+        self.assertEqual(index.missing_history_gaps, ())
+        self.assertEqual(index.unknown_history_blocks if hasattr(
+            index, 'unknown_history_blocks') else {}, {})
+
+    def test_hint_row_gap_with_null_evidence_is_tolerated(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=0, hint_rows=1, buy_gaps=0,
+                                    sell_rows=0)
+        self._write_gap_record(root, 'private/reviews.jsonl', 1,
+                               kind='legacy_review_unlinked')
+        index = state.load_index(root)
+        self.assertEqual(len(index.missing_history_gaps), 1)
+        self.assertIsNone(index.missing_history_gaps[0]['symbol_evidence'])
+
     def test_missing_history_bad_reason_fails_closed(self):
         import opportunity_state as state
         rows = (fixtures.missing_history_row(reason='invented_reason'),)
@@ -747,7 +876,7 @@ class OpportunityStateTests(unittest.TestCase):
         root = fixtures.make_gap_root(Path(temporary.name), review_gaps=0,
                                       hint_rows=0, buy_gaps=1, sell_rows=0)
         with self.assertRaisesRegex(state.HistoricalDossierHashMissing,
-                                    'historical_dossier_hash_missing'):
+                                    'opportunity_policy_state_unavailable'):
             state.load_index(root)  # today only REVIEWS_STREAM raises; BUY row unscanned
 
 
