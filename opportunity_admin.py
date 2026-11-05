@@ -264,7 +264,27 @@ def _index_or_fail(root: Path) -> OpportunityIndex:
 def audit_history(root: Path) -> dict:
     """Read-only audit: version, base watermarks, proposed bindings and
     unresolved cases, derived only from the coherent validated index."""
-    index = _index_or_fail(root)
+    index = None
+    try:
+        index = load_index(Path(root))
+    except OpportunityStateError as error:
+        from opportunity_state import HistoricalDossierHashMissing, REVIEWS_STREAM
+        if not isinstance(error, HistoricalDossierHashMissing):
+            raise OpportunityAdminError('opportunity_policy_state_unavailable') from error
+        # Exact missing rows remain visible, but no policy index/permission is
+        # returned. Validation/import/activation still use _index_or_fail.
+        snapshot = error.snapshot
+        return {
+            'status': 'blocked', 'index_available': False,
+            'blockers': ['historical_dossier_hash_missing'],
+            'base_watermark': list(snapshot.watermark),
+            'history_row_counts': {name: len(rows) for name, rows in snapshot.rows.items()},
+            'missing_dossier_sources': [
+                {'stream': REVIEWS_STREAM, 'sequence': sequence,
+                 'row_sha256': hashlib.sha256(_canonical(
+                     snapshot.rows[REVIEWS_STREAM][sequence - 1])).hexdigest()}
+                for sequence in error.sequences],
+        }
     bindings = {}
     for event_id, resolution in index.resolutions.items():
         bindings[event_id] = {

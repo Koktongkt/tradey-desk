@@ -156,6 +156,115 @@ class OpportunityAdminTests(unittest.TestCase):
         # Change the fictional SEC locator too; a CIK alone is not evidence.
         return json.loads(json.dumps(payload).replace('1999999', '1888888'))
 
+    def test_legacy_hash_only_candidate_is_auditable_without_permission(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        self.write(CANDIDATES, [{'candidate_id': 'synthetic-legacy',
+                                 'dossier_hash': DOSSIER_A, 'sources': []}])
+        self.write(REVIEWS, [fixtures.review_row(
+            DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}])])
+        before = self.snapshot_bytes()
+        report = admin.audit_history(self.root)
+        self.assertEqual(report['incomplete_history_cases'], [DOSSIER_A])
+        self.assertEqual(state.load_index(self.root).dossier_allowances, {})
+        self.assertEqual(self.snapshot_bytes(), before)
+        for partial in ({'event_id': 'synthetic-event'},
+                        {'allowance_id': 'synthetic-allowance'}):
+            with self.subTest(partial=partial):
+                self.write(CANDIDATES, [{'dossier_hash': DOSSIER_A, **partial}])
+                with self.assertRaises(state.OpportunityStateError):
+                    state.load_index(self.root)
+
+    def test_manifest_source_binds_legacy_review_and_spends_without_rewriting(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        review = fixtures.review_row(DOSSIER_A, EVIDENCE_1,
+                                     [{'action': 'HOLD', 'symbol': 'SYNTH'}])
+        self.write(CANDIDATES, [{'dossier_hash': DOSSIER_A}])
+        self.write(REVIEWS, [review])
+        resolution = fixtures.synthetic_resolution()
+        record = fixtures.policy_row(
+            'identity_resolution', resolution=fixtures.synthetic_resolution_payload(),
+            source={'stream': REVIEWS, 'sequence': 1, 'row_sha256': digest_of(review)})
+        manifest = {'manifest_version': 1, 'records': [record],
+                    'activation': {'policy_version': 1}}
+        before = self.snapshot_bytes()
+        report = admin.validate_manifest(self.root, manifest)
+        self.assertTrue(report['valid'], report['errors'])
+        self.assertEqual(self.snapshot_bytes(), before)
+        # A projected bootstrap exercises index semantics without approval/apply.
+        from dataclasses import replace
+        snapshot = state.load_index(self.root).snapshot
+        projected = state._build(replace(snapshot, rows={
+            **snapshot.rows, POLICY: tuple(report['records'])}))
+        allowance = state.allowance_identifier(resolution.event_id, 0)
+        self.assertEqual(projected.dossier_allowances[DOSSIER_A], allowance)
+        self.assertEqual(projected.allowance_reviews[allowance], (review,))
+        self.assertTrue(state._spends(projected.allowance_reviews[allowance][0]))
+        self.assertFalse(state.incomplete_history(projected))
+        next_allowance = state.allowance_identifier(resolution.event_id, 1)
+        grant = fixtures.policy_row('reopen_grant', event_id=resolution.event_id,
+                                    generation=1, prior_allowance_id=allowance,
+                                    allowance_id=next_allowance)
+        reopened = state._build(replace(snapshot, rows={
+            **snapshot.rows, POLICY: (record, grant)}))
+        self.assertEqual(state._current_allowance(reopened, resolution.event_id),
+                         next_allowance)
+        self.assertEqual(reopened.dossier_allowances[DOSSIER_A], allowance)
+        self.assertEqual(reopened.allowance_reviews[allowance], (review,))
+        self.assertNotIn(next_allowance, reopened.allowance_reviews)
+        other = fixtures.policy_row(
+            'identity_resolution', resolution=fixtures.synthetic_resolution_payload(period='2026-Q2'),
+            source=record['source'])
+        with self.assertRaises(state.OpportunityStateError):
+            state._build(replace(snapshot, rows={**snapshot.rows, POLICY: (record, other)}))
+        changed = json.loads(json.dumps(record))
+        changed['source']['row_sha256'] = '0' * 64
+        with self.assertRaises(state.OpportunityStateError):
+            state._build(replace(snapshot, rows={**snapshot.rows, POLICY: (changed,)}))
+
+    def test_hashless_legacy_review_audit_reports_sources_but_index_stays_closed(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        legacy = {'evidence_id': 'synthetic-old-review',
+                  'timestamp': '2026-01-01T00:00:00Z',
+                  'reviews': [{'action': 'BUY', 'symbol': 'SYNTH'}]}
+        self.write(REVIEWS, [legacy, fixtures.review_row(
+            DOSSIER_A, EVIDENCE_1, [{'decision': 'REJECT'}])])
+        self.write(CANDIDATES, [{'dossier_hash': DOSSIER_A}])
+        before = self.snapshot_bytes()
+        report = admin.audit_history(self.root)
+        self.assertEqual(report['status'], 'blocked')
+        self.assertEqual(report['blockers'], ['historical_dossier_hash_missing'])
+        self.assertEqual(report['history_row_counts'][REVIEWS], 2)
+        self.assertEqual(report['missing_dossier_sources'], [
+            {'stream': REVIEWS, 'sequence': 1, 'row_sha256': digest_of(legacy)}])
+        self.assertEqual(self.snapshot_bytes(), before)
+        with self.assertRaises(state.OpportunityStateError):
+            state.load_index(self.root)
+        self.assertFalse(admin.validate_manifest(self.root, {
+            'manifest_version': 1, 'records': [],
+            'activation': {'policy_version': 1}})['valid'])
+        # A known legacy gap never hides other malformed policy state.
+        self.write(CANDIDATES, [{'dossier_hash': DOSSIER_A, 'event_id': 'partial'}])
+        with self.assertRaises(admin.OpportunityAdminError):
+            admin.audit_history(self.root)
+
+    def test_legacy_action_reviews_spend_without_becoming_approval(self):
+        import opportunity_state as state
+        for action in ('HOLD', 'BUY'):
+            review = fixtures.review_row(DOSSIER_A, EVIDENCE_1,
+                                         [{'action': action, 'symbol': 'SYNTH'}])
+            self.assertTrue(state._spends(review))
+            # A proposed BUY is not normalized dual-review approval or retry.
+            self.assertTrue(state._completed_dissent(review))
+            self.assertFalse(state._dual_approval_row(review))
+        for output in ({}, {'action': 'UNKNOWN'},
+                       {'action': 'BUY', 'decision': 'execution_retryable'},
+                       {'action': 'HOLD', 'decision': 'reconciliation_blocked'}):
+            self.assertFalse(state._spends(fixtures.review_row(
+                DOSSIER_A, EVIDENCE_1, [output])))
+
     def test_reviewed_scope_import_replay_unrelated_and_same_issuer(self):
         import opportunity_admin as admin
         import opportunity_state as state

@@ -45,6 +45,15 @@ class OpportunityStateError(RuntimeError):
     """Opportunity state is unavailable, incoherent, or unsupported."""
 
 
+class HistoricalDossierHashMissing(OpportunityStateError):
+    """Read-only diagnostics only; never a usable/permission-bearing index."""
+
+    def __init__(self, snapshot: LedgerSnapshot, sequences: tuple[int, ...]):
+        super().__init__('opportunity_policy_state_unavailable')
+        self.snapshot = snapshot
+        self.sequences = sequences
+
+
 def _canonical(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(',', ':'),
                       ensure_ascii=True, allow_nan=False).encode('ascii')
@@ -192,15 +201,31 @@ def _completed_decisions(row: dict) -> list[dict]:
     return [r for r in reviews if isinstance(r, dict) and r.get('decision') is not None]
 
 
+def _legacy_completed_outputs(row: dict) -> list[dict]:
+    """Retained pre-decision reviewer outputs; never approval authority.
+
+    Legacy BUY/HOLD proposals are completed paid reviews, not empty output.
+    Explicit marker decisions always win over the legacy action vocabulary.
+    """
+    reviews = row.get('reviews')
+    if not isinstance(reviews, list):
+        return []
+    return [r for r in reviews if isinstance(r, dict) and 'decision' not in r
+            and r.get('action') in ('BUY', 'HOLD')]
+
+
 def _completed_dissent(row: dict) -> bool:
-    return any(r.get('decision') not in _EXEMPT_DECISIONS or bool(r.get('fatal_flags'))
-               for r in _completed_decisions(row))
+    # Unnormalized legacy completion never proves consensus approval/retry.
+    return bool(_legacy_completed_outputs(row)) or any(
+        r.get('decision') not in _EXEMPT_DECISIONS or bool(r.get('fatal_flags'))
+        for r in _completed_decisions(row))
 
 
 def _spends(row: dict) -> bool:
-    """A completed review with real decisions; empty/marker output never spends."""
-    return any(r.get('decision') not in ('reconciliation_blocked', 'execution_retryable')
-               for r in _completed_decisions(row))
+    """Completed modern/legacy review; empty/marker output never spends."""
+    return bool(_legacy_completed_outputs(row)) or any(
+        r.get('decision') not in ('reconciliation_blocked', 'execution_retryable')
+        for r in _completed_decisions(row))
 
 
 def _dual_approval_row(row: dict) -> bool:
@@ -373,9 +398,9 @@ def _candidate_links(rows: tuple[dict, ...], allowance_events: dict,
     for row in rows:
         if not isinstance(row, dict):
             continue
-        keys = {'dossier_hash', 'event_id', 'allowance_id'}
+        keys = {'event_id', 'allowance_id'}
         if not keys & set(row):
-            continue  # Ordinary candidate rows carry no policy links yet.
+            continue  # Legacy dossier hashes alone are not policy links.
         dossier = row.get('dossier_hash')
         event_id = row.get('event_id')
         allowance = row.get('allowance_id')
@@ -407,6 +432,22 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
             if resolutions[scope['binding_event_id']].issuer.cik != scope['issuer_cik']:
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
         dossier_allowances: dict[str, str] = {}
+        # Reviewed historical source references bind to the original allowance,
+        # never the current (possibly reopened) generation. Validate exact rows
+        # on every load so imported history cannot be detached or repointed.
+        for row in snapshot.rows.get(POLICY_STREAM, ()):
+            if (row.get('record_type') == 'identity_resolution'
+                    and 'resolution' in row and 'source' in row):
+                source = _source_row(row['source'], snapshot.rows)
+                if 'dossier_hash' not in source:
+                    continue  # Identity provenance alone grants no dossier permission.
+                event_id = _load_binding(row['resolution']).event_id
+                if not isinstance(event_id, str):
+                    raise OpportunityStateError('opportunity_policy_state_unavailable')
+                _candidate_links(({'dossier_hash': source.get('dossier_hash'),
+                                   'event_id': event_id,
+                                   'allowance_id': allowance_identifier(event_id, 0)},),
+                                 allowance_events, dossier_allowances)
         _candidate_links(snapshot.rows.get(CANDIDATES_STREAM, ()), allowance_events,
                          dossier_allowances)
         for dossier, scope in scopes.items():
@@ -414,16 +455,22 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
             if allowance is not None and resolutions[allowance_events[allowance]].issuer.cik != scope['issuer_cik']:
                 raise OpportunityStateError('unresolved_scope_binding_mismatch')
         allowance_reviews: dict[str, tuple[dict, ...]] = {}
-        for row in snapshot.rows.get(REVIEWS_STREAM, ()):
-            if not isinstance(row, dict):
+        missing_dossier_sequences = []
+        for sequence, row in enumerate(snapshot.rows.get(REVIEWS_STREAM, ()), 1):
+            if not isinstance(row, dict) or not isinstance(row.get('evidence_id'), str):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
+            if 'dossier_hash' not in row:
+                missing_dossier_sequences.append(sequence)
+                continue  # Retained as a typed whole-index blocker below, never ignored.
             dossier = row.get('dossier_hash')
-            if not isinstance(dossier, str) or not isinstance(row.get('evidence_id'), str):
+            if not isinstance(dossier, str):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             if dossier not in dossier_allowances:
                 continue  # Unbound historical dossiers fail closed at decision time.
             allowance_reviews.setdefault(dossier_allowances[dossier], ())
             allowance_reviews[dossier_allowances[dossier]] += (row,)
+        if missing_dossier_sequences:
+            raise HistoricalDossierHashMissing(snapshot, tuple(missing_dossier_sequences))
         digest = sha256(_canonical({
             'version': 1,
             'activated_version': version,

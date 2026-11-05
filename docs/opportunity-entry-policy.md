@@ -175,6 +175,32 @@ shared with the same 120-second limits documented in the brief.
   **Apply remains separately authorized**: nothing in this repository
   activates or bootstraps production.
 
+## Legacy-history audit compatibility
+
+A legacy candidate's `dossier_hash` alone is not a policy link and grants no
+allowance. Presence of either `event_id` or `allowance_id` still requires the
+complete, valid immutable link; partial new-policy rows remain fail-closed.
+A reviewed identity-resolution record with an exact canonical source row
+containing a dossier hash binds that dossier to generation zero. Subsequent
+reopening cannot relocate its historical spending, and changed source
+sequences/digests or conflicting dossier bindings are refused on index reload.
+Identity provenance without a source dossier hash grants no dossier permission.
+Retained pre-decision reviewer `action: BUY` / `action: HOLD` outputs are
+completed paid-review history and conservatively spend a bound allowance;
+they never prove dual-review approval or safe retry. Explicit marker decisions
+still do not spend, and original review payloads are never rewritten.
+
+When retained reviews lack original dossier hashes, `audit_history` returns a
+**blocked diagnostic**, not a usable index: `index_available: false`,
+`blockers: [historical_dossier_hash_missing]`, canonical watermarks, row counts,
+and exact `missing_dossier_sources` (stream, sequence, UTF-8 canonical row
+SHA-256). Every row is still validated; unrelated corrupt/partial policy state
+is not hidden by that diagnostic. Index loading, manifest validation/import,
+and activation remain blocked with `opportunity_policy_state_unavailable`.
+The audit does not invent a hash, infer an issuer, discard dissent, or approve
+a migration. Missing original associations require authenticated historical
+evidence or a separately reviewed migration design, not current-cache hashes.
+
 ## Migration / bootstrap rehearsal (private)
 
 The historical audit/import/activation rehearsal runs only on an

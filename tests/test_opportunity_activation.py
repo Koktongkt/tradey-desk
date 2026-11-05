@@ -210,7 +210,7 @@ class ActivationOrderingTests(unittest.TestCase):
         # boundary, not rejected as unsupported. A legacy unbound candidate in
         # an activated root fails closed before snapshot or review.
         self.assertEqual((code, output),
-                         (2, 'BLOCKER opportunity_policy_state_unavailable\n'))
+                         (2, 'BLOCKER opportunity_identity_unknown\n'))
         self.assertNotIn('snapshot', [op for op, _ in self.fixture.calls])
         self.assertFalse((self.root / 'private/reviews.jsonl').exists())
 
@@ -289,7 +289,7 @@ class ActivationOrderingTests(unittest.TestCase):
         # boundary, not rejected as unsupported. A legacy unbound candidate in
         # an activated root fails closed before snapshot or review.
         self.assertEqual((code, output),
-                         (2, 'BLOCKER opportunity_policy_state_unavailable\n'))
+                         (2, 'BLOCKER opportunity_identity_unknown\n'))
         # Existing exact-parent continuation must still read its own parent.
         self.assertTrue(any('one' in payload.get('client_order_ids', [])
                             or payload.get('client_order_id') == 'one'
