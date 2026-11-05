@@ -283,6 +283,7 @@ class OpportunityIndex:
     state_digest: str = ''
     unresolved_issuer_scopes: dict[str, dict[str, str]] = field(default_factory=dict)
     missing_history_gaps: tuple[dict, ...] = ()
+    unknown_history_blocks: dict[str, tuple[dict, ...]] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, 'unresolved_issuer_scopes', MappingProxyType({
@@ -635,13 +636,23 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         unmatched = [key for key in gap_records if key not in matched]
         if unmatched:
             raise OpportunityStateError('missing_history_not_gap_row')
+        # Conservative per-symbol blocking, derived only from validated
+        # issuer_evidence taken from the referenced row's own bytes. Exact
+        # match after casefold() + trim; never an alias or suffix match.
+        blocks: dict[str, tuple[dict, ...]] = {}
+        for gap in gaps:
+            if gap['symbol_evidence'] is None:
+                continue
+            key = gap['symbol_evidence'].strip().casefold()
+            blocks[key] = blocks.get(key, ()) + (gap,)
         return {'version': version, 'resolutions': resolutions, 'aliases': aliases,
                 'grants': grants, 'conditions': conditions, 'unresolved': unresolved,
                 'scopes': scopes, 'allowance_events': allowance_events,
                 'dossier_allowances': dossier_allowances,
                 'allowance_reviews': allowance_reviews,
                 'missing_dossier_sequences': tuple(missing_dossier_sequences),
-                'gaps': tuple(gaps), 'blockers': tuple(blockers)}
+                'gaps': tuple(gaps), 'blockers': tuple(blockers),
+                'blocks': blocks}
     except (LedgerError, ValueError, TypeError, KeyError) as error:
         if isinstance(error, OpportunityStateError):
             raise
@@ -669,7 +680,7 @@ def _index_from_parts(snapshot: LedgerSnapshot, parts: dict) -> OpportunityIndex
                             parts['allowance_reviews'], parts['grants'],
                             parts['conditions'], frozenset(parts['unresolved']),
                             parts['allowance_events'], digest, parts['scopes'],
-                            parts['gaps'])
+                            parts['gaps'], parts['blocks'])
 
 
 def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
@@ -987,6 +998,12 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
             resolution.issuer.symbol, resolution.issuer.cik, resolution.issuer.legal_name,
             resolution.family, resolution.period):
         return PolicyDecision('unknown', 'opportunity_identity_conflict', resolution.event_id, None)
+    # Conservative re-entry blocking: a verified issuer symbol with an
+    # unresolved unknown-history gap is unknown until every gap naming it is
+    # reconciled. Blocking never grants, spends, or qualifies retry.
+    if index.unknown_history_blocks.get(resolution.issuer.symbol.strip().casefold()):
+        return PolicyDecision('unknown', 'unknown_history_unreconciled',
+                              resolution.event_id, None)
     if reopening_claim is not None:
         from opportunity_admin import _verify_claim_against_index, OpportunityAdminError
         try:

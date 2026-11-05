@@ -819,6 +819,92 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual(len(index.missing_history_gaps), 1)
         self.assertIsNone(index.missing_history_gaps[0]['symbol_evidence'])
 
+    def _active_gap_root(self, *, symbol='ACME', buy_gap=False, hint_row=False):
+        """Activated synthetic root with one gap row naming exactly `symbol`."""
+        import json
+        import opportunity_state as state
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_root(Path(temporary.name))
+        if buy_gap:
+            stream, kind = ('trade_journal.jsonl', 'filled_buy_unlinked')
+            row = fixtures.gap_trade_row(action='BUY', symbol=symbol)
+        else:
+            stream, kind = ('private/reviews.jsonl', 'legacy_review_unlinked')
+            row = fixtures.gap_review_row(with_symbol=not hint_row, with_hint=hint_row,
+                                          symbol=symbol, evidence_id='gap-review-0')
+        storage.append_jsonl(root / stream, row)
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_row(
+            kind=kind,
+            source={'stream': stream, 'sequence': 1,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            issuer_evidence=None if hint_row else {'symbol': symbol}))
+        storage.append_jsonl(root / POLICY, fixtures.policy_row(
+            'activation', policy_version=1, manifest_sha256='a' * 64))
+        (root / 'private/broker_baseline.json').write_text(
+            json.dumps({'preexisting_symbols': []}))
+        self.root = root
+        return root
+
+    def test_symbol_gap_blocks_candidate(self):
+        import opportunity_state as state
+        self._active_gap_root(symbol='ACME')
+        context = state.load_policy_context(self.root)
+        result = state.candidate_policy(context, fixtures.synthetic_resolution(),
+                                        symbol='ACME')
+        self.assertEqual((result.outcome, result.reason, result.allowance_id),
+                         ('unknown', 'unknown_history_unreconciled', None))
+
+    def test_gap_without_symbol_evidence_does_not_block(self):
+        import opportunity_state as state
+        self._active_gap_root(hint_row=True)
+        context = state.load_policy_context(self.root)
+        result = state.candidate_policy(context, fixtures.synthetic_resolution(),
+                                        symbol='ACME')
+        self.assertNotEqual(result.reason, 'unknown_history_unreconciled')
+
+    def test_symbol_variant_does_not_block(self):
+        import opportunity_state as state
+        self._active_gap_root(symbol='ACME')
+        context = state.load_policy_context(self.root)
+        result = state.candidate_policy(context, fixtures.synthetic_resolution(),
+                                        symbol='ACME.F')
+        self.assertNotEqual(result.reason, 'unknown_history_unreconciled')
+        # A whitespace-variant candidate symbol never reaches the block check:
+        # the verified identity comparison fails closed first (never grants).
+        whitespace = state.candidate_policy(context, fixtures.synthetic_resolution(),
+                                            symbol='  acme ')
+        self.assertEqual(whitespace.reason, 'opportunity_identity_conflict')
+        # Block keys are normalized (casefold + trim): a lowercase gap symbol
+        # blocks the exact verified uppercase issuer symbol.
+        self._active_gap_root(symbol='acme')
+        lower_index = state.load_index(self.root)
+        self.assertIn('acme', lower_index.unknown_history_blocks)
+        blocked = state.candidate_policy(
+            state.load_policy_context(self.root), fixtures.synthetic_resolution(),
+            symbol='ACME')
+        self.assertEqual(blocked.reason, 'unknown_history_unreconciled')
+
+    def test_blocking_never_grants_or_spends_or_qualifies_retry(self):
+        import opportunity_state as state
+        self._active_gap_root(symbol='ACME')
+        context = state.load_policy_context(self.root)
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in self.root.rglob('*') if path.is_file()}
+        result = state.candidate_policy(context, fixtures.synthetic_resolution(),
+                                        symbol='ACME')
+        self.assertEqual(result.outcome, 'unknown')
+        self.assertIsNone(result.allowance_id)
+        fresh = state.load_index(self.root)
+        self.assertEqual(fresh.dossier_allowances, {})
+        self.assertEqual(fresh.grants, {})
+        self.assertEqual(len(fresh.missing_history_gaps), 1)
+        after = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                 for path in self.root.rglob('*') if path.is_file()}
+        self.assertEqual(before, after)
+
     def test_missing_history_bad_reason_fails_closed(self):
         import opportunity_state as state
         rows = (fixtures.missing_history_row(reason='invented_reason'),)
