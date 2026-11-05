@@ -54,6 +54,14 @@ def missing_history_row(**fields):
     return policy_row('missing_history', **{**defaults, **fields})
 
 
+def missing_history_clearance_row(**fields):
+    """Synthetic missing_history_clearance policy record (schema_version 1)."""
+    defaults = {'clearance_reason': 'permanently_unattributable_user_acknowledged',
+                'gap_source': {'stream': 'private/reviews.jsonl', 'sequence': 1,
+                               'row_sha256': 'd' * 64}}
+    return policy_row('missing_history_clearance', **{**defaults, **fields})
+
+
 def candidate_link(dossier_hash, event_id, allowance_id):
     import datetime as dt
     stamp = dt.datetime(2026, 11, 4, 12, 0, 0, tzinfo=dt.timezone.utc)

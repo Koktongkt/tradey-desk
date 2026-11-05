@@ -36,6 +36,9 @@ INDEX_STREAMS = (POLICY_STREAM, REVIEWS_STREAM, CANDIDATES_STREAM)
 # Fixed fail-closed vocabulary for proven-unrecoverable canonical history.
 MISSING_HISTORY_KINDS = ('legacy_review_unlinked', 'filled_buy_unlinked')
 MISSING_HISTORY_REASONS = ('recovery_exhausted_exact_link_unavailable',)
+CLEARANCE_REASONS = ('permanently_unattributable_user_acknowledged',)
+CLEARANCE_KEYS = {'record_type', 'schema_version', 'timestamp', 'gap_source',
+                  'clearance_reason'}
 TRADE_JOURNAL_STREAM = 'trade_journal.jsonl'
 # Dedicated gap-source allowlist: separate from INDEX_STREAMS so binding
 # sources can never name trade_journal.jsonl (DESIGN-REVIEW I-3).
@@ -502,6 +505,12 @@ def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
             if (row.get('kind') not in MISSING_HISTORY_KINDS
                     or row.get('reason') not in MISSING_HISTORY_REASONS):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
+        elif kind == 'missing_history_clearance':
+            # Envelope validation only; the exact per-gap source check against
+            # the referenced row's own bytes runs in the state build.
+            if (row.get('clearance_reason') not in CLEARANCE_REASONS
+                    or not isinstance(row.get('gap_source'), dict)):
+                raise OpportunityStateError('opportunity_policy_state_unavailable')
     return version
 
 
@@ -636,12 +645,29 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         unmatched = [key for key in gap_records if key not in matched]
         if unmatched:
             raise OpportunityStateError('missing_history_not_gap_row')
+        # Per-gap clearance: a symbol unblocks only when every gap naming it
+        # is individually cleared; the underlying records are kept forever.
+        cleared: set[tuple[str, int]] = set()
+        for row in snapshot.rows.get(POLICY_STREAM, ()):
+            if not (isinstance(row, dict)
+                    and row.get('record_type') == 'missing_history_clearance'):
+                continue
+            if set(row) != CLEARANCE_KEYS:
+                raise OpportunityStateError('invalid_missing_history_clearance')
+            source = row['gap_source']
+            _gap_source_row(source, snapshot.rows)
+            key = (source['stream'], source['sequence'])
+            if key not in matched:
+                raise OpportunityStateError('missing_history_clearance_unknown_gap')
+            cleared.add(key)
         # Conservative per-symbol blocking, derived only from validated
         # issuer_evidence taken from the referenced row's own bytes. Exact
         # match after casefold() + trim; never an alias or suffix match.
         blocks: dict[str, tuple[dict, ...]] = {}
         for gap in gaps:
             if gap['symbol_evidence'] is None:
+                continue
+            if (gap['stream'], gap['sequence']) in cleared:
                 continue
             key = gap['symbol_evidence'].strip().casefold()
             blocks[key] = blocks.get(key, ()) + (gap,)

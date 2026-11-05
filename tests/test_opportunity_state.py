@@ -905,6 +905,89 @@ class OpportunityStateTests(unittest.TestCase):
                  for path in self.root.rglob('*') if path.is_file()}
         self.assertEqual(before, after)
 
+    def _two_gap_symbol_root(self):
+        """Activated root with two review gaps naming the same symbol."""
+        import json
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_root(Path(temporary.name))
+        for index in (1, 2):
+            row = fixtures.gap_review_row(with_symbol=True, with_hint=False,
+                                          symbol='ACME',
+                                          evidence_id=f'gap-review-{index}')
+            storage.append_jsonl(root / 'private/reviews.jsonl', row)
+            storage.append_jsonl(root / POLICY, fixtures.missing_history_row(
+                kind='legacy_review_unlinked',
+                source={'stream': 'private/reviews.jsonl', 'sequence': index,
+                        'row_sha256': self._row_digest(row)},
+                observed_fields=sorted(row),
+                issuer_evidence={'symbol': 'ACME'}))
+        storage.append_jsonl(root / POLICY, fixtures.policy_row(
+            'activation', policy_version=1, manifest_sha256='a' * 64))
+        (root / 'private/broker_baseline.json').write_text(json.dumps(
+            {'preexisting_symbols': []}))
+        self.root = root
+        return root
+
+    def _write_clearance(self, root, sequence):
+        row = storage.read_jsonl_stream_readonly(
+            root / 'private/reviews.jsonl')[sequence - 1]
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_clearance_row(
+            gap_source={'stream': 'private/reviews.jsonl', 'sequence': sequence,
+                        'row_sha256': self._row_digest(row)}))
+
+    def test_partial_clearance_keeps_symbol_blocked(self):
+        import opportunity_state as state
+        root = self._two_gap_symbol_root()
+        self._write_clearance(root, 1)
+        index = state.load_index(root)
+        self.assertIn('acme', index.unknown_history_blocks)
+        self.assertEqual(len(index.unknown_history_blocks['acme']), 1)
+        blocked = state.candidate_policy(
+            state.load_policy_context(root), fixtures.synthetic_resolution(),
+            symbol='ACME')
+        self.assertEqual(blocked.reason, 'unknown_history_unreconciled')
+
+    def test_full_clearance_unblocks_symbol(self):
+        import opportunity_state as state
+        root = self._two_gap_symbol_root()
+        self._write_clearance(root, 1)
+        self._write_clearance(root, 2)
+        index = state.load_index(root)
+        self.assertEqual(index.unknown_history_blocks, {})
+        # The underlying missing_history records are kept forever.
+        self.assertEqual(len(index.missing_history_gaps), 2)
+
+    def test_clearance_unknown_or_mismatched_gap_fails_closed(self):
+        import opportunity_state as state
+        root = self._two_gap_symbol_root()
+        # A clearance for a row with no missing_history record fails.
+        trade = fixtures.gap_trade_row(action='BUY', symbol='ACME')
+        storage.append_jsonl(root / 'trade_journal.jsonl', trade)
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_clearance_row(
+            gap_source={'stream': 'trade_journal.jsonl', 'sequence': 1,
+                        'row_sha256': self._row_digest(trade)}))
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'missing_history_clearance_unknown_gap'):
+            state.load_index(root)
+        # A mutated gap digest fails the exact-source check.
+        root = self._two_gap_symbol_root()
+        storage.append_jsonl(root / POLICY, fixtures.missing_history_clearance_row(
+            gap_source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                        'row_sha256': '0' * 64}))
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'manifest_source_digest_mismatch'):
+            state.load_index(root)
+
+    def test_clearance_bad_reason_fails_closed(self):
+        import opportunity_state as state
+        rows = (fixtures.missing_history_clearance_row(
+            clearance_reason='invented_reason'),)
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state(rows, {}, {}, {}, {}, set(), {}, {}, {})
+
     def test_missing_history_bad_reason_fails_closed(self):
         import opportunity_state as state
         rows = (fixtures.missing_history_row(reason='invented_reason'),)
