@@ -11,6 +11,7 @@ POLICY_STREAM = 'private/opportunity_policy.jsonl'
 SUPPORTED_POLICY_VERSION = 1
 _KNOWN_RECORD_TYPES = frozenset({
     'activation', 'identity_resolution', 'document_alias', 'reopen_grant', 'condition_approval',
+    'missing_history',
 })
 
 

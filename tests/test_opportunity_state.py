@@ -518,6 +518,55 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+    def test_missing_history_bad_reason_fails_closed(self):
+        import opportunity_state as state
+        rows = (fixtures.missing_history_row(reason='invented_reason'),)
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state(rows, {}, {}, {}, {}, set(), {}, {}, {})
+
+    def test_missing_history_bad_kind_fails_closed(self):
+        import opportunity_state as state
+        rows = (fixtures.missing_history_row(kind='invented_kind'),)
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state(rows, {}, {}, {}, {}, set(), {}, {}, {})
+
+    def test_missing_history_missing_key_fails_closed(self):
+        import opportunity_state as state
+        row = fixtures.missing_history_row()
+        del row['reason']
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state((row,), {}, {}, {}, {}, set(), {}, {}, {})
+
+    def test_missing_history_bad_schema_version_fails_closed(self):
+        import opportunity_state as state
+        row = fixtures.missing_history_row()
+        row['schema_version'] = 2
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state((row,), {}, {}, {}, {}, set(), {}, {}, {})
+
+    def test_missing_history_bad_timestamp_fails_closed(self):
+        import opportunity_state as state
+        row = fixtures.missing_history_row()
+        row['timestamp'] = 'not-a-timestamp'
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            state._policy_state((row,), {}, {}, {}, {}, set(), {}, {}, {})
+
+    def test_missing_history_wellformed_is_accepted_without_permission(self):
+        import opportunity_state as state
+        resolutions, aliases, grants, conditions = {}, {}, {}, {}
+        unresolved, allowance_events, scopes = set(), {}, {}
+        version = state._policy_state(
+            (fixtures.missing_history_row(),), resolutions, aliases, grants,
+            conditions, unresolved, allowance_events, scopes, {})
+        self.assertEqual(version, 0)
+        self.assertEqual((resolutions, aliases, grants, conditions, unresolved,
+                          allowance_events, scopes), ({}, {}, {}, {}, set(), {}, {}))
+
     def test_hashless_buy_trade_row_is_not_yet_scanned(self):
         import tempfile
         import opportunity_state as state

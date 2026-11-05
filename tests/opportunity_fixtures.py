@@ -43,6 +43,17 @@ def policy_row(record_type, **fields):
                 timestamp=stamp.isoformat(), **fields)
 
 
+def missing_history_row(**fields):
+    """Synthetic missing_history policy record envelope (schema_version 1)."""
+    defaults = {'kind': 'legacy_review_unlinked',
+                'reason': 'recovery_exhausted_exact_link_unavailable',
+                'source': {'stream': 'private/reviews.jsonl', 'sequence': 1,
+                           'row_sha256': 'd' * 64},
+                'observed_fields': ['evidence_id', 'reviews', 'timestamp'],
+                'issuer_evidence': None, 'hint': None}
+    return policy_row('missing_history', **{**defaults, **fields})
+
+
 def candidate_link(dossier_hash, event_id, allowance_id):
     import datetime as dt
     stamp = dt.datetime(2026, 11, 4, 12, 0, 0, tzinfo=dt.timezone.utc)

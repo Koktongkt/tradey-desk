@@ -33,6 +33,10 @@ REVIEWS_STREAM = 'private/reviews.jsonl'
 CANDIDATES_STREAM = 'candidates.jsonl'
 INDEX_STREAMS = (POLICY_STREAM, REVIEWS_STREAM, CANDIDATES_STREAM)
 
+# Fixed fail-closed vocabulary for proven-unrecoverable canonical history.
+MISSING_HISTORY_KINDS = ('legacy_review_unlinked', 'filled_buy_unlinked')
+MISSING_HISTORY_REASONS = ('recovery_exhausted_exact_link_unavailable',)
+
 # Exact reuse of the candidate_retry completed-review vocabulary. A decision
 # outside this set (or fatal flags) is a completed dissent; reconciliation
 # markers and empty review output never spend an untouched allowance.
@@ -390,6 +394,12 @@ def _policy_state(rows: tuple[dict, ...], resolutions: dict, aliases: dict,
                     or not isinstance(row.get('condition'), dict)):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
             conditions[condition_id] = row
+        elif kind == 'missing_history':
+            # Row-structure validation only here; source/field validation
+            # against the referenced canonical row is the gap-source validator.
+            if (row.get('kind') not in MISSING_HISTORY_KINDS
+                    or row.get('reason') not in MISSING_HISTORY_REASONS):
+                raise OpportunityStateError('opportunity_policy_state_unavailable')
     return version
 
 
