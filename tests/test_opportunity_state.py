@@ -988,6 +988,122 @@ class OpportunityStateTests(unittest.TestCase):
                                     'opportunity_policy_state_unavailable'):
             state._policy_state(rows, {}, {}, {}, {}, set(), {}, {}, {})
 
+    def test_combined_gap_and_binding_manifest_yields_empty_incomplete_history(self):
+        """78-shaped gap set + 124-shaped binding set, zero invented scopes."""
+        import hashlib
+        import json
+        import opportunity_admin as admin
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=67, hint_rows=5, buy_gaps=6,
+                                    sell_rows=0)
+        reviews = storage.read_jsonl_stream_readonly(root / REVIEWS)
+        trades = storage.read_jsonl_stream_readonly(root / 'trade_journal.jsonl')
+        records = []
+        for sequence, row in enumerate(reviews[:67], 1):
+            records.append(fixtures.missing_history_row(
+                kind='legacy_review_unlinked',
+                source={'stream': REVIEWS, 'sequence': sequence,
+                        'row_sha256': self._row_digest(row)},
+                observed_fields=sorted(row),
+                issuer_evidence={'symbol': f'ZZZSYNR{sequence - 1}'}))
+        for offset, row in enumerate(reviews[67:]):
+            sequence = 67 + offset + 1
+            records.append(fixtures.missing_history_row(
+                kind='legacy_review_unlinked',
+                source={'stream': REVIEWS, 'sequence': sequence,
+                        'row_sha256': self._row_digest(row)},
+                observed_fields=sorted(row), hint={'legacy_proposal_hash': 'f' * 64}))
+        for sequence, row in enumerate(trades, 1):
+            records.append(fixtures.missing_history_row(
+                kind='filled_buy_unlinked',
+                source={'stream': 'trade_journal.jsonl', 'sequence': sequence,
+                        'row_sha256': self._row_digest(row)},
+                observed_fields=sorted(row),
+                issuer_evidence={'symbol': f'ZZZSYNB{sequence - 1}'}))
+        # 124 known hashes bound generation-zero via reviewed candidate sources.
+        dossiers = [hashlib.sha256(f'synthetic-dossier-{index}'.encode()).hexdigest()
+                    for index in range(124)]
+        candidate_rows = [{'dossier_hash': dossier} for dossier in dossiers]
+        self.write_root(root, CANDIDATES, candidate_rows)
+        for index, dossier in enumerate(dossiers):
+            import opportunity_identity as identity
+            cik = f'0002{index:06d}'
+            payload = json.loads(json.dumps(
+                fixtures.synthetic_resolution_payload(period='2026-Q1'))
+                .replace('1999999', cik[3:]))
+            payload['event_id'] = identity._event_id(cik, '2026-Q1')
+            records.append(fixtures.policy_row(
+                'identity_resolution', resolution=payload,
+                source={'stream': CANDIDATES, 'sequence': index + 1,
+                        'row_sha256': self._row_digest(candidate_rows[index])}))
+        manifest = {'manifest_version': 1, 'records': records}
+        self.assertEqual(len(records), 78 + 124)
+        report = admin.validate_manifest(root, manifest)
+        self.assertTrue(report['valid'], report['errors'][:3])
+        digest = admin.canonical_manifest_digest(manifest)
+        admin.import_manifest(root, manifest, approved_manifest_sha256=digest)
+        index = state.load_index(root)
+        self.assertEqual(state.incomplete_history(index), frozenset())
+        self.assertEqual(len(index.missing_history_gaps), 78)
+        self.assertEqual(len(index.dossier_allowances), 124)
+
+    def write_root(self, root, name, rows):
+        for row in rows:
+            storage.append_jsonl(root / name, row)
+
+    def test_v0_floor_inert_with_gap_records(self):
+        import opportunity_state as state
+        root = self._fresh_gap_root(review_gaps=1, hint_rows=0, buy_gaps=1,
+                                    sell_rows=0)
+        review = storage.read_jsonl_stream_readonly(root / REVIEWS)[0]
+        trade = storage.read_jsonl_stream_readonly(root / 'trade_journal.jsonl')[0]
+        self.write_root(root, POLICY, [
+            fixtures.missing_history_row(
+                kind='legacy_review_unlinked',
+                source={'stream': REVIEWS, 'sequence': 1,
+                        'row_sha256': self._row_digest(review)},
+                observed_fields=sorted(review),
+                issuer_evidence={'symbol': 'ZZZSYNR0'}),
+            fixtures.missing_history_row(
+                kind='filled_buy_unlinked',
+                source={'stream': 'trade_journal.jsonl', 'sequence': 1,
+                        'row_sha256': self._row_digest(trade)},
+                observed_fields=sorted(trade),
+                issuer_evidence={'symbol': 'ZZZSYNB0'}),
+        ])
+        index = state.load_index(root)
+        self.assertEqual(index.activated_version, 0)
+        self.assertEqual(len(index.missing_history_gaps), 2)
+        self.assertEqual(len(index.unknown_history_blocks), 2)
+        # The v0 compatibility floor is unchanged: activation absent → eligible.
+        result = state.require_current_allowance(root, {'dossier_hash': 'c' * 64})
+        self.assertEqual((result.outcome, result.reason),
+                         ('eligible', 'legacy_policy_floor'))
+
+    def test_pre_migration_reader_fails_typed_on_missing_history_stream(self):
+        import opportunity_state as state
+        legacy_types = frozenset({
+            'activation', 'identity_resolution', 'document_alias',
+            'reopen_grant', 'condition_approval'})
+
+        def legacy_style_policy_state(rows):
+            for row in rows:
+                if (row.get('record_type') not in legacy_types
+                        or row.get('schema_version') != 1
+                        or not isinstance(row.get('timestamp'), str)):
+                    raise state.OpportunityStateError(
+                        'opportunity_policy_state_unavailable')
+        migrated_rows = (
+            fixtures.policy_row('activation', policy_version=1,
+                                manifest_sha256='a' * 64),
+            fixtures.missing_history_row(),
+        )
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'opportunity_policy_state_unavailable'):
+            legacy_style_policy_state(migrated_rows)
+        # Control: the same legacy reader accepts the pre-migration stream.
+        legacy_style_policy_state(migrated_rows[:1])
+
     def test_missing_history_bad_reason_fails_closed(self):
         import opportunity_state as state
         rows = (fixtures.missing_history_row(reason='invented_reason'),)

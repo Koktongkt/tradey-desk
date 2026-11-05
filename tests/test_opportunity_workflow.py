@@ -394,6 +394,19 @@ class OpportunityWorkflowScenario(unittest.TestCase):
         storage.append_jsonl(self.root / 'trade_journal.jsonl',
                              {'action': 'BUY', 'symbol': 'ACME', 'quantity': 2,
                               'entry': 100.05, 'status': 'filled'})
+        # Widened migration contract: a hashless filled BUY trade row is a
+        # gap-classified blocker unless exactly referenced. The migrated world
+        # represents this fill with a missing_history record; the evidence is
+        # optional, so the broker-truth scenario is unchanged.
+        trade_row = storage.read_jsonl_stream_readonly(
+            self.root / 'trade_journal.jsonl')[-1]
+        storage.append_jsonl(self.root / state.POLICY_STREAM, fixtures.missing_history_row(
+            kind='filled_buy_unlinked',
+            source={'stream': state.TRADE_JOURNAL_STREAM, 'sequence': 1,
+                    'row_sha256': hashlib.sha256(json.dumps(
+                        trade_row, sort_keys=True, separators=(',', ':'),
+                        ensure_ascii=False).encode('utf-8')).hexdigest()},
+            observed_fields=sorted(trade_row)))
         # A second, unspent event for the same issuer researches normally.
         new_pages = fixtures.earnings_pages(period='2026-Q2')
         page = new_pages[0]
