@@ -24,6 +24,7 @@
 - The legacy `proposal_hash` is recorded as a hint only and is asserted never to equal any canonical dossier hash at import (`hint_not_dossier`).
 - Immutable hash→allowance links, replay idempotence (canonical dedupe), the approved-digest gate, and rollback-floor v0 semantics are unchanged. `missing_history`/clearance records are inert at v0; reader support and any activation must land together.
 - Synthetic fixtures only for RED/GREEN; no real issuers, rows or digests in source or tests. Real canonical data is touched only by the Task 8 rehearsal on an authenticated **disposable copy** — production bytes/mtime/mode verified unchanged pre/post, no import/apply ever run.
+- **Single coherent snapshot (F-1):** `trade_journal.jsonl` enters the migration-validation read by **widening the requested-stream set passed to `read_stream_snapshot_readonly`** (a new `MIGRATION_SNAPSHOT_STREAMS = INDEX_STREAMS + (TRADE_JOURNAL_STREAM,)` used by the migration-validation read path only; `INDEX_STREAMS` itself and every `_source_row` binding check are unchanged). One read, one lock acquisition, one coherent snapshot — no second/separate read. Because `read_stream_snapshot_readonly` builds `watermark` from exactly the requested streams and `_build` folds `snapshot.watermark` into the state digest, `snapshot.watermark`, the state digest, and `audit_history`'s `base_watermark` / `history_row_counts` all gain a `trade_journal.jsonl` entry (count 0 + empty-stream digest when absent) for every root. The decision semantics are unchanged — trade_journal is digest-checked for gap references only and never consumed by decision code.
 - Production ROOT remains `7c81de800495acb8b2a6c7e5096128437307d785`, policy INACTIVE, throughout this plan.
 
 ## Explicitly out of scope
@@ -43,7 +44,7 @@
 
 ## Files and conventions
 
-- Modify `opportunity_state.py` (constants, `_policy_state`, `_build`, `OpportunityIndex`, `candidate_policy`, `audit`-facing fields), `opportunity_admin.py` (`validate_manifest` record validators, import conflict/assertion rules), `opportunity_activation.py` (`_KNOWN_RECORD_TYPES`), `sqlite_ledger.py` (add `trade_journal.jsonl` to the migration-validation snapshot inputs only).
+- Modify `opportunity_state.py` (constants, `_policy_state`, `_build`, `OpportunityIndex`, `candidate_policy`, `audit`-facing fields), `opportunity_admin.py` (`validate_manifest` record validators, import conflict/assertion rules), `opportunity_activation.py` (`_KNOWN_RECORD_TYPES`), and the `load_index` snapshot request in `opportunity_state.py` (pass the widened `MIGRATION_SNAPSHOT_STREAMS` to `read_stream_snapshot_readonly` for the migration-validation read path only; `sqlite_ledger.py` itself needs no change — the stream set is a caller argument).
 - Tests extend `tests/test_opportunity_state.py`, `tests/test_opportunity_admin.py`, `tests/test_opportunity_activation.py`; synthetic fixtures extend `tests/opportunity_fixtures.py`.
 - Verified execution convention: identical to the base plan (`P=/home/hermes/.local/share/tradey/venv-linux/bin/python`, `offline_test_guard`, `PYTHONDONTWRITEBYTECODE=1`, `HERMES_DISABLE_LAZY_INSTALLS=1`, `TRADEY_UNPATCHED_ROOT=...`, guarded `unit MODULE` helper). Run from this worktree only. Baseline before any edit: focused 38 / full 1,901 / raw 1,901, exit 0, zero skips.
 - One writer at a time; tasks are strictly sequential (each consumes the previous task's interfaces). No parallel edits to `opportunity_state.py`.
@@ -98,7 +99,7 @@ def test_missing_history_bad_reason_fails_closed(self):
 
 ### Task 2: Dedicated gap-source validator and row-bytes evidence
 
-**Files:** Modify `opportunity_state.py`, `sqlite_ledger.py` (migration-validation snapshot inputs), `tests/test_opportunity_state.py`.
+**Files:** Modify `opportunity_state.py` (snapshot request widening; no `sqlite_ledger.py` change — the stream set is a caller argument to `read_stream_snapshot_readonly`), `tests/test_opportunity_state.py`.
 
 **Interfaces:**
 - Consumes: `_source_row` digest/sequence discipline (opportunity_state.py:275–293) as the pattern — not widened.
@@ -107,9 +108,9 @@ def test_missing_history_bad_reason_fails_closed(self):
   - `_gap_source_row(source, snapshot_rows: dict) -> dict` — exact `{stream, sequence, row_sha256}` key set, one-based sequence, stream ∈ `MIGRATION_SOURCE_STREAMS`, canonical UTF-8 (`ensure_ascii=False`) row digest recomputed on every call; mismatch raises the existing typed digest-mismatch error.
   - `extract_row_symbol(row) -> str | None` — first `symbol`-keyed value found at any depth of the row's JSON structure; returns None when absent.
   - `_validate_gap_record(row, snapshot_rows) -> dict` — full §3.1 validation: `kind` ∈ `MISSING_HISTORY_KINDS`; `source` via `_gap_source_row`; `observed_fields` exactly equal to the referenced row's key set; `issuer_evidence` either null or `{"symbol": S}` where `S == extract_row_symbol(referenced_row)` (fail otherwise); `hint` null or exactly `{"legacy_proposal_hash": <64hex>}`; `reason` ∈ vocabulary.
-- `sqlite_ledger.py`: the read-only snapshot used for migration validation includes `trade_journal.jsonl` rows (read-only; decision code never consumes it beyond digest-checking gap references; it can never appear as a binding source).
+- `sqlite_ledger.py`: **mechanism (F-1, resolved):** the migration-validation read path calls `read_stream_snapshot_readonly` with the widened set `MIGRATION_SNAPSHOT_STREAMS = INDEX_STREAMS + (TRADE_JOURNAL_STREAM,)` — a single read producing one coherent read-only snapshot (never a second separate read, which would break snapshot coherence across two lock acquisitions). Consequences, explicitly accepted and pinned by new tests: `snapshot.watermark`, the state digest folded from it in `_build`, and `audit_history`'s `base_watermark` / `history_row_counts` gain a `trade_journal.jsonl` entry (count 0 + empty-stream digest when the stream is absent) for every root. Trade_journal rows are read-only inputs used solely for digest-checking gap references; they can never appear as a binding source and decision code never consumes them.
 
-- [ ] **Step 1: write RED tests.** Both streams: valid gap sources for a `REVIEWS_STREAM` row and a `trade_journal.jsonl` row validate; digest mutation on reload fails for both streams; `observed_fields` mismatch fails; `issuer_evidence` symbol not present in the row fails; a hint-row gap with non-null `issuer_evidence` fails; a source stream outside `MIGRATION_SOURCE_STREAMS` fails via the gap validator; `_source_row` still rejects a `trade_journal.jsonl` source (boundary unchanged).
+- [ ] **Step 1: write RED tests.** Both streams: valid gap sources for a `REVIEWS_STREAM` row and a `trade_journal.jsonl` row validate; digest mutation on reload fails for both streams; `observed_fields` mismatch fails; `issuer_evidence` symbol not present in the row fails; a hint-row gap with non-null `issuer_evidence` fails; a source stream outside `MIGRATION_SOURCE_STREAMS` fails via the gap validator; `_source_row` still rejects a `trade_journal.jsonl` source (boundary unchanged); and the widened snapshot's watermark composition — `load_index` on a root containing `trade_journal.jsonl` rows yields a watermark whose per-stream entries include `trade_journal.jsonl` with the exact row count/digest, and the state digest differs from the pre-widening `INDEX_STREAMS`-only read (F-1).
 
 ```python
 def test_gap_source_digest_mutation_fails_on_trade_journal(self):
@@ -131,7 +132,8 @@ def test_gap_source_digest_mutation_fails_on_trade_journal(self):
 - Consumes: Task 2 validator; existing `missing_dossier_sequences` scan (opportunity_state.py:458–473) and `HistoricalDossierHashMissing` raise.
 - Produces:
   - `OpportunityIndex.missing_history_gaps: tuple[dict, ...]` — one entry per exactly-referenced hashless gap row (`{'stream', 'sequence', 'row_sha256', 'kind', 'symbol_evidence': str | None}`); tolerance never creates a dossier→allowance map entry, never attaches to `allowance_reviews`, never grants or spends.
-  - `_build` scans `MIGRATION_SOURCE_STREAMS`: hashless rows in `REVIEWS_STREAM` are gap-classified; in `trade_journal.jsonl` only hashless filled rows with `action == 'BUY'` are gap-classified. Every gap-classified hashless row must be exactly referenced by a validated `missing_history` record or be added to `missing_dossier_sequences` — then the existing raise fires (ordering: gap validation **before** the raise; no partial index). `audit_history` reports `missing_history_gaps` (count + exact references) alongside `incomplete_history_cases`.
+  - `_build` scans `MIGRATION_SOURCE_STREAMS`: hashless rows in `REVIEWS_STREAM` are gap-classified; in `trade_journal.jsonl` only hashless rows with `action == 'BUY'` **and** `status == 'filled'` are gap-classified. Every gap-classified hashless row must be exactly referenced by a validated `missing_history` record or be added to `missing_dossier_sequences` — then the existing raise fires (ordering: gap validation **before** the raise; no partial index).
+  - `audit_history` reports `missing_history_gaps` (count + exact references, shaped like `missing_dossier_sources`) **on both paths (F-2, resolved):** the blocked path (`HistoricalDossierHashMissing` raised) gains `missing_history_gaps` in the same report as `missing_dossier_sources`, and the unblocked path reports it alongside `incomplete_history_cases`. Tests assert the blocked-path report explicitly, since the real pre-migration production root is permanently on the blocked path (`audit_history` returns early on the raise).
 
 - [ ] **Step 1: write RED tests** (the core contract, per proposal §6):
   - T1: no gap record → `HistoricalDossierHashMissing` persists; exact record → index builds, `missing_history_gaps` reported, no allowance/permission created, an *additional* unreferenced hashless row still blocks (mixed root, carrying the unreferenced row's exact ref) — T12.
@@ -139,7 +141,7 @@ def test_gap_source_digest_mutation_fails_on_trade_journal(self):
   - T9: `issuer_evidence.symbol` absent from the row's bytes fails.
   - T10: gap record referencing a `dossier_hash`-carrying row, or a row in a non-migration stream, fails.
   - T13: the hashless filled SELL rows are neither required nor blockers: a root with SELL rows and zero gap records builds an index with empty `missing_history_gaps`; SELL rows never raise, never grant.
-  - Gap-row audit counts and references match the fixture roots exactly.
+  - Gap-row audit counts and references match the fixture roots **on the blocked path** (`audit_history` on a root with unreferenced gaps, where the early return on `HistoricalDossierHashMissing` fires — F-2: this is the path the assertion covers), and additionally on the unblocked path for a fully referenced root.
 
 ```python
 def test_mixed_root_still_raises_for_unreferenced_row(self):
@@ -152,7 +154,7 @@ def test_mixed_root_still_raises_for_unreferenced_row(self):
 
 - [ ] **Step 2: run RED** (`unit test_opportunity_state test_opportunity_admin`).
 - [ ] **Step 3: implement** the extended scan, classification rule, tolerance set, ordering invariant and audit reporting.
-- [ ] **Step 4: verify GREEN** plus full existing state/admin suites (all 2ddecea tests pass unchanged).
+- [ ] **Step 4: verify GREEN** plus full existing state/admin suites. **Claim qualified (F-1):** 2ddecea tests pass **unchanged in semantics** — the widened snapshot changes only watermark/digest *composition*, and no existing test pins those values. Verified affected sites (all still pass as-is): `tests/test_opportunity_admin.py:239` asserts `history_row_counts[REVIEWS] == 2` per-key (the added `trade_journal.jsonl` key is not asserted against), `tests/test_opportunity_admin.py:645` asserts only `base_watermark` truthiness, `tests/test_opportunity_admin.py:384` asserts digest *inequality* only, and `tests/test_opportunity_state.py:507` (`test_snapshot_watermark_coherence_and_no_writes`) asserts byte/mtime invariance, not watermark contents. If implementation reveals any of these actually breaks, fix by **updating the named expectation to the widened composition** — never by weakening or deleting the assertion. New Task 2 tests pin the widened watermark/digest composition exactly.
 - [ ] **Step 5: commit** `feat: extend migration validation to trade_journal gaps with tolerance ordering`.
 
 ### Task 4: Per-symbol conservative blocking (`unknown_history_blocks`)
@@ -206,7 +208,7 @@ def test_partial_clearance_keeps_symbol_blocked(self):
 **Interfaces:**
 - Consumes: Tasks 1–5 validators.
 - Produces:
-  - `_validated_missing_history_record(record, index) -> dict` and `_validated_clearance_record(record, index) -> dict` wired into `validate_manifest`.
+  - `_validated_missing_history_record(record, index) -> dict` and `_validated_clearance_record(record, index) -> dict` wired into `validate_manifest` — and the two record types added to the **`_IMPORTABLE_TYPES` dispatch registry** in `opportunity_admin.py` (and to `_FORBIDDEN_MANIFEST_TYPES` where clearance gating applies), so `validate_manifest`'s record-type dispatch actually routes to these validators (F-3, resolved: the RED tests T4/T5 exercise the real dispatch path, not only the validator functions).
   - Import rules: duplicate `missing_history` records referencing one row with any digest/field difference fail `missing_history_conflict`; identical replay is a no-op via the existing `_canonical` dedupe; `hint_not_dossier` assertion (hint `legacy_proposal_hash` ≠ any canonical dossier hash in the snapshot) at import; approved-digest gate unchanged.
 
 - [ ] **Step 1: write RED tests** (T4, T5): hint hash equal to a dossier hash fails import; conflicting gap records fail; same-manifest replay appends nothing; approval digest mismatch refused; combined synthetic manifest (gaps + bindings + scopes) validates.
@@ -241,7 +243,7 @@ def test_pre_migration_reader_fails_typed_on_missing_history_stream(self):
         legacy_style_policy_state(self.migrated_rows)
 ```
 
-- [ ] **Step 2: run RED** (`unit test_opportunity_state test_opportunity_admin test_opportunity_activation`).
+- [ ] **Step 2: run RED** (`unit test_opportunity_state test_opportunity_admin test_opportunity_activation`). **Expected RED scope (F-4, resolved):** the combined-manifest, v0-floor and rollback-guard invariants are largely already satisfied by Tasks 1–6, so the RED run may be **green or nearly green** — that is acceptable and expected. The RED step is a coverage proof, not a forced failure: if Step 1 passes immediately, record that fact and proceed; do **not** treat a green Step 1 as a setup error and do **not** manufacture an artificial failure. Step 3 then covers whatever genuine wiring gaps the combined cases expose (expected: none or minimal).
 - [ ] **Step 3: implement** any remaining wiring the combined cases expose (expected: none or minimal).
 - [ ] **Step 4: verify GREEN.**
 - [ ] **Step 5: commit** `test: prove combined migration coverage, v0 floor and rollback skew`.
@@ -280,7 +282,7 @@ def test_pre_migration_reader_fails_typed_on_missing_history_stream(self):
 
 ## Self-review
 
-- **Spec coverage:** §3.1 schema/validation → Tasks 1–3, 6; §3.2 blocking → Task 4; §3.4 clearance → Task 5; §3.5 invariants → Tasks 6–7 (+ unchanged-by-construction interfaces); §6 tests 1–13 mapped: 1→T3, 2→T2/T3, 3→T4, 4→T6, 5→T6, 6→T7, 7→T7, 8→T9, 9→T2/T3, 10→T3, 11→T5, 12→T3, 13→T3; real-copy rehearsal → Task 8; activation gate → Task 9. I-1 (any-depth symbol, hint rows null evidence) → Task 2; I-2 (scan/ordering/SELL non-blockers) → Task 3; I-3 (separate boundary) → Task 2; I-4 (T9/T10/T2-both-streams/T11/T12) → Tasks 2/3/5; M-1 per-gap clearance → Task 5; M-2 exact matching → Task 4; M-3 rollback assertion → Task 7; M-5 real key set in schema → Task 1 fixtures.
+- **Spec coverage:** §3.1 schema/validation → Tasks 1–3, 6; §3.2 blocking → Task 4; §3.4 clearance → Task 5; §3.5 invariants → Tasks 6–7 (+ unchanged-by-construction interfaces); §6 tests 1–13 mapped: 1→T3, 2→T2/T3, 3→T4, 4→T6, 5→T6, 6→T7, 7→T7, 8→T9, 9→T2/T3, 10→T3, 11→T5, 12→T3, 13→T3; real-copy rehearsal → Task 8; activation gate → Task 9. I-1 (any-depth symbol, hint rows null evidence) → Task 2; I-2 (scan/ordering/SELL non-blockers) → Task 3; I-3 (separate boundary) → Task 2; I-4 (T9/T10/T2-both-streams/T11/T12) → Tasks 2/3/5; M-1 per-gap clearance → Task 5; M-2 exact matching → Task 4; M-3 rollback assertion → Task 7; M-5 real key set in schema → Task 0 fixtures (67-row 3-key shape) + Task 2 `observed_fields` exact-equality validation (F-5: mapping corrected from the earlier "Task 1 fixtures" label).
 - **Out of scope honored:** retrieval workstream referenced only (Task 9 evidence note); no production import/activation/digest anywhere.
 - **Dependency order:** strictly linear 0→9; one writer; each task's Interfaces block carries the exact names later tasks consume.
 
