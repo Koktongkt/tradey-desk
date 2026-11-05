@@ -44,6 +44,9 @@ from opportunity_state import (
     seal_observation,
     _spends,
     _source_row,
+    _gap_source_row,
+    _validate_gap_record,
+    CLEARANCE_REASONS,
     _unresolved_record,
     _build,
     incomplete_history,
@@ -53,7 +56,8 @@ import sqlite_ledger as storage
 CLAIMS_STREAM = 'private/opportunity_reopening_claims.jsonl'
 MANIFEST_VERSION = 1
 ACTIVATION_VERSION = 1
-_IMPORTABLE_TYPES = ('identity_resolution', 'document_alias', 'condition_approval')
+_IMPORTABLE_TYPES = ('identity_resolution', 'document_alias', 'condition_approval',
+                     'missing_history', 'missing_history_clearance')
 _FORBIDDEN_MANIFEST_TYPES = ('activation', 'reopen_grant')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 # Initial release: the approved structured-condition vocabulary only.
@@ -414,6 +418,58 @@ def _validation_index(root: Path) -> OpportunityIndex:
         return _index_from_parts(error.snapshot, error.state)
 
 
+def _snapshot_dossier_hashes(snapshot_rows: dict) -> set:
+    """Every canonical dossier hash visible in the coherent snapshot."""
+    hashes: set[str] = set()
+    for rows in snapshot_rows.values():
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = row.get('dossier_hash')
+            if isinstance(value, str):
+                hashes.add(value)
+            unresolved = row.get('unresolved')
+            if isinstance(unresolved, dict):
+                value = unresolved.get('dossier_hash')
+                if isinstance(value, str):
+                    hashes.add(value)
+    return hashes
+
+
+def _validated_missing_history_record(record: dict, index: OpportunityIndex) -> dict:
+    """Full §3.1 gap validation plus the hint_not_dossier assertion."""
+    try:
+        _validate_gap_record(record, index.snapshot.rows)
+    except OpportunityStateError as error:
+        raise OpportunityAdminError(str(error)) from error
+    hint = record.get('hint')
+    if hint is not None and hint['legacy_proposal_hash'] in _snapshot_dossier_hashes(
+            index.snapshot.rows):
+        raise OpportunityAdminError('missing_history_hint_not_dossier')
+    evidence = record.get('issuer_evidence')
+    return {'record_type': 'missing_history', 'schema_version': 1,
+            'timestamp': record.get('timestamp'), 'kind': record['kind'],
+            'reason': record['reason'], 'source': dict(record['source']),
+            'observed_fields': list(record['observed_fields']),
+            'issuer_evidence': None if evidence is None else dict(evidence),
+            'hint': None if hint is None else dict(hint)}
+
+
+def _validated_clearance_record(record: dict, index: OpportunityIndex) -> dict:
+    """Per-gap clearance validation against the same referenced row's bytes."""
+    source = record.get('gap_source')
+    if (record.get('clearance_reason') not in CLEARANCE_REASONS
+            or not isinstance(source, dict)):
+        raise OpportunityAdminError('invalid_missing_history_clearance')
+    try:
+        _gap_source_row(source, index.snapshot.rows)
+    except OpportunityStateError as error:
+        raise OpportunityAdminError(str(error)) from error
+    return {'record_type': 'missing_history_clearance', 'schema_version': 1,
+            'timestamp': record.get('timestamp'), 'gap_source': dict(source),
+            'clearance_reason': record['clearance_reason']}
+
+
 def validate_manifest(root: Path, manifest: dict) -> dict:
     """Read-only manifest validation. Writes nothing; failure is a report."""
     errors: list[str] = []
@@ -440,10 +496,23 @@ def validate_manifest(root: Path, manifest: dict) -> dict:
                 records.append(_validated_identity_record(record, index, snapshot_rows))
             elif kind == 'document_alias':
                 records.append(_validated_alias_record(record, index))
+            elif kind == 'missing_history':
+                records.append(_validated_missing_history_record(record, index))
+            elif kind == 'missing_history_clearance':
+                records.append(_validated_clearance_record(record, index))
             else:
                 records.append(_validated_condition_record(record, index))
         except OpportunityAdminError as error:
             errors.append(f'record_{position}:{error}')
+    # Clearance gating: a clearance record travels only in its own dedicated
+    # approved manifest (its own approved digest), never mixed with other
+    # record types or an activation payload.
+    if any(record['record_type'] == 'missing_history_clearance'
+           for record in records):
+        if (len(records) != sum(1 for record in records
+                                if record['record_type'] == 'missing_history_clearance')
+                or 'activation' in manifest):
+            errors.append('clearance_manifest_isolated')
     seen = set()
     for record in records:
         key = _canonical(record)

@@ -221,6 +221,132 @@ class OpportunityAdminTests(unittest.TestCase):
                           for gap in report['missing_history_gaps']], ['ZZZSYNR0'])
         self.assertEqual(report['incomplete_history_cases'], [DOSSIER_A])
 
+    def _gap_manifest_root(self, *, hint_conflict=False):
+        """Blocked root: one hashless review gap plus one bound review row."""
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_root(Path(temporary.name))
+        gap_row = fixtures.gap_review_row(with_symbol=True, with_hint=False,
+                                          symbol='ZZZSYNR0',
+                                          evidence_id='synthetic-gap')
+        bound = fixtures.review_row(DOSSIER_A, EVIDENCE_1, [{'decision': 'HOLD'}])
+        self.root = root
+        self.gap_row = gap_row
+        self.bound_row = bound
+        self.write(REVIEWS, [gap_row, bound])
+        self.write(CANDIDATES, [{'dossier_hash': DOSSIER_A}])
+        hint = ({'legacy_proposal_hash': DOSSIER_A} if hint_conflict
+                else {'legacy_proposal_hash': 'f' * 64})
+        self.gap_record = fixtures.missing_history_row(
+            kind='legacy_review_unlinked',
+            source={'stream': REVIEWS, 'sequence': 1,
+                    'row_sha256': digest_of(gap_row)},
+            observed_fields=sorted(gap_row),
+            issuer_evidence={'symbol': 'ZZZSYNR0'}, hint=hint)
+        return root
+
+    def test_hint_hash_equal_to_a_dossier_hash_fails_import(self):
+        import opportunity_admin as admin
+        self._gap_manifest_root(hint_conflict=True)
+        manifest = {'manifest_version': 1, 'records': [self.gap_record]}
+        report = admin.validate_manifest(self.root, manifest)
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('missing_history_hint_not_dossier' in error
+                            for error in report['errors']), report['errors'])
+
+    def test_conflicting_gap_records_fail(self):
+        import opportunity_admin as admin
+        self._gap_manifest_root()
+        other = json.loads(json.dumps(self.gap_record))
+        other['issuer_evidence'] = None
+        manifest = {'manifest_version': 1,
+                    'records': [self.gap_record, other]}
+        report = admin.validate_manifest(self.root, manifest)
+        self.assertFalse(report['valid'])
+        self.assertIn('missing_history_conflict', report['errors'])
+
+    def test_replay_of_same_approved_manifest_appends_nothing(self):
+        import opportunity_admin as admin
+        self._gap_manifest_root()
+        manifest = {'manifest_version': 1, 'records': [self.gap_record]}
+        digest = admin.canonical_manifest_digest(manifest)
+
+        def policy_rows():
+            return storage.read_jsonl_stream_readonly(self.root / POLICY)
+        before = len(policy_rows())
+        admin.import_manifest(self.root, manifest, approved_manifest_sha256=digest)
+        self.assertEqual(len(policy_rows()), before + 1)
+        result = admin.import_manifest(self.root, manifest,
+                                       approved_manifest_sha256=digest)
+        self.assertEqual((result['appended'], result['already_present']), (0, 1))
+        self.assertEqual(len(policy_rows()), before + 1)
+
+    def test_approval_digest_mismatch_is_refused(self):
+        import opportunity_admin as admin
+        self._gap_manifest_root()
+        manifest = {'manifest_version': 1, 'records': [self.gap_record]}
+        with self.assertRaisesRegex(admin.OpportunityAdminError,
+                                    'approval_digest_mismatch'):
+            admin.import_manifest(self.root, manifest,
+                                  approved_manifest_sha256='0' * 64)
+
+    def test_combined_gap_binding_manifest_validates_and_imports(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        self._gap_manifest_root()
+        binding = fixtures.policy_row(
+            'identity_resolution', resolution=fixtures.synthetic_resolution_payload(),
+            source={'stream': REVIEWS, 'sequence': 2,
+                    'row_sha256': digest_of(self.bound_row)})
+        manifest = {'manifest_version': 1,
+                    'records': [self.gap_record, binding]}
+        report = admin.validate_manifest(self.root, manifest)
+        self.assertTrue(report['valid'], report['errors'])
+        digest = admin.canonical_manifest_digest(manifest)
+        admin.import_manifest(self.root, manifest, approved_manifest_sha256=digest)
+        index = state.load_index(self.root)
+        self.assertEqual(len(index.missing_history_gaps), 1)
+        self.assertEqual(state.incomplete_history(index), frozenset())
+
+    def test_clearance_manifest_is_isolated_and_imports(self):
+        import opportunity_admin as admin
+        import opportunity_state as state
+        self._gap_manifest_root()
+        clearance = fixtures.missing_history_clearance_row(
+            gap_source={'stream': REVIEWS, 'sequence': 1,
+                        'row_sha256': digest_of(self.gap_row)})
+        # Clearance records form their own dedicated approved manifest.
+        mixed = {'manifest_version': 1, 'records': [self.gap_record, clearance]}
+        report = admin.validate_manifest(self.root, mixed)
+        self.assertFalse(report['valid'])
+        self.assertIn('clearance_manifest_isolated', report['errors'])
+        # First the gap record lands; only then is the gap clearable.
+        gap_manifest = {'manifest_version': 1, 'records': [self.gap_record]}
+        admin.import_manifest(self.root, gap_manifest,
+                              approved_manifest_sha256=admin.canonical_manifest_digest(gap_manifest))
+        clearance_manifest = {'manifest_version': 1, 'records': [clearance]}
+        report = admin.validate_manifest(self.root, clearance_manifest)
+        self.assertTrue(report['valid'], report['errors'])
+        admin.import_manifest(self.root, clearance_manifest,
+                              approved_manifest_sha256=admin.canonical_manifest_digest(clearance_manifest))
+        index = state.load_index(self.root)
+        self.assertEqual(index.unknown_history_blocks, {})
+
+    def test_clearance_bad_reason_fails_validation(self):
+        import opportunity_admin as admin
+        self._gap_manifest_root()
+        gap_manifest = {'manifest_version': 1, 'records': [self.gap_record]}
+        admin.import_manifest(self.root, gap_manifest,
+                              approved_manifest_sha256=admin.canonical_manifest_digest(gap_manifest))
+        clearance = fixtures.missing_history_clearance_row(
+            clearance_reason='invented_reason',
+            gap_source={'stream': REVIEWS, 'sequence': 1,
+                        'row_sha256': digest_of(self.gap_row)})
+        report = admin.validate_manifest(self.root, {'manifest_version': 1,
+                                                     'records': [clearance]})
+        self.assertFalse(report['valid'])
+
     def test_manifest_source_binds_legacy_review_and_spends_without_rewriting(self):
         import opportunity_admin as admin
         import opportunity_state as state
