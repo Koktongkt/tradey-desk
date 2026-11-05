@@ -73,6 +73,9 @@ Policy decisions (`opportunity_state`):
 - `current_attempt_authorized` / `current_attempt_unauthorized` — sealed
   exact-attempt authorization re-proven (or not) against a fresh index.
 - `position_already_held` — positive local exclusion or broker position.
+- `unknown_history_unreconciled` — the verified issuer symbol has an open
+  unknown-history gap (`unknown_history_blocks`); research stays unknown
+  until every gap naming the symbol is bound or individually cleared.
 
 Typed failures (`OpportunityStateError` / `ActivationStateError` /
 `EntryStateError` / admin errors), all fail-closed:
@@ -96,6 +99,12 @@ Typed failures (`OpportunityStateError` / `ActivationStateError` /
   `invalid_reopening_approval`, `observation_evidence_missing`,
   `prior_allowance_mismatch`, `event_not_spent`, `unknown_event`,
   `policy_append_failed`, `activation_append_failed`, `claim_*` failures.
+- Missing-history migration: `invalid_missing_history_record`,
+  `missing_history_observed_fields_mismatch`,
+  `missing_history_symbol_evidence_unsubstantiated`,
+  `missing_history_not_gap_row`, `missing_history_conflict`,
+  `missing_history_hint_not_dossier`, `invalid_missing_history_clearance`,
+  `missing_history_clearance_unknown_gap`, `clearance_manifest_isolated`.
 - Autotrader CLI blockers also include `reopening_claim_unverified`,
   `reopening_commit:<error>`; a committed reopening claim ends the attempt
   deterministically with `DECISION reopening_committed` and never reaches
@@ -194,9 +203,12 @@ When retained reviews lack original dossier hashes, `audit_history` returns a
 **blocked diagnostic**, not a usable index: `index_available: false`,
 `blockers: [historical_dossier_hash_missing]`, canonical watermarks, row counts,
 and exact `missing_dossier_sources` (stream, sequence, UTF-8 canonical row
-SHA-256). Every row is still validated; unrelated corrupt/partial policy state
-is not hidden by that diagnostic. Index loading, manifest validation/import,
-and activation remain blocked with `opportunity_policy_state_unavailable`.
+SHA-256) plus any tolerated `missing_history_gaps`. Every row is still
+validated; unrelated corrupt/partial policy state
+is not hidden by that diagnostic. Index loading and activation remain blocked
+with `opportunity_policy_state_unavailable`; manifest validation/import
+tolerate the typed blocked state only so reviewed migration manifests can be
+validated and imported (never approved or applied by the audit itself).
 The audit does not invent a hash, infer an issuer, discard dissent, or approve
 a migration. Missing original associations require authenticated historical
 evidence or a separately reviewed migration design, not current-cache hashes.
@@ -211,6 +223,61 @@ publishable source under `private/task7-evidence/`. Missing historical
 hashes remain unknown in the rehearsal; unresolved cases stay explicit in the
 manifest proposal, which is **reviewed, not applied**. No unmeasured speedup
 or coverage claim is made; measured values live in the rehearsal receipts.
+
+## Missing-history migration contract
+
+Proven-unrecoverable canonical rows (hashless legacy review rows and hashless
+filled BUY trade rows) are represented as fail-closed `missing_history`
+records (schema_version 1) in `private/opportunity_policy.jsonl`:
+
+- Fixed vocabularies: `kind` ∈ {`legacy_review_unlinked`,
+  `filled_buy_unlinked`}; `reason` ∈
+  {`recovery_exhausted_exact_link_unavailable`}. Each record carries an exact
+  `source` ref (stream ∈ {`private/reviews.jsonl`, `trade_journal.jsonl`},
+  one-based sequence, recomputed UTF-8 canonical row SHA-256), `observed_fields`
+  exactly equal to the referenced row's key set, optional `issuer_evidence`
+  (`{"symbol": S}` where `S` is the first `symbol`-keyed value found at any
+  depth of the referenced row's own canonical bytes — absent symbols force
+  `issuer_evidence: null`), and an optional `hint`
+  (`{"legacy_proposal_hash": <64hex>}`, asserted never to equal any canonical
+  dossier hash at import: `missing_history_hint_not_dossier`).
+- Every hashless gap-classified row must be exactly referenced by a validated
+  `missing_history` record; unreferenced gaps still raise the typed
+  whole-index blocker (gap validation runs before the raise — no partial
+  index). Hashless filled SELL trade rows are non-blockers.
+- The migration-validation read is one coherent widened snapshot
+  (`MIGRATION_SNAPSHOT_STREAMS` = index streams + `trade_journal.jsonl`;
+  gap sources use the dedicated allowlist `MIGRATION_SOURCE_STREAMS` =
+  {`private/reviews.jsonl`, `trade_journal.jsonl`}, separate from the
+  unchanged binding-source `INDEX_STREAMS` boundary):
+  `trade_journal.jsonl` rows are digest-checked for gap references only,
+  never a binding source and never consumed by decision code. The shared
+  binding-source boundary is unchanged.
+- `unknown_history_blocks` maps each normalized symbol (exact after
+  `casefold()` + whitespace trim; no alias or exchange-suffix matching) to its
+  open gap refs, derived only from validated `issuer_evidence`.
+  `candidate_policy` returns `unknown_history_unreconciled` for a verified
+  issuer symbol in that set. Blocking never grants, spends, proves dual
+  approval, or qualifies retry.
+- Optional per-gap `missing_history_clearance` records (schema_version 1;
+  `clearance_reason` ∈ {`permanently_unattributable_user_acknowledged`},
+  exact `gap_source` ref) unblock one gap at a time: a symbol unblocks only
+  when every gap naming it is bound or individually cleared. Clearance
+  records travel only in their own dedicated approved manifest
+  (`clearance_manifest_isolated` otherwise), and the underlying
+  `missing_history` records are kept forever.
+- Manifest validation/import tolerate the typed blocked state so migration
+  manifests can land while gaps remain uncovered; activation still requires
+  the full coverage gate (`activation_incomplete_history`).
+- Rollback semantics: rollback is a code revert to the pre-migration reader
+  (`7c81de800495acb8b2a6c7e5096128437307d785`-era). A migrated policy stream
+  read by the pre-migration reader fails typed
+  (`opportunity_policy_state_unavailable`) over the **entire** stream — never
+  mistaken for corruption, never partially accepted. Therefore never import
+  a manifest the old reader cannot parse: after a revert, the records are
+  inert-but-present and the whole stream is unavailable until the newer
+  reader is restored. `missing_history`/clearance records are inert at the
+  v0 floor (no activation): the legacy floor decision is unchanged.
 
 ## Residual limitations
 

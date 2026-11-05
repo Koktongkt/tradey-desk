@@ -280,6 +280,48 @@ def test_pre_migration_reader_fails_typed_on_missing_history_stream(self):
 - [ ] **Step 4: commit** `docs: document missing-history migration contract and activation gate`.
 - [ ] **Step 5: stop.** Report the checklist state. No import, apply, activation, push, merge or deployment is executed by this plan.
 
+## Gate record (2026-11-05, Task 9 verification — no activation performed)
+
+All tasks T0–T9 executed strictly linearly on branch `fix/opportunity-real-history-migration`
+with RED observed before GREEN per task and one commit per task. Evidence
+receipts (argv/cwd/exit/log sha256/isolation maps) live under the private
+directory `migration-impl-evidence/` beside this plan's diagnostics; no real
+issuer/account/order/hash identifiers appear in the repo.
+
+| Gate item | State | Evidence |
+| --- | --- | --- |
+| 78 `missing_history` records constructible with exact refs, validated, no conflicts | ✅ verified | `t8-rehearsal-receipt.json`: 67 nested-symbol + 5 hint + 6 BUY gap records; `validate_manifest` valid, 202 records |
+| Gap-source boundary separate from `_source_row`; trade_journal gaps validated before the raise | ✅ verified | `t2-red/-green-*`, `t3-*` receipts; tests T2a/T2b, T9/T10/T12 in `tests/test_opportunity_state.py` |
+| 124 hashes bound by the 2ddecea mechanism; coverage depends on the separate retrieval workstream | ✅ mechanism verified / ⬜ coverage open | `t7-*` receipts (combined 78+124 synthetic proof); retrieval workstream remains a separate authorized design (SOURCE-RETRIEVAL proposal) |
+| `audit_history` on the disposable copy blocked only by the gap blocker pre-migration; post-manifest blocked only by `activation_incomplete_history` | ✅ verified | `t8-rehearsal-receipt.json` (`validate_valid: true`, gated errors exactly `activation_incomplete_history`) |
+| Synthetic RED/GREEN suite complete; ≥1,901 baseline green | ✅ verified | `t9-full.json` / `t9-raw.json`: 1,948 tests, exit 0, zero failures/errors/skips (baseline 1,901 + 47 new) |
+| Real-copy rehearsal receipts complete; production untouched | ✅ verified | `t8-rehearsal-receipt.json` (`copy_unchanged`, `production_unchanged` true); canonical-ref cross-check 0 mismatches |
+| Rollback rehearsal incl. v0 floor | ✅ fixture-tested | `t7-*`: v0-floor inert test + pre-migration-reader typed-failure guard (`test_pre_migration_reader_fails_typed_on_missing_history_stream`) |
+| Real production audit pass | ⬜ deliberately not performed | separate user decision (proposal §7) |
+| Validated real manifest / user-approved canonical digests (gaps, bindings/scopes, clearances, final activation digest) | ⬜ deliberately not produced | separate user decisions; no digest was produced or approved by this plan |
+| Independent implementation review | ⬜ open | this implementation has not been independently reviewed |
+
+Implementation notes (recorded deviations, none of plan authority):
+- `HistoricalDossierHashMissing` message text is unchanged
+  (`opportunity_policy_state_unavailable`); tests assert the typed raise and
+  the exception's structured `sources`/`gaps` attributes instead of message
+  fragments.
+- `validate_manifest`/`import_manifest` tolerate the typed blocked state
+  (validation-only index from the pre-raise state) so migration manifests can
+  land while gaps remain uncovered; `activate` keeps the strict gate and
+  still fails `activation_incomplete_history` (Task 8 rehearsal proves this
+  on the real copy).
+- Clearance records must travel in their own dedicated approved manifest
+  (`clearance_manifest_isolated`), implementing "its own approved digest".
+- One existing workflow test's widened composition was updated (a synthetic
+  hashless BUY fill now carries its `missing_history` gap record), per the
+  plan's "update the named expectation, never weaken" rule.
+
+**Status: READY FOR SEPARATE USER DECISIONS. No import, apply, activation,
+push, merge or deployment was executed by this plan.**
+
+---
+
 ## Self-review
 
 - **Spec coverage:** §3.1 schema/validation → Tasks 1–3, 6; §3.2 blocking → Task 4; §3.4 clearance → Task 5; §3.5 invariants → Tasks 6–7 (+ unchanged-by-construction interfaces); §6 tests 1–13 mapped: 1→T3, 2→T2/T3, 3→T4, 4→T6, 5→T6, 6→T7, 7→T7, 8→T9, 9→T2/T3, 10→T3, 11→T5, 12→T3, 13→T3; real-copy rehearsal → Task 8; activation gate → Task 9. I-1 (any-depth symbol, hint rows null evidence) → Task 2; I-2 (scan/ordering/SELL non-blockers) → Task 3; I-3 (separate boundary) → Task 2; I-4 (T9/T10/T2-both-streams/T11/T12) → Tasks 2/3/5; M-1 per-gap clearance → Task 5; M-2 exact matching → Task 4; M-3 rollback assertion → Task 7; M-5 real key set in schema → Task 0 fixtures (67-row 3-key shape) + Task 2 `observed_fields` exact-equality validation (F-5: mapping corrected from the earlier "Task 1 fixtures" label).
