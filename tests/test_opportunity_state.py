@@ -518,5 +518,17 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+    def test_hashless_buy_trade_row_is_not_yet_scanned(self):
+        import tempfile
+        import opportunity_state as state
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_gap_root(Path(temporary.name), review_gaps=0,
+                                      hint_rows=0, buy_gaps=1, sell_rows=0)
+        with self.assertRaisesRegex(state.HistoricalDossierHashMissing,
+                                    'historical_dossier_hash_missing'):
+            state.load_index(root)  # today only REVIEWS_STREAM raises; BUY row unscanned
+
+
 if __name__ == '__main__':
     unittest.main()

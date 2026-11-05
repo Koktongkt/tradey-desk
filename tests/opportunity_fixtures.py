@@ -84,6 +84,66 @@ def earnings_pages(*, period='2026-Q3', representation='original'):
     return [retain_article(page, raw)]
 
 
+def gap_review_row(*, with_symbol: bool, with_hint: bool, dossier_hash: str | None = None,
+                   evidence_id: str | None = None, symbol: str = 'ZZZSYNA') -> dict:
+    """Synthetic hashless legacy review row; never operational history.
+
+    67-row shape: {evidence_id, reviews: [{decision, symbol?}, ...], timestamp}
+    with the symbol nested inside a review entry. The 5-row hint shape carries
+    a 64-hex `proposal_hash` and no `symbol` key anywhere in the row.
+    """
+    import datetime as dt
+    if with_hint and with_symbol:
+        raise ValueError('hint_rows_carry_no_symbol')
+    stamp = dt.datetime(2026, 11, 4, 12, 0, 0, tzinfo=dt.timezone.utc)
+    review = {'decision': 'HOLD'}
+    if with_symbol:
+        review['symbol'] = symbol
+    row = {'evidence_id': evidence_id or 'gap-evidence', 'reviews': [review],
+           'timestamp': stamp.isoformat()}
+    if with_hint:
+        row['proposal_hash'] = 'f' * 64
+    if dossier_hash is not None:
+        row['dossier_hash'] = dossier_hash
+    return row
+
+
+def gap_trade_row(*, action: str, status: str = 'filled',
+                  symbol: str = 'ZZZSYNB') -> dict:
+    """Synthetic hashless trade row; top-level symbol, no identifier fields."""
+    import datetime as dt
+    stamp = dt.datetime(2026, 11, 4, 12, 0, 0, tzinfo=dt.timezone.utc)
+    return {'timestamp': stamp.isoformat(), 'action': action,
+            'status': status, 'symbol': symbol}
+
+
+def make_gap_root(path: Path, *, review_gaps: int, hint_rows: int, buy_gaps: int,
+                  sell_rows: int, bound_rows: int = 0) -> Path:
+    """Provision a caller-owned temporary root holding exactly these shapes."""
+    import sqlite_ledger as storage
+    root = make_root(path)
+    reviews = [gap_review_row(with_symbol=True, with_hint=False,
+                              evidence_id=f'gap-review-{index}',
+                              symbol=f'ZZZSYNR{index}')
+               for index in range(review_gaps)]
+    reviews += [gap_review_row(with_symbol=False, with_hint=True,
+                               evidence_id=f'gap-hint-{index}')
+                for index in range(hint_rows)]
+    reviews += [gap_review_row(with_symbol=True, with_hint=False,
+                               dossier_hash='a' * 64,
+                               evidence_id=f'bound-review-{index}')
+                for index in range(bound_rows)]
+    for row in reviews:
+        storage.append_jsonl(root / 'private/reviews.jsonl', row)
+    trades = [gap_trade_row(action='BUY', symbol=f'ZZZSYNB{index}')
+              for index in range(buy_gaps)]
+    trades += [gap_trade_row(action='SELL', symbol=f'ZZZSYNS{index}')
+               for index in range(sell_rows)]
+    for row in trades:
+        storage.append_jsonl(root / 'trade_journal.jsonl', row)
+    return root
+
+
 def make_root(path: Path, *, active: bool = False) -> Path:
     """Provision only caller-owned temporary roots, via canonical ledger writer."""
     import json
