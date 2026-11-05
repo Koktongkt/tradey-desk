@@ -518,6 +518,178 @@ class OpportunityStateTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+    def _row_digest(self, row) -> str:
+        import hashlib
+        import json
+        return hashlib.sha256(json.dumps(
+            row, sort_keys=True, separators=(',', ':'),
+            ensure_ascii=False).encode('utf-8')).hexdigest()
+
+    def _gap_record_for(self, root, stream, sequence, *, kind, **overrides):
+        snapshot = storage.read_stream_snapshot_readonly(
+            root, ('private/reviews.jsonl', 'trade_journal.jsonl'))
+        row = snapshot.rows[stream][sequence - 1]
+        record = fixtures.missing_history_row(
+            kind=kind,
+            source={'stream': stream, 'sequence': sequence,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            **overrides)
+        return record
+
+    def test_gap_source_row_accepts_both_migration_streams(self):
+        import tempfile
+        import opportunity_state as state
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_gap_root(Path(temporary.name), review_gaps=1,
+                                      hint_rows=0, buy_gaps=1, sell_rows=0)
+        snapshot = storage.read_stream_snapshot_readonly(
+            root, ('private/reviews.jsonl', 'trade_journal.jsonl'))
+        review = state._gap_source_row(
+            {'stream': 'private/reviews.jsonl', 'sequence': 1,
+             'row_sha256': self._row_digest(snapshot.rows['private/reviews.jsonl'][0])},
+            snapshot.rows)
+        self.assertEqual(review['evidence_id'], 'gap-review-0')
+        trade = state._gap_source_row(
+            {'stream': 'trade_journal.jsonl', 'sequence': 1,
+             'row_sha256': self._row_digest(snapshot.rows['trade_journal.jsonl'][0])},
+            snapshot.rows)
+        self.assertEqual((trade['action'], trade['symbol']), ('BUY', 'ZZZSYNB0'))
+
+    def test_gap_source_digest_mutation_fails_on_reviews(self):
+        import opportunity_state as state
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'manifest_source_digest_mismatch'):
+            state._gap_source_row(
+                {'stream': 'private/reviews.jsonl', 'sequence': 1,
+                 'row_sha256': 'e' * 64},
+                {'private/reviews.jsonl': (fixtures.gap_review_row(
+                    with_symbol=True, with_hint=False),)})
+
+    def test_gap_source_digest_mutation_fails_on_trade_journal(self):
+        import opportunity_state as state
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'manifest_source_digest_mismatch'):
+            state._gap_source_row(
+                {'stream': 'trade_journal.jsonl', 'sequence': 3,
+                 'row_sha256': 'e' * 64},
+                {'trade_journal.jsonl': (
+                    fixtures.gap_trade_row(action='BUY'),) * 3})
+
+    def test_gap_source_outside_migration_streams_fails(self):
+        import opportunity_state as state
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'invalid_manifest_source_reference'):
+            state._gap_source_row(
+                {'stream': 'candidates.jsonl', 'sequence': 1,
+                 'row_sha256': 'e' * 64}, {'candidates.jsonl': ({},)})
+
+    def test_source_row_still_rejects_trade_journal(self):
+        import opportunity_state as state
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'invalid_manifest_source_reference'):
+            state._source_row(
+                {'stream': 'trade_journal.jsonl', 'sequence': 1,
+                 'row_sha256': 'e' * 64},
+                {'trade_journal.jsonl': (fixtures.gap_trade_row(action='BUY'),)})
+
+    def test_gap_record_observed_fields_mismatch_fails(self):
+        import opportunity_state as state
+        row = fixtures.gap_review_row(with_symbol=True, with_hint=False)
+        record = fixtures.missing_history_row(
+            source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=['evidence_id'])
+        with self.assertRaisesRegex(state.OpportunityStateError,
+                                    'missing_history_observed_fields_mismatch'):
+            state._validate_gap_record(record, {'private/reviews.jsonl': (row,)})
+
+    def test_gap_record_unsubstantiated_symbol_fails(self):
+        import opportunity_state as state
+        row = fixtures.gap_review_row(with_symbol=True, with_hint=False)
+        record = fixtures.missing_history_row(
+            source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            issuer_evidence={'symbol': 'ZZZNOTINROW'})
+        with self.assertRaisesRegex(
+                state.OpportunityStateError,
+                'missing_history_symbol_evidence_unsubstantiated'):
+            state._validate_gap_record(record, {'private/reviews.jsonl': (row,)})
+
+    def test_gap_record_symbol_from_nested_row_bytes_is_accepted(self):
+        import opportunity_state as state
+        row = fixtures.gap_review_row(with_symbol=True, with_hint=False)
+        record = fixtures.missing_history_row(
+            source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            issuer_evidence={'symbol': 'ZZZSYNA'})
+        validated = state._validate_gap_record(
+            record, {'private/reviews.jsonl': (row,)})
+        self.assertEqual(validated['symbol_evidence'], 'ZZZSYNA')
+
+    def test_hint_row_gap_cannot_carry_symbol_evidence(self):
+        import opportunity_state as state
+        row = fixtures.gap_review_row(with_symbol=False, with_hint=True)
+        record = fixtures.missing_history_row(
+            source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                    'row_sha256': self._row_digest(row)},
+            observed_fields=sorted(row),
+            issuer_evidence={'symbol': 'ZZZSYNA'})
+        with self.assertRaisesRegex(
+                state.OpportunityStateError,
+                'missing_history_symbol_evidence_unsubstantiated'):
+            state._validate_gap_record(record, {'private/reviews.jsonl': (row,)})
+
+    def test_gap_record_malformed_hint_fails(self):
+        import opportunity_state as state
+        row = fixtures.gap_review_row(with_symbol=False, with_hint=True)
+        for hint in ({'legacy_proposal_hash': 'short'}, {'invented': 'x'}, 'f' * 64):
+            record = fixtures.missing_history_row(
+                source={'stream': 'private/reviews.jsonl', 'sequence': 1,
+                        'row_sha256': self._row_digest(row)},
+                observed_fields=sorted(row), hint=hint)
+            with self.subTest(hint=hint):
+                with self.assertRaisesRegex(state.OpportunityStateError,
+                                            'invalid_missing_history_record'):
+                    state._validate_gap_record(
+                        record, {'private/reviews.jsonl': (row,)})
+
+    def test_widened_snapshot_watermark_includes_trade_journal(self):
+        import tempfile
+        import opportunity_state as state
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_gap_root(Path(temporary.name), review_gaps=0,
+                                      hint_rows=0, buy_gaps=0, sell_rows=1,
+                                      bound_rows=1)
+        index = state.load_index(root)
+        trade_digest = self._row_digest(storage.read_jsonl_stream_readonly(
+            root / 'trade_journal.jsonl')[0])
+        self.assertIn(('trade_journal.jsonl', 1, trade_digest),
+                      list(index.snapshot.watermark))
+        # The state digest folds the widened watermark: it differs from the
+        # pre-widening INDEX_STREAMS-only read of the same root.
+        narrow = state.read_stream_snapshot_readonly(root, state.INDEX_STREAMS)
+        narrow_digest = state._build(narrow).state_digest
+        self.assertNotEqual(index.state_digest, narrow_digest)
+
+    def test_load_index_never_writes_trade_journal(self):
+        import tempfile
+        import opportunity_state as state
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = fixtures.make_gap_root(Path(temporary.name), review_gaps=0,
+                                      hint_rows=0, buy_gaps=0, sell_rows=1,
+                                      bound_rows=1)
+        path = root / 'trade_journal.jsonl'
+        before = (path.read_bytes(), path.stat().st_mtime_ns)
+        state.load_index(root)
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+
+
     def test_missing_history_bad_reason_fails_closed(self):
         import opportunity_state as state
         rows = (fixtures.missing_history_row(reason='invented_reason'),)

@@ -36,6 +36,14 @@ INDEX_STREAMS = (POLICY_STREAM, REVIEWS_STREAM, CANDIDATES_STREAM)
 # Fixed fail-closed vocabulary for proven-unrecoverable canonical history.
 MISSING_HISTORY_KINDS = ('legacy_review_unlinked', 'filled_buy_unlinked')
 MISSING_HISTORY_REASONS = ('recovery_exhausted_exact_link_unavailable',)
+TRADE_JOURNAL_STREAM = 'trade_journal.jsonl'
+# Dedicated gap-source allowlist: separate from INDEX_STREAMS so binding
+# sources can never name trade_journal.jsonl (DESIGN-REVIEW I-3).
+MIGRATION_SOURCE_STREAMS = (REVIEWS_STREAM, TRADE_JOURNAL_STREAM)
+# Single coherent read for the migration-validation path: widening the
+# requested-stream caller argument, never a second separate read (F-1).
+MIGRATION_SNAPSHOT_STREAMS = INDEX_STREAMS + (TRADE_JOURNAL_STREAM,)
+_HINT_KEY = re.compile(r'[0-9a-f]{64}')
 
 # Exact reuse of the candidate_retry completed-review vocabulary. A decision
 # outside this set (or fatal flags) is a completed dissent; reconciliation
@@ -297,6 +305,88 @@ def _source_row(source, snapshot_rows: dict) -> dict:
     return row
 
 
+def _row_digest(row) -> str:
+    """Canonical UTF-8 row digest recomputed on every call (never cached)."""
+    return sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
+                             ensure_ascii=False, allow_nan=False)
+                  .encode('utf-8')).hexdigest()
+
+
+def _gap_source_row(source, snapshot_rows: dict) -> dict:
+    """Exact migration gap-source boundary (dedicated allowlist, not _source_row).
+
+    Same digest/sequence discipline as _source_row, but only the
+    MIGRATION_SOURCE_STREAMS are accepted; binding sources stay unchanged.
+    """
+    if (not isinstance(source, dict)
+            or set(source) != {'stream', 'sequence', 'row_sha256'}
+            or not isinstance(source['stream'], str)
+            or source['stream'] not in MIGRATION_SOURCE_STREAMS
+            or type(source['sequence']) is not int or source['sequence'] < 1
+            or not isinstance(source['row_sha256'], str)
+            or _DOSSIER_HASH.fullmatch(source['row_sha256']) is None):
+        raise OpportunityStateError('invalid_manifest_source_reference')
+    rows = snapshot_rows.get(source['stream'], ())
+    if source['sequence'] > len(rows):
+        raise OpportunityStateError('manifest_source_sequence_out_of_range')
+    row = rows[source['sequence'] - 1]
+    if _row_digest(row) != source['row_sha256']:
+        raise OpportunityStateError('manifest_source_digest_mismatch')
+    return row
+
+
+def extract_row_symbol(row) -> str | None:
+    """First `symbol`-keyed value at any depth of the row's own JSON bytes."""
+    if not isinstance(row, dict):
+        return None
+    stack = [row]
+    while stack:
+        current = stack.pop(0)
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key == 'symbol' and isinstance(value, str):
+                    return value
+                stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return None
+
+
+_GAP_KEYS = {'record_type', 'schema_version', 'timestamp', 'kind', 'reason',
+             'source', 'observed_fields', 'issuer_evidence', 'hint'}
+
+
+def _validate_gap_record(row: dict, snapshot_rows: dict) -> dict:
+    """Full §3.1 gap validation against the referenced row's own canonical bytes."""
+    if (not isinstance(row, dict) or set(row) != _GAP_KEYS
+            or row.get('kind') not in MISSING_HISTORY_KINDS
+            or row.get('reason') not in MISSING_HISTORY_REASONS
+            or not isinstance(row.get('observed_fields'), list)
+            or not all(isinstance(name, str) for name in row['observed_fields'])):
+        raise OpportunityStateError('invalid_missing_history_record')
+    referenced = _gap_source_row(row['source'], snapshot_rows)
+    if sorted(row['observed_fields']) != sorted(referenced):
+        raise OpportunityStateError('missing_history_observed_fields_mismatch')
+    evidence = row.get('issuer_evidence')
+    symbol = extract_row_symbol(referenced)
+    if evidence is not None:
+        if (not isinstance(evidence, dict) or set(evidence) != {'symbol'}
+                or not isinstance(evidence['symbol'], str)
+                or evidence['symbol'] != symbol):
+            raise OpportunityStateError(
+                'missing_history_symbol_evidence_unsubstantiated')
+    hint = row.get('hint')
+    if hint is not None and (not isinstance(hint, dict)
+                             or set(hint) != {'legacy_proposal_hash'}
+                             or not isinstance(hint['legacy_proposal_hash'], str)
+                             or _DOSSIER_HASH.fullmatch(
+                                 hint['legacy_proposal_hash']) is None):
+        raise OpportunityStateError('invalid_missing_history_record')
+    return {'source': dict(row['source']), 'kind': row['kind'],
+            'symbol_evidence': evidence['symbol'] if evidence is not None else None,
+            'hint': None if hint is None else dict(hint)}
+
+
 def _unresolved_record(row: dict, resolutions: dict, unresolved: set,
                        scopes: dict, snapshot_rows: dict) -> None:
     """Validate explicit reviewed scope; never infer an issuer from a source."""
@@ -506,9 +596,14 @@ def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
 
 
 def load_index(root: Path) -> OpportunityIndex:
-    """Build the validated index from one coherent read-only snapshot."""
+    """Build the validated index from one coherent read-only snapshot.
+
+    The migration-validation read is the single coherent widened read
+    (MIGRATION_SNAPSHOT_STREAMS); trade_journal rows are digest-checked for
+    gap references only and never consumed by decision code.
+    """
     try:
-        snapshot = read_stream_snapshot_readonly(Path(root), INDEX_STREAMS)
+        snapshot = read_stream_snapshot_readonly(Path(root), MIGRATION_SNAPSHOT_STREAMS)
     except (LedgerError, OSError) as error:
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     return _build(snapshot)
