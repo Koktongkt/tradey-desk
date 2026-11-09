@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlite_ledger import LedgerError, read_jsonl_stream_readonly
 
 POLICY_STREAM = 'private/opportunity_policy.jsonl'
-SUPPORTED_POLICY_VERSION = 1
+SUPPORTED_POLICY_VERSION = 2
 _KNOWN_RECORD_TYPES = frozenset({
     'activation', 'identity_resolution', 'document_alias', 'reopen_grant', 'condition_approval',
     'missing_history', 'missing_history_clearance',

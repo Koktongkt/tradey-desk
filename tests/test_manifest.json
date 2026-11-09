@@ -36,6 +36,7 @@
    "test_opportunity_identity",
    "test_opportunity_admin",
    "test_opportunity_state",
+   "test_opportunity_cutover",
    "test_publication_integration",
    "test_publication_interpreter",
    "test_publication_recovery",

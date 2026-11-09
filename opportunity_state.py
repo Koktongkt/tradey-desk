@@ -287,6 +287,7 @@ class OpportunityIndex:
     unresolved_issuer_scopes: dict[str, dict[str, str]] = field(default_factory=dict)
     missing_history_gaps: tuple[dict, ...] = ()
     unknown_history_blocks: dict[str, tuple[dict, ...]] = field(default_factory=dict)
+    prospective_baseline: dict | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'unresolved_issuer_scopes', MappingProxyType({
@@ -441,6 +442,8 @@ def incomplete_history(index: OpportunityIndex) -> frozenset[str]:
     Hashless gap rows carry no dossier hash; they are represented by
     missing_history_gaps and never enter the reviewed-dossier set.
     """
+    if index.prospective_baseline is not None:
+        return frozenset()  # Post-cutover linkage is mandatory during state build.
     reviewed = {row['dossier_hash'] for row in index.snapshot.rows.get(REVIEWS_STREAM, ())
                 if isinstance(row, dict) and isinstance(row.get('dossier_hash'), str)}
     return frozenset((index.unresolved_dossiers | (reviewed - index.dossier_allowances.keys()))
@@ -543,7 +546,7 @@ def _gap_entry(snapshot_rows: dict, stream: str, sequence: int, record: dict) ->
             'symbol_evidence': record['symbol_evidence']}
 
 
-def _state_parts(snapshot: LedgerSnapshot) -> dict:
+def _state_parts(snapshot: LedgerSnapshot, *, _prospective: dict | None = None) -> dict:
     """Compute the full validated state; blockers/tolerance are reported, not raised.
 
     Fail-closed ordering (I-2): every `missing_history` policy record is
@@ -560,7 +563,25 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         unresolved: set[str] = set()
         scopes: dict[str, dict[str, str]] = {}
         allowance_events: dict[str, str] = {}
-        version = _policy_state(snapshot.rows.get(POLICY_STREAM, ()), resolutions,
+        policy_rows = snapshot.rows.get(POLICY_STREAM, ())
+        if _prospective is None:
+            from opportunity_cutover import active_baseline, CutoverError
+            try:
+                baseline = active_baseline(snapshot)
+            except CutoverError as error:
+                raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+        else:
+            baseline = _prospective
+        def after(stream, sequence):
+            return baseline is None or sequence > baseline['streams'][stream]['sequence']
+        if _prospective is not None:
+            policy_rows = tuple(row for sequence, row in enumerate(policy_rows, 1)
+                                if after(POLICY_STREAM, sequence))
+            if any(row.get('record_type') == 'condition_approval'
+                   or (row.get('record_type') == 'reopen_grant' and row.get('condition_id') is not None)
+                   for row in policy_rows):
+                raise OpportunityStateError('prospective_manual_reopening_only')
+        version = _policy_state(policy_rows, resolutions,
                                 aliases, grants, conditions, unresolved, allowance_events,
                                 scopes, snapshot.rows)
         # A later binding row cannot silently change a previously scoped issuer.
@@ -571,7 +592,7 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         # Reviewed historical source references bind to the original allowance,
         # never the current (possibly reopened) generation. Validate exact rows
         # on every load so imported history cannot be detached or repointed.
-        for row in snapshot.rows.get(POLICY_STREAM, ()):
+        for row in policy_rows:
             if (row.get('record_type') == 'identity_resolution'
                     and 'resolution' in row and 'source' in row):
                 source = _source_row(row['source'], snapshot.rows)
@@ -584,15 +605,22 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
                                    'event_id': event_id,
                                    'allowance_id': allowance_identifier(event_id, 0)},),
                                  allowance_events, dossier_allowances)
-        _candidate_links(snapshot.rows.get(CANDIDATES_STREAM, ()), allowance_events,
-                         dossier_allowances)
+        candidate_rows = snapshot.rows.get(CANDIDATES_STREAM, ())
+        if _prospective is not None:
+            candidate_rows = tuple(row for sequence, row in enumerate(candidate_rows, 1)
+                                   if after(CANDIDATES_STREAM, sequence))
+            for row in candidate_rows:
+                if (row.get('opportunity_baseline_id') != baseline['baseline_id']
+                        or not {'dossier_hash', 'event_id', 'allowance_id'} <= set(row)):
+                    raise OpportunityStateError('opportunity_candidate_baseline_mismatch')
+        _candidate_links(candidate_rows, allowance_events, dossier_allowances)
         for dossier, scope in scopes.items():
             allowance = dossier_allowances.get(dossier)
             if allowance is not None and resolutions[allowance_events[allowance]].issuer.cik != scope['issuer_cik']:
                 raise OpportunityStateError('unresolved_scope_binding_mismatch')
         # Gap validation precedes any raise (no partial index escape hatch).
         gap_records: dict[tuple[str, int], dict] = {}
-        for row in snapshot.rows.get(POLICY_STREAM, ()):
+        for row in policy_rows:
             if isinstance(row, dict) and row.get('record_type') == 'missing_history':
                 validated = _validate_gap_record(row, snapshot.rows)
                 key = (validated['source']['stream'], validated['source']['sequence'])
@@ -608,6 +636,11 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         for sequence, row in enumerate(snapshot.rows.get(REVIEWS_STREAM, ()), 1):
             if not isinstance(row, dict) or not isinstance(row.get('evidence_id'), str):
                 raise OpportunityStateError('opportunity_policy_state_unavailable')
+            if _prospective is not None and not after(REVIEWS_STREAM, sequence):
+                continue
+            if _prospective is not None and (
+                    row.get('dossier_hash') not in dossier_allowances):
+                raise OpportunityStateError('prospective_review_binding_missing')
             if 'dossier_hash' not in row:
                 key = (REVIEWS_STREAM, sequence)
                 record = gap_records.get(key)
@@ -630,6 +663,8 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         # Only hashless filled BUY trade rows are gap-classified; hashless
         # filled SELL rows are explicit non-blockers, asserted by test (I-2).
         for sequence, row in enumerate(snapshot.rows.get(TRADE_JOURNAL_STREAM, ()), 1):
+            if _prospective is not None and not after(TRADE_JOURNAL_STREAM, sequence):
+                continue
             if (isinstance(row, dict) and 'dossier_hash' not in row
                     and row.get('action') == 'BUY' and row.get('status') == 'filled'):
                 key = (TRADE_JOURNAL_STREAM, sequence)
@@ -648,7 +683,7 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
         # Per-gap clearance: a symbol unblocks only when every gap naming it
         # is individually cleared; the underlying records are kept forever.
         cleared: set[tuple[str, int]] = set()
-        for row in snapshot.rows.get(POLICY_STREAM, ()):
+        for row in policy_rows:
             if not (isinstance(row, dict)
                     and row.get('record_type') == 'missing_history_clearance'):
                 continue
@@ -671,7 +706,10 @@ def _state_parts(snapshot: LedgerSnapshot) -> dict:
                 continue
             key = gap['symbol_evidence'].strip().casefold()
             blocks[key] = blocks.get(key, ()) + (gap,)
-        return {'version': version, 'resolutions': resolutions, 'aliases': aliases,
+        if baseline is not None and _prospective is None:
+            # Original integrity is validated above; only opportunity memory is scoped.
+            return _state_parts(snapshot, _prospective=baseline)
+        return {'version': version, 'baseline': baseline, 'resolutions': resolutions, 'aliases': aliases,
                 'grants': grants, 'conditions': conditions, 'unresolved': unresolved,
                 'scopes': scopes, 'allowance_events': allowance_events,
                 'dossier_allowances': dossier_allowances,
@@ -699,14 +737,18 @@ def _index_from_parts(snapshot: LedgerSnapshot, parts: dict) -> OpportunityIndex
         'dossier_allowances': sorted(parts['dossier_allowances'].items()),
         'allowance_reviews': [[_canonical(r).decode('ascii') for r in rows]
                               for _, rows in sorted(parts['allowance_reviews'].items())],
-        'watermark': list(snapshot.watermark),
+        # Broad cutover snapshots also contain operational audit streams. A
+        # proposed-order append must not invalidate its own exact approval;
+        # those obligations are rechecked separately against fresh broker truth.
+        'watermark': [row for row in snapshot.watermark
+                      if row[0] in MIGRATION_SNAPSHOT_STREAMS],
     })).hexdigest()
     return OpportunityIndex(snapshot, parts['version'], parts['resolutions'],
                             parts['aliases'], parts['dossier_allowances'],
                             parts['allowance_reviews'], parts['grants'],
                             parts['conditions'], frozenset(parts['unresolved']),
                             parts['allowance_events'], digest, parts['scopes'],
-                            parts['gaps'], parts['blocks'])
+                            parts['gaps'], parts['blocks'], parts.get('baseline'))
 
 
 def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
@@ -727,7 +769,12 @@ def load_index(root: Path) -> OpportunityIndex:
     """
     try:
         snapshot = read_stream_snapshot_readonly(Path(root), MIGRATION_SNAPSHOT_STREAMS)
-    except (LedgerError, OSError) as error:
+        if any(row.get('record_type') == 'activation' and row.get('policy_version', 0) >= 2
+               for row in snapshot.rows.get(POLICY_STREAM, ())):
+            from opportunity_cutover import BASELINE_STREAMS
+            # Discard the preliminary view: all derived state uses this one coherent read.
+            snapshot = read_stream_snapshot_readonly(Path(root), BASELINE_STREAMS)
+    except (LedgerError, OSError, ActivationStateError) as error:
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     return _build(snapshot)
 
@@ -878,11 +925,14 @@ def require_current_allowance(root: Path, candidate: dict, *,
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     if version <= 0:
         return PolicyDecision('eligible', 'legacy_policy_floor', None, None)
-    if version > 1:
+    if version > 2:
         raise OpportunityStateError('opportunity_policy_version_unsupported')
     index = load_index(root)
     if not isinstance(candidate, dict):
         raise OpportunityStateError('opportunity_identity_unknown')
+    if (index.prospective_baseline is not None
+            and candidate.get('opportunity_baseline_id') != index.prospective_baseline['baseline_id']):
+        return PolicyDecision('unknown', 'opportunity_candidate_baseline_mismatch', None, None)
     try:
         resolution = _load_binding(candidate.get('opportunity_identity'))
     except (ValueError, TypeError, KeyError) as error:
@@ -972,7 +1022,7 @@ def load_policy_context(root: Path) -> PolicyContext:
     root = Path(root).resolve()
     try:
         version = activation_version(root)
-        if version > 1:
+        if version > 2:
             raise OpportunityStateError('opportunity_policy_version_unsupported')
         index = load_index(root)
         if index.activated_version != version:
@@ -1006,7 +1056,7 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
     index = context.index
     if symbol in context.known_exclusions:
         return PolicyDecision('skip', 'position_already_held', None, None)
-    if index.activated_version != 1:
+    if index.activated_version not in (1, 2):
         return PolicyDecision('unknown', 'policy_not_activated', None, None)
     if not isinstance(resolution, EventResolution) or resolution.status != 'verified':
         reason = ('opportunity_identity_conflict' if isinstance(resolution, EventResolution)

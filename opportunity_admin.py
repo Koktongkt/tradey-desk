@@ -608,6 +608,8 @@ def activate(root: Path, manifest: dict, *,
             or type(activation.get('policy_version')) is not int
             or activation['policy_version'] <= 0):
         raise OpportunityAdminError('manifest_activation_version_required')
+    if activation['policy_version'] != 1:
+        raise OpportunityAdminError('prospective_activation_requires_cutover_api')
     imported = import_manifest(root, manifest,
                                approved_manifest_sha256=approved_manifest_sha256)
     appended = False

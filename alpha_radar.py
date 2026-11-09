@@ -1818,7 +1818,7 @@ def _run_policy_context(root:Path):
     return load_policy_context(root)
 
 
-_POLICY_METADATA=frozenset({'opportunity_identity','event_id','allowance_id','reopening_claim',
+_POLICY_METADATA=frozenset({'opportunity_baseline_id','opportunity_identity','event_id','allowance_id','reopening_claim',
     'condition_observation','opportunity_observations','condition_approval','_radar_authority',
     'condition','condition_id','observation','claim_sha256','prior_allowance_id',
     'reopening_pending','reopening_condition','condition_evidence','current_attempt','opportunity_policy'})
@@ -1839,6 +1839,12 @@ def _final_policy_check(candidate):
     context=_run_policy_context(ROOT)
     if isinstance(authority,_RadarAuthority):
         if authority.context.root!=ROOT.resolve():raise OpportunityStateError('opportunity_policy_root_mismatch')
+        if context is not None and context.index.prospective_baseline is not None:
+            baseline_id=context.index.prospective_baseline['baseline_id']
+            if (authority.context.index.prospective_baseline is None
+                    or authority.context.index.prospective_baseline['baseline_id']!=baseline_id
+                    or candidate.get('opportunity_baseline_id')!=baseline_id):
+                raise CandidateRejection('opportunity_candidate_baseline_mismatch')
         # Re-read even if the activation projection disappeared since intake.
         result=candidate_policy(authority.context,authority.resolution,
             symbol=str(candidate.get('symbol') or '').upper(),reopening_claim=authority.claim)
@@ -1959,6 +1965,8 @@ def _bind_policy_candidate(candidate,context):
         context=refresh_policy_context(context)
         decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
         if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
+    if context.index.prospective_baseline is not None:
+        candidate['opportunity_baseline_id']=context.index.prospective_baseline['baseline_id']
     candidate['opportunity_identity']=candidate_identity(resolution)
     candidate['event_id']=decision.event_id
     candidate['allowance_id']=decision.allowance_id

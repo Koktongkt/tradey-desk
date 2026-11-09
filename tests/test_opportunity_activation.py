@@ -30,7 +30,7 @@ class ActivationTests(unittest.TestCase):
         self.path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
 
     def test_absent_and_empty_history_allow_legacy_without_activation_writes(self):
-        self.assertEqual(activation.SUPPORTED_POLICY_VERSION, 1)
+        self.assertEqual(activation.SUPPORTED_POLICY_VERSION, 2)
         self.assertEqual(activation.POLICY_STREAM, 'private/opportunity_policy.jsonl')
         for rows in (None, []):
             with self.subTest(rows=rows):

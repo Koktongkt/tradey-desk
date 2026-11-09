@@ -822,7 +822,7 @@ class OpportunityAdminTests(unittest.TestCase):
         import opportunity_admin as admin
         import opportunity_state as state
         resolution = self.build_history()
-        manifest = self.manifest(resolution, activation={'policy_version': 2})
+        manifest = self.manifest(resolution, activation={'policy_version': 1})
         digest = admin.canonical_manifest_digest(manifest)
         first = admin.activate(self.root, manifest, approved_manifest_sha256=digest)
         self.assertTrue(first['appended_activation'])
@@ -831,7 +831,7 @@ class OpportunityAdminTests(unittest.TestCase):
         rows = storage.read_jsonl_stream_readonly(self.root / POLICY)
         self.assertEqual(sum(1 for r in rows if r['record_type'] == 'activation'), 2)
         index = state.load_index(self.root)
-        self.assertEqual(index.activated_version, 2)
+        self.assertEqual(index.activated_version, 1)
         # Earliest dissent: the HOLD review still spends despite later approval.
         self.write(REVIEWS, [
             fixtures.review_row(DOSSIER_A, EVIDENCE_1,
@@ -1127,7 +1127,7 @@ class OpportunityAdminTests(unittest.TestCase):
                                         str(loose), '--approved-sha256', digest,
                                         '--apply']), 0)
         # Activation through the CLI.
-        activated = self.manifest(resolution, activation={'policy_version': 2})
+        activated = self.manifest(resolution, activation={'policy_version': 1})
         activate_path = self.write_manifest_file(activated)
         self.assertEqual(admin.main(
             ['activate', str(self.root), '--manifest', str(activate_path),

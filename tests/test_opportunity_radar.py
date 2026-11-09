@@ -301,7 +301,8 @@ class RadarPolicyTests(unittest.TestCase):
         storage.append_jsonl(self.root/state.CANDIDATES_STREAM,result)
         restored=restore_reopening_claim(state.load_index(self.root),'e'*64,now=NOW)
         self.assertEqual(restored.condition_id,'synthetic-condition')
-        self.assertTrue(radar._stored_policy_eligible(result,state.load_policy_context(self.root)))
+        with patch.object(radar.dt, 'datetime', Clock):
+            self.assertTrue(radar._stored_policy_eligible(result,state.load_policy_context(self.root)))
 
     def test_stale_condition_price_cannot_reopen_at_new_verification_time(self):
         self.approve_condition()
@@ -447,7 +448,7 @@ class RadarPolicyTests(unittest.TestCase):
 
     def test_policy_floor_and_baseline_failures_never_use_legacy(self):
         import opportunity_activation
-        self.assertEqual(opportunity_activation.SUPPORTED_POLICY_VERSION,1)
+        self.assertEqual(opportunity_activation.SUPPORTED_POLICY_VERSION,2)
         baseline=self.root/'private/broker_baseline.json'
         for payload in (None,'{broken',json.dumps({'preexisting_symbols':[False]})):
             with self.subTest(payload=payload):

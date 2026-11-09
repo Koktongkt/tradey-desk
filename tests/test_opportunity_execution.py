@@ -233,6 +233,9 @@ class ExecutionCase(unittest.TestCase):
             stack.enter_context(patch.object(autotrader, 'independent_reviews', side_effect=reviews))
             shim = _dt_shim()
             stack.enter_context(patch.object(autotrader, 'dt', shim))
+            import opportunity_admin
+            stack.enter_context(patch.object(state, 'dt', shim))
+            stack.enter_context(patch.object(opportunity_admin, 'dt', shim))
             stack.enter_context(contextlib.redirect_stdout(captured))
             code = autotrader._run_locked(self.ns())
         return code, captured.getvalue()
@@ -267,7 +270,7 @@ class FixedDateTime(dt.datetime):
 
     @classmethod
     def now(cls, tz=None):
-        return NOW if tz is None else NOW.astimezone(tz)
+        return cls.fromtimestamp(NOW.timestamp(), tz=tz or dt.timezone.utc)
 
 
 class EntryBoundaryTests(ExecutionCase):

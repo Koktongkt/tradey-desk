@@ -284,7 +284,7 @@ def migrate_jsonl(root: Path | str, paths: Iterable[Path] | None = None) -> dict
     }
 
 
-def append_jsonl(path: Path | str, row: dict) -> None:
+def append_jsonl(path: Path | str, row: dict, *, expected_watermark: tuple | None = None) -> None:
     path = Path(path).resolve()
     payload = _canonical(row)
     if path.name == "trade_journal.jsonl" and row.get("status") != "filled":
@@ -296,6 +296,11 @@ def append_jsonl(path: Path | str, row: dict) -> None:
         _ensure_parent(lock_path)
         with lock_path.open("a+", encoding="utf-8") as global_lock:
             fcntl.flock(global_lock.fileno(), fcntl.LOCK_EX)
+            if expected_watermark is not None:
+                names = [name for name, _, _ in expected_watermark]
+                observed = _snapshot_readonly_locked(root, names)
+                if observed.watermark != expected_watermark:
+                    raise LedgerConstraintError('approved snapshot changed before append')
             _ensure_parent(path)
             with path.open("a+", encoding="utf-8") as projection:
                 fcntl.flock(projection.fileno(), fcntl.LOCK_EX)
@@ -381,6 +386,48 @@ def _stream_digest(payloads: list[str]) -> str:
     return hashlib.sha256(''.join(payloads).encode('utf-8')).hexdigest()
 
 
+def _snapshot_readonly_locked(root: Path, names: list[str]) -> LedgerSnapshot:
+    """Caller holds the canonical ledger lock; never initialize or repair."""
+    db = database_path(root / 'order_ledger.jsonl')
+    storage = _storage_root(root / 'order_ledger.jsonl')
+    connection = None
+    try:
+        if db.exists():
+            connection = _readonly_connection(db)
+        rows: dict[str, tuple[dict, ...]] = {}
+        watermark: list[tuple[str, int, str]] = []
+        repair = False
+        for name in names:
+            selected = root / name
+            if _stream_name(selected, root) != name:
+                raise LedgerIntegrityError('invalid ledger stream path')
+            projected = _parse_projection(selected, strict=True)
+            canonical = [_canonical(row) for row in projected]
+            stored = []
+            if connection is not None:
+                db_name = _stream_name(selected, storage)
+                stored = _database_rows(connection, db_name)
+                sequences = [r[0] for r in connection.execute(
+                    'SELECT sequence FROM ledger_entries WHERE stream=? ORDER BY sequence',
+                    (db_name,))]
+                if sequences != list(range(1, len(stored) + 1)):
+                    raise LedgerIntegrityError('invalid ledger sequence')
+                if len(canonical) < len(stored) or canonical[:len(stored)] != stored:
+                    raise LedgerIntegrityError('compatibility projection diverged')
+                repair |= len(canonical) != len(stored)
+            authoritative = stored if connection is not None else canonical
+            rows[name] = tuple(projected)
+            watermark.append((name, len(authoritative), _stream_digest(authoritative)))
+        if repair:
+            raise LedgerRepairRequired('projection import required')
+        return LedgerSnapshot(root, rows, tuple(watermark))
+    except sqlite3.Error as error:
+        raise LedgerIntegrityError('database unreadable') from error
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) -> LedgerSnapshot:
     """Read requested streams as one coherent validated snapshot, writing nothing.
 
@@ -401,42 +448,7 @@ def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) ->
     _ensure_parent(lock_path)
     with lock_path.open('a+') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        connection = None
-        try:
-            if db.exists():
-                connection = _readonly_connection(db)
-            rows: dict[str, tuple[dict, ...]] = {}
-            watermark: list[tuple[str, int, str]] = []
-            repair = False
-            for name in names:
-                selected = root / name
-                if _stream_name(selected, root) != name:
-                    raise LedgerIntegrityError('invalid ledger stream path')
-                projected = _parse_projection(selected, strict=True)
-                canonical = [_canonical(row) for row in projected]
-                stored = []
-                if connection is not None:
-                    db_name = _stream_name(selected, storage)
-                    stored = _database_rows(connection, db_name)
-                    sequences = [r[0] for r in connection.execute(
-                        'SELECT sequence FROM ledger_entries WHERE stream=? ORDER BY sequence',
-                        (db_name,))]
-                    if sequences != list(range(1, len(stored) + 1)):
-                        raise LedgerIntegrityError('invalid ledger sequence')
-                    if len(canonical) < len(stored) or canonical[:len(stored)] != stored:
-                        raise LedgerIntegrityError('compatibility projection diverged')
-                    repair |= len(canonical) != len(stored)
-                authoritative = stored if connection is not None else canonical
-                rows[name] = tuple(projected)
-                watermark.append((name, len(authoritative), _stream_digest(authoritative)))
-            if repair:
-                raise LedgerRepairRequired('projection import required')
-            return LedgerSnapshot(root, rows, tuple(watermark))
-        except sqlite3.Error as error:
-            raise LedgerIntegrityError('database unreadable') from error
-        finally:
-            if connection is not None:
-                connection.close()
+        return _snapshot_readonly_locked(root, names)
 
 
 def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
