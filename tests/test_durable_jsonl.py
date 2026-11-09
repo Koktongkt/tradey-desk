@@ -48,6 +48,10 @@ class DurableJsonlTests(unittest.TestCase):
         import alpha_radar
         import run_cycle
         with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, 'ROOT', Path(td)):
+            # The candidate writer now checks policy under the entry lock first.
+            # Provision its read-only coordination parent so injected fsync
+            # exercises the durable append boundary, not guard setup.
+            (Path(td) / 'private').mkdir(mode=0o700)
             for writer in [
                 lambda: alpha_radar.append({'symbol': 'TEST'}),
                 lambda: alpha_radar.record_scout_diagnostic({'reason': 'no_discovered_candidate'}),
