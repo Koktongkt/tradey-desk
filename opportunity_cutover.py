@@ -105,6 +105,11 @@ def _snapshot(root: Path) -> storage.LedgerSnapshot:
 
 def prepare_manifest(root: Path) -> dict:
     snapshot = _snapshot(root)
+    if (not storage.database_path(snapshot.root/'order_ledger.jsonl').exists()
+            and any(snapshot.rows.values())):
+        # Creating the first DB by appending only activation would leave other
+        # existing projections unimported. Require the explicit migration first.
+        raise CutoverError('prospective_storage_migration_required')
     if any(r.get('record_type') == 'activation' for r in snapshot.rows[POLICY_STREAM]):
         raise CutoverError('prospective_reset_forbidden')
     # Fully validate retained business history without demanding recovered links.

@@ -122,6 +122,51 @@ class CutoverTests(unittest.TestCase):
         with self.assertRaises(api.CutoverError):
             api.prepare_manifest(self.root)
 
+    def test_stale_candidate_is_rejected_at_durable_append(self):
+        from unittest.mock import patch
+        import alpha_radar as radar
+        stale = {'symbol':'ACME', 'dossier_hash':'a'*64}
+        with patch.object(radar, 'ROOT', self.root):
+            radar._final_policy_check(stale)
+            self.activate()
+            with self.assertRaises(radar.CandidateRejection):
+                radar.append(stale)
+        self.assertFalse((self.root/state.CANDIDATES_STREAM).exists())
+        self.assertEqual(state.load_index(self.root).activated_version, 2)
+
+    def test_candidate_append_serializes_with_activation(self):
+        from unittest.mock import patch
+        import threading
+        import alpha_radar as radar
+        api = self.api()
+        manifest = api.prepare_manifest(self.root)
+        outcomes = []
+        def competing_activation():
+            try:
+                api.activate_prospective(self.root, manifest,
+                    approved_manifest_sha256=api.manifest_digest(manifest))
+                outcomes.append('activated')
+            except RuntimeError as error:
+                outcomes.append(str(error))
+        original = radar.append_jsonl
+        def checked_append(path, row):
+            thread = threading.Thread(target=competing_activation)
+            thread.start(); thread.join(timeout=3)
+            self.assertFalse(thread.is_alive(), 'activation must refuse contention without waiting')
+            self.assertEqual(outcomes, ['entry_state_busy'])
+            return original(path, row)
+        with patch.object(radar, 'ROOT', self.root), patch.object(radar, 'append_jsonl', side_effect=checked_append):
+            radar.append({'symbol':'ACME', 'dossier_hash':'a'*64})
+        self.assertEqual(activation.activation_version(self.root), 0)
+
+    def test_cutover_refuses_unmigrated_nonempty_projections_before_any_append(self):
+        api = self.api()
+        path = self.root/state.REVIEWS_STREAM
+        path.write_text(json.dumps(f.gap_review_row(with_symbol=True, with_hint=False))+'\n')
+        with self.assertRaises(api.CutoverError):
+            api.prepare_manifest(self.root)
+        self.assertFalse((self.root/state.POLICY_STREAM).exists())
+
     def test_concurrent_append_at_final_writer_refuses_activation(self):
         from unittest.mock import patch
         api = self.api()

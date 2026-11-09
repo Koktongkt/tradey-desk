@@ -421,7 +421,24 @@ def extract_json(text:str)->dict[str,Any]:
     return first_object(text, missing="no json")
 
 def append(row:dict[str,Any])->None:
-    append_jsonl(ROOT/"candidates.jsonl",row)
+    # Activation and execution use this same lock. Recheck at the durable
+    # boundary: an earlier final check may have run before prospective cutover.
+    import entry_state
+    with entry_state.lock(ROOT):
+        context=_run_policy_context(ROOT)
+        if context is not None and context.index.prospective_baseline is not None:
+            from opportunity_identity import _load_binding
+            from opportunity_state import candidate_policy
+            if row.get('opportunity_baseline_id')!=context.index.prospective_baseline['baseline_id']:
+                raise CandidateRejection('opportunity_candidate_baseline_mismatch')
+            try:resolution=_load_binding(row.get('opportunity_identity'))
+            except (ValueError,TypeError,KeyError) as error:
+                raise CandidateRejection('opportunity_identity_unknown') from error
+            result=candidate_policy(context,resolution,symbol=str(row.get('symbol') or '').upper())
+            if (result.outcome!='eligible' or row.get('event_id')!=result.event_id
+                    or row.get('allowance_id')!=result.allowance_id):
+                raise CandidateRejection(result.reason if result.outcome!='eligible' else 'opportunity_candidate_binding_changed')
+        append_jsonl(ROOT/"candidates.jsonl",row)
 
 def decision_line(candidate:dict[str,Any])->str:
     symbol=str(candidate.get("symbol","")).upper()
