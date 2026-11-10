@@ -401,6 +401,3 @@ class IdentityDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(row['candidate_token']),16)
         self.assertEqual(row['source_failure_reasons'],['source_http_forbidden'])
         self.assertNotIn('ATOM',json.dumps(row));self.assertNotIn('https://',json.dumps(row))
-
-
-if __name__ == '__main__': unittest.main()

@@ -21,7 +21,7 @@ SOURCE_REASONS=frozenset({'source_fetch_timeout','source_fetch_failed','source_h
     'identity_source_capacity','identity_body_incomplete','identity_capture_media','identity_capture_locator',
     'identity_source_invalid','identity_handoff_deadline'})
 TRANSPORT_REASONS=frozenset({'identity_source_forbidden','identity_source_http_error','identity_source_transport_failed',
-                            'identity_http_status','identity_source_deadline'})
+                            'identity_http_status','identity_source_deadline','identity_handoff_deadline'})
 
 
 def policy_diagnostic(reason, *, timestamp, run_id=None, symbol=None, resolution=None,
