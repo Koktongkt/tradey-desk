@@ -77,7 +77,7 @@ async def publish(call, args: dict, deadline: float, *, existing_id: str | None=
         if not isinstance(value,dict):
             raise Rejected('failed')
         return value
-    projects=await bounded('list_projects',dict(teamId=TEAM,search='tradey-desk',limit=1))
+    projects=await bounded('list_projects',dict(teamId=TEAM,search='tradey-desk',limit='1'))
     if not any(isinstance(p,dict) and p.get('id')==PROJECT for p in projects.get('projects',[])):
         raise Rejected('config')
     deployment_id=existing_id
@@ -159,7 +159,7 @@ async def native_publish(args: dict | None, deadline: float, *, existing_id: str
             result=await server.session.call_tool(name,arguments)
             return decode_result(result.model_dump(by_alias=True))
         if args is None and existing_id is None:
-            result=await asyncio.wait_for(call('list_projects',dict(teamId=TEAM,search='tradey-desk',limit=1)),min(25,max(.001,deadline-time.monotonic())))
+            result=await asyncio.wait_for(call('list_projects',dict(teamId=TEAM,search='tradey-desk',limit='1')),min(25,max(.001,deadline-time.monotonic())))
             if not any(p.get('id')==PROJECT for p in result.get('projects',[]) if isinstance(p,dict)):
                 raise Rejected('config')
             return dict(control='authenticated',projectId=PROJECT,inline_files=True,tools=len(tools))

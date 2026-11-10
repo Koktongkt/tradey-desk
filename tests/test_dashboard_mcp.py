@@ -93,6 +93,7 @@ class PublishTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['id'],'dpl_fixture')
         self.assertEqual([n for n,_ in calls].count('create_deployment'),1)
         self.assertTrue(all(args['teamId']==m.TEAM for _,args in calls))
+        self.assertEqual(calls[0][1]['limit'],'1')
 
     async def test_unknown_create_never_retried(self):
         m=load();calls=[]
