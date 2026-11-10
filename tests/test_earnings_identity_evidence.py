@@ -373,4 +373,34 @@ class RadarIdentityHandoffTests(unittest.TestCase):
         self.assertEqual(result['opportunity_identity']['version'],2)
 
 
+class IdentityDiagnosticTests(unittest.TestCase):
+    def test_unknown_identity_is_a_blocker_not_healthy_policy_exhaustion(self):
+        import alpha_radar as radar
+        import tempfile,argparse,io
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp,patch.object(radar,'ROOT',Path(tmp)),patch.object(radar,'reusable_fresh_candidate',return_value=None),patch.object(radar,'live_research',side_effect=radar.CandidateRejection('opportunity_identity_unknown')),patch('sys.stdout',new_callable=io.StringIO) as out:
+            (Path(tmp)/'autonomy_config.json').write_text('{}')
+            code=radar.main_with_args(argparse.Namespace(dry_run_fixture=False))
+        self.assertEqual((code,out.getvalue()),(2,'BLOCKER opportunity_identity_unknown\n'))
+
+    def test_policy_diagnostic_has_correlated_normalized_resolver_context(self):
+        import alpha_radar as radar
+        import tempfile,inspect
+        from unittest.mock import patch
+        self.assertIn('symbol',inspect.signature(radar._record_policy_skip).parameters)
+        with tempfile.TemporaryDirectory() as tmp,patch.object(radar,'ROOT',Path(tmp)):
+            token=radar._research_run_id.set('a'*32)
+            try:
+                resolver=identity.EventResolution('unknown',None,None,None,None,(),(),'unresolved_primary_evidence')
+                radar._record_policy_skip('opportunity_identity_unknown',symbol='ATOM',resolution=resolver,
+                    source_reasons=('source_http_forbidden',),capture_count=0,stage='pre_synthesis')
+            finally:radar._research_run_id.reset(token)
+            rows=[json.loads(x) for x in (Path(tmp)/'private/research_policy_diagnostics.jsonl').read_text().splitlines()]
+        self.assertEqual(len(rows),1);row=rows[0]
+        self.assertEqual((row['run_id'],row['resolver_status'],row['resolver_reason']),('a'*32,'unknown','unresolved_primary_evidence'))
+        self.assertEqual(len(row['candidate_token']),16)
+        self.assertEqual(row['source_failure_reasons'],['source_http_forbidden'])
+        self.assertNotIn('ATOM',json.dumps(row));self.assertNotIn('https://',json.dumps(row))
+
+
 if __name__ == '__main__': unittest.main()

@@ -835,6 +835,7 @@ GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
 _extraction_attempt:ContextVar[dict|None]=ContextVar("extraction_attempt",default=None)
 _research_run_id:ContextVar[str|None]=ContextVar("research_run_id",default=None)
 _identity_captures:ContextVar[dict[str,tuple]|None]=ContextVar('research_identity_captures',default=None)
+_last_policy_resolution:ContextVar[Any]=ContextVar('last_policy_resolution',default=None)
 _gap_directed:ContextVar[bool]=ContextVar('radar_gap_directed',default=False)
 
 
@@ -847,10 +848,12 @@ def correlated_research_run(function):
         cfg=args[0] if args else kwargs.get('cfg',{})
         gap_token=_gap_directed.set(isinstance(cfg,dict) and cfg.get('gap_retrieval_enabled') is True)
         identity_token=_identity_captures.set({})
+        resolution_token=_last_policy_resolution.set(None)
         try:
             with identity_acquisition():return function(*args,**kwargs)
         finally:
             _research_run_id.reset(token);_gap_directed.reset(gap_token);_identity_captures.reset(identity_token)
+            _last_policy_resolution.reset(resolution_token)
     return wrapped
 
 
@@ -1918,9 +1921,11 @@ def _strip_policy_metadata(candidate):
 def _resolve_policy(context,symbol,pages):
     from opportunity_identity import resolve_event,candidate_identity
     captures=(_identity_captures.get() or {}).get(symbol,())
-    return resolve_event(symbol,pages,known_resolutions=tuple(
+    resolution=resolve_event(symbol,pages,known_resolutions=tuple(
         candidate_identity(r) for r in context.index.resolutions.values()),
         **({'identity_captures':captures} if captures else {}))
+    _last_policy_resolution.set((symbol,resolution))
+    return resolution
 
 
 def _policy_reason(context,selected,pages=None):
@@ -1951,15 +1956,22 @@ def _policy_reason(context,selected,pages=None):
             return None  # Unknown SEC locators and mutable observations retrieve.
     if not anchors or len({r.event_id for r in anchors})!=1:return None
     resolution=anchors[0]
+    _last_policy_resolution.set((symbol,resolution))
     if any(row.get('event_id')==resolution.event_id for row in context.index.conditions.values()):return None
     decision=candidate_policy(context,resolution,symbol=symbol)
     return decision.reason if decision.outcome=='skip' else None
 
 
-def _record_policy_skip(reason):
+def _record_policy_skip(reason, *, symbol=None, resolution=None, source_reasons=(), capture_count=None, stage='pre_synthesis'):
     # Public output receives only the final normalized outcome, not private IDs.
-    try:append_jsonl(ROOT/'private'/'research_policy_diagnostics.jsonl',{
-        'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),'reason':reason})
+    from policy_diagnostics import policy_diagnostic
+    prior=_last_policy_resolution.get()
+    if resolution is None and prior is not None and prior[0]==symbol:resolution=prior[1]
+    if capture_count is None:capture_count=len((_identity_captures.get() or {}).get(symbol,()))
+    row=policy_diagnostic(reason,timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+        run_id=_research_run_id.get(),symbol=symbol,resolution=resolution,
+        source_reasons=source_reasons,capture_count=capture_count,stage=stage)
+    try:append_jsonl(ROOT/'private'/'research_policy_diagnostics.jsonl',row)
     except OSError as error:raise ResearchFailure('research_persistence_failure') from error
 
 
@@ -2082,7 +2094,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             reason=_policy_reason(context,scout_candidate)
             if reason:
                 policy_skipped_symbols.add(str(scout_candidate.get('symbol') or '').upper())
-                _record_policy_skip(reason)
+                _record_policy_skip(reason,symbol=str(scout_candidate.get('symbol') or '').upper(),stage='discovery_admission')
             else:remaining.append(scout_candidate)
         scout_candidates=remaining
         if not scout_candidates:return {'status':'none','none_reason':'no_new_eligible_opportunity'}
@@ -2195,7 +2207,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                     # Unknown thin bundles still receive existing rescue; only
                     # proven spent/held facts can prune before that retrieval.
                     if reason in {'unchanged_opportunity','position_already_held','same_symbol_pending_entry'}:
-                        policy_skipped_symbols.add(symbol.upper());_record_policy_skip(reason);continue
+                        policy_skipped_symbols.add(symbol.upper());_record_policy_skip(reason,symbol=symbol.upper(),stage='rescue_admission');continue
                 candidate_urls=set(str(url) for url in scout_candidate.get("urls",[]))
                 accepted=[page for page in filtered_evidence if str(page.get("url") or "") in candidate_urls]
                 if len({publisher_domain(str(page.get("url") or "")) for page in accepted})>=2:continue
@@ -2279,6 +2291,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     synthesis_remaining=float(SYNTHESIS_PHASE_BUDGET_SECONDS)
     enrichment_budget:dict[str,float|None]={"overall":overall_deadline,"remaining":ENRICHMENT_BUDGET_SECONDS}
     policy_transport_failure=None
+    policy_blocker=None
     last_synthesis_none=None
     candidate={'status':'none','none_reason':'no_fresh_setup'}
     last_rejection=None
@@ -2308,10 +2321,19 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                     if owned_captures is not None:owned_captures[symbol]=acquired
                 reason=_policy_reason(context,selected,policy_pages)
                 if reason:
+                    from earnings_identity_acquisition import acquisition_notes
+                    from policy_diagnostics import TRANSPORT_REASONS, SOURCE_REASONS
+                    source_reasons=tuple(sorted({note.get('reason') for note in source_diagnostics
+                        if note.get('url') in owned and note.get('reason') in RETRIEVAL_DIAGNOSTIC_REASONS}
+                        | {note['reason'] for note in acquisition_notes(owned) if note['reason'] in SOURCE_REASONS}))
                     if reason in {'opportunity_identity_unknown','opportunity_identity_conflict'} and any(
-                        note.get('url') in owned and note.get('reason') in RETRIEVAL_DIAGNOSTIC_REASONS for note in source_diagnostics):
+                            r in RETRIEVAL_DIAGNOSTIC_REASONS or r in TRANSPORT_REASONS for r in source_reasons):
                         policy_transport_failure=ResearchFailure('research_source_retrieval_failed')
-                    policy_skipped_symbols.add(symbol);_record_policy_skip(reason);continue
+                    if reason not in {'unchanged_opportunity','position_already_held','same_symbol_pending_entry'}:
+                        policy_blocker=CandidateRejection(reason)
+                    policy_skipped_symbols.add(symbol)
+                    _record_policy_skip(reason,symbol=symbol,source_reasons=source_reasons)
+                    continue
             if len(attempted_symbols)>=5:break
             now=monotonic()
             launch_remaining=min(synthesis_remaining,overall_deadline-now-float(enrichment_budget["remaining"] or 0.0))
@@ -2355,7 +2377,8 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 finally:_policy_acquisition.reset(token)
             except CandidateRejection as error:
                 if error.code in {'unchanged_opportunity','opportunity_identity_unknown','opportunity_identity_conflict','position_already_held','same_symbol_pending_entry'}:
-                    policy_skipped_symbols.add(symbol);_record_policy_skip(error.code)
+                    if error.code in {'opportunity_identity_unknown','opportunity_identity_conflict'}:policy_blocker=error
+                    policy_skipped_symbols.add(symbol);_record_policy_skip(error.code,symbol=symbol,stage='post_synthesis')
                 else:last_rejection=error
             except SynthesisWindowExhausted:
                 if last_rejection is not None:raise last_rejection
@@ -2381,6 +2404,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     if last_rejection is not None:raise last_rejection
     if policy_transport_failure is not None:raise policy_transport_failure
     if last_synthesis_none is not None:return last_synthesis_none
+    if policy_blocker is not None:raise policy_blocker
     if policy_skipped_symbols:return {'status':'none','none_reason':'no_new_eligible_opportunity'}
     return candidate
 
@@ -2647,7 +2671,7 @@ def main_with_args(a:argparse.Namespace)->int:
             print('SYSTEM_FAILURE opportunity_policy_state_unavailable');return 3
         if isinstance(e,SpendingStateError):
             print("SYSTEM_FAILURE earnings_spending_state"); return 3
-        if isinstance(e,CandidateRejection) and e.code in {'unchanged_opportunity','opportunity_identity_unknown','opportunity_identity_conflict','position_already_held','same_symbol_pending_entry'}:
+        if isinstance(e,CandidateRejection) and e.code in {'unchanged_opportunity','position_already_held','same_symbol_pending_entry'}:
             print('DECISION skipped no_new_eligible_opportunity');return 0
         if isinstance(e,CandidateRejection) and not e.code.startswith("research_"):
             print("BLOCKER "+e.code);return 2

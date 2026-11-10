@@ -186,6 +186,9 @@ class OperationalTests(unittest.TestCase):
             {'timestamp': '2026-11-09T14:04:26Z', 'reason': 'opportunity_identity_unknown'},
             {'timestamp': '2026-11-09T14:04:27Z', 'reason': 'opportunity_identity_unknown'},
         ]
+        from policy_diagnostics import policy_diagnostic
+        rows.append(policy_diagnostic('opportunity_identity_unknown',timestamp='2026-11-10T14:04:27Z',
+                                      run_id='a'*32,symbol='ACME',capture_count=0))
         for row in rows:
             append_jsonl(self.root / stream, row)
         before = self.state()

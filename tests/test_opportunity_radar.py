@@ -163,6 +163,18 @@ class RadarPolicyTests(unittest.TestCase):
         self.assertEqual(result,{'status':'none','none_reason':'no_new_eligible_opportunity'})
         self.assertEqual(self.synthesized,[])
 
+    def test_all_unknown_identity_is_not_healthy_policy_exhaustion(self):
+        self.scouts=self.scouts[:1];self.bundles=self.bundles[:1]
+        page=self.bundles[0][0]
+        self.bundles[0][0]={k:v for k,v in page.items() if not k.startswith('_')}
+        self.scouts[0]['urls'][0]=self.bundles[0][0]['url']=page['url'].replace('000001','000003')
+        with self.assertRaises(radar.CandidateRejection) as caught:self.run_research()
+        self.assertEqual(caught.exception.code,'opportunity_identity_unknown')
+        self.assertEqual(self.synthesized,[])
+        rows=[json.loads(x) for x in (self.root/'private/research_policy_diagnostics.jsonl').read_text().splitlines()]
+        self.assertEqual((rows[-1]['resolver_status'],rows[-1]['resolver_reason']),('unknown','unresolved_primary_evidence'))
+        self.assertEqual(len(rows[-1]['run_id']),32)
+
     def test_unknown_after_retrieval_continues_shortlist(self):
         self.bundles[0][0]={k:v for k,v in self.bundles[0][0].items() if not k.startswith('_')}
         # An unseen immutable anchor forces retrieval; after retrieval its

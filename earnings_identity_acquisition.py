@@ -18,9 +18,10 @@ from research_budget import active_deadline, remaining, read_http_response, Rese
 class _State:
     cache: dict = field(default_factory=dict)
     notes: dict = field(default_factory=dict)
+    links: dict = field(default_factory=dict)
 
 
-_state=ContextVar('earnings_identity_acquisition',default=None)
+_state:ContextVar[_State|None]=ContextVar('earnings_identity_acquisition',default=None)
 
 
 @contextmanager
@@ -32,7 +33,13 @@ def identity_acquisition():
 
 def acquisition_notes(urls):
     state=_state.get()
-    return tuple(state.notes[url] for url in urls if state is not None and url in state.notes)
+    if state is None:return ()
+    queue=list(dict.fromkeys(urls));seen=set()
+    for url in queue:
+        seen.add(url)
+        for linked in state.links.get(url,()):
+            if linked not in queue and len(queue)<32:queue.append(linked)
+    return tuple(state.notes[url] for url in queue if url in state.notes)
 
 
 def _fetch(url,deadline,opener,state):
@@ -97,6 +104,12 @@ def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float
         if capture is None:continue
         captures.append(capture)
         # A newly discovered href is a current-source literal, never a guessed filename.
-        for linked in earnings_exhibit_links(identity_source_bytes(capture),url):
+        linked_urls=earnings_exhibit_links(identity_source_bytes(capture),url)
+        state.links[url]=linked_urls
+        for linked in linked_urls:
             if linked not in queue and len(queue)<32:queue.append(linked)
+    if monotonic()>=deadline:
+        for capture in captures:
+            state.notes[capture.url]={**state.notes.get(capture.url,{}),
+                'reason':'identity_handoff_deadline','capture_status':'unavailable'}
     return tuple(captures) if monotonic()<deadline else ()
