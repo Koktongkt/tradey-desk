@@ -316,10 +316,21 @@ class IdentityAcquisitionTests(unittest.TestCase):
         api=self.api();from unittest.mock import patch
         clock=[0.0]
         def slow_links(*args):clock[0]=6.0;return ()
-        with patch.object(api,'monotonic',side_effect=lambda:clock[0]),patch('research_budget.monotonic',side_effect=lambda:clock[0]),patch.object(api,'earnings_exhibit_links',side_effect=slow_links):
+        with api.identity_acquisition(),patch.object(api,'monotonic',side_effect=lambda:clock[0]),patch('research_budget.monotonic',side_effect=lambda:clock[0]),patch.object(api,'earnings_exhibit_links',side_effect=slow_links):
             out=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=5.0,
                 opener=lambda *a,**k:self.response(b'<html></html>'))
+            reasons={note['reason'] for note in api.acquisition_notes([PERIODIC_URL])}
         self.assertEqual(out,())
+        self.assertIn('identity_handoff_deadline',reasons)
+
+    def test_deadline_exhausted_before_first_fetch_records_handoff_reason(self):
+        api=self.api();from unittest.mock import patch
+        def opened(*args,**kwargs):raise AssertionError('must not open')
+        with api.identity_acquisition(),patch.object(api,'monotonic',return_value=10**12):
+            out=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=5.0,opener=opened)
+            reasons={note['reason'] for note in api.acquisition_notes([PERIODIC_URL])}
+        self.assertEqual(out,())
+        self.assertIn('identity_handoff_deadline',reasons)
 
     def test_results_acquisition_follows_only_literal_linked_exhibit(self):
         api=self.api();import time
@@ -371,6 +382,35 @@ class RadarIdentityHandoffTests(unittest.TestCase):
         self.assertEqual(result.get('symbol'),'ATOM','readable evidence should pass identity admission')
         self.assertEqual(calls,[('ATOM',['Readable primary','Readable corroboration'])])
         self.assertEqual(result['opportunity_identity']['version'],2)
+
+    def test_exhausted_identity_deadline_is_transport_failure_not_coverage_blocker(self):
+        import alpha_radar as radar
+        import tempfile,subprocess,copy
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        import opportunity_fixtures as fixtures
+        import earnings_identity_acquisition as acquisition
+        scouts=[{'symbol':'ATOM','urls':[COVER_URL,'https://news.example/atom'],'event_date':'2026-10-29','catalyst':'Results'}]
+        pages=[{'url':COVER_URL,'title':'Results','text':'Readable primary'},{'url':'https://news.example/atom','title':'News','text':'Readable corroboration'}]
+        def opened(*args,**kwargs):raise AssertionError('deadline must stop identity acquisition')
+        with tempfile.TemporaryDirectory() as tmp,ExitStack() as stack:
+            root=Path(tmp);fixtures.make_root(root,active=True)
+            (root/'private/broker_baseline.json').write_text('{"preexisting_symbols":[]}')
+            for name,options in [('ROOT',{'new':root}),('safe_urlopen',{'side_effect':opened}),
+                ('scout_parse_result',{'return_value':(copy.deepcopy(scouts),{'reason':'ok'})}),
+                ('discovery_command',{'return_value':['synthetic']}),('gather_evidence',{'return_value':pages}),
+                ('sec_filing_date_for_url',{'return_value':None}),('filter_evidence',{'side_effect':lambda p:(p,[])}),
+                ('recover_publications',{'side_effect':lambda c,p,*a,**k:(p,[])}),
+                ('synthesize_candidate',{'side_effect':AssertionError('synthesis must not launch')})]:
+                stack.enter_context(patch.object(radar,name,**options))
+            stack.enter_context(patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{}','')))
+            stack.enter_context(patch.object(acquisition,'monotonic',return_value=10**12))
+            with self.assertRaises(radar.ResearchFailure) as caught:
+                radar.live_research({'focused_retrieval_enabled':False})
+            rows=[json.loads(x) for x in (root/'private/research_policy_diagnostics.jsonl').read_text().splitlines()]
+        self.assertEqual(caught.exception.code,'research_source_retrieval_failed')
+        self.assertNotIsInstance(caught.exception,radar.CandidateRejection)
+        self.assertIn('identity_handoff_deadline',rows[-1]['source_failure_reasons'])
 
 
 class IdentityDiagnosticTests(unittest.TestCase):

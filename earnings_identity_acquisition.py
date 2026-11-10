@@ -87,6 +87,14 @@ def _fetch(url,deadline,opener,state):
     return state.cache[url]
 
 
+def _note_handoff_deadline(state, urls):
+    pending=list(urls)
+    for url in list(pending):
+        pending.extend(state.links.get(url,()))
+    for url in dict.fromkeys(pending):
+        state.notes.setdefault(url,{'reason':'identity_handoff_deadline','capture_status':'unavailable','elapsed_ms':0})
+
+
 def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float,
                               opener=None) -> tuple:
     """Caller supplies reviewed safe transport. Never promote a page field to authority."""
@@ -99,7 +107,9 @@ def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float
     for url in queue:
         if url in seen:continue
         seen.add(url)
-        if monotonic()>=deadline:break
+        if monotonic()>=deadline:
+            _note_handoff_deadline(state,queue)
+            break
         capture=_fetch(url,deadline,opener,state)
         if capture is None:continue
         captures.append(capture)
@@ -112,4 +122,5 @@ def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float
         for capture in captures:
             state.notes[capture.url]={**state.notes.get(capture.url,{}),
                 'reason':'identity_handoff_deadline','capture_status':'unavailable'}
+        _note_handoff_deadline(state,queue)
     return tuple(captures) if monotonic()<deadline else ()
