@@ -249,4 +249,128 @@ class EarningsResolutionTests(IdentityCaptureTests):
         self.assertNotEqual(self.resolve('ATOM',[self.periodic()]).status,'verified')
 
 
+class IdentityAcquisitionTests(unittest.TestCase):
+    def api(self):
+        import importlib.util
+        self.assertIsNotNone(importlib.util.find_spec('earnings_identity_acquisition'), 'bounded identity acquisition is missing')
+        import earnings_identity_acquisition
+        return earnings_identity_acquisition
+
+    def response(self,raw,url=PERIODIC_URL,declared=None,on_read=None):
+        from types import SimpleNamespace
+        import io
+        source=io.BytesIO(raw)
+        class Response:
+            status=200
+            headers={'Content-Type':'text/html','Content-Length':str(len(raw) if declared is None else declared)}
+            fp=SimpleNamespace(raw=SimpleNamespace(_sock=SimpleNamespace(settimeout=lambda seconds:None)))
+            def geturl(self):return url
+            def read1(self,size):
+                if on_read:on_read()
+                return source.read(size)
+            def isclosed(self):return False
+            def __enter__(self):return self
+            def __exit__(self,*args):source.close()
+        return Response()
+
+    def test_exact_url_acquisition_deduplicates_and_preserves_wire_bytes(self):
+        api=self.api();raw=original('irwd-original.html');calls=[]
+        def opened(request,timeout):
+            calls.append((request.full_url,timeout));return self.response(raw)
+        import time
+        with api.identity_acquisition():
+            a=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}]*2,deadline=time.monotonic()+20,opener=opened)
+            b=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=time.monotonic()+20,opener=opened)
+        from earnings_identity_evidence import identity_source_bytes
+        self.assertEqual(len(a),1);self.assertEqual(a,b);self.assertEqual(identity_source_bytes(a[0]),raw)
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][0],PERIODIC_URL)
+        self.assertLessEqual(calls[0][1],15)
+
+    def test_zero_deadline_never_opens_and_dictionary_capture_is_not_authority(self):
+        api=self.api();calls=[]
+        def opened(*args,**kwargs):calls.append(1);raise AssertionError('must not open')
+        import time
+        result=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL,'_identity_capture':{'complete':True}}],
+                                             deadline=time.monotonic()-1,opener=opened)
+        self.assertEqual(result,());self.assertEqual(calls,[])
+
+    def test_oversized_incomplete_and_redirected_responses_are_not_captures(self):
+        api=self.api();import time
+        for response in [self.response(b'x'*2000001),self.response(b'<html></html>',declared=1000),
+                         self.response(b'<html></html>',url=EXHIBIT_URL)]:
+            with self.subTest(response=response),api.identity_acquisition():
+                out=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=time.monotonic()+20,
+                                                  opener=lambda *a,**k:response)
+                self.assertEqual(out,())
+
+    def test_body_elapsed_time_is_inside_shared_deadline(self):
+        api=self.api();from unittest.mock import patch
+        clock=[0.0]
+        def read():clock[0]=6.0
+        with patch.object(api,'monotonic',side_effect=lambda:clock[0]),patch('research_budget.monotonic',side_effect=lambda:clock[0]):
+            out=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=5.0,
+                opener=lambda *a,**k:self.response(b'<html></html>',on_read=read))
+        self.assertEqual(out,())
+
+    def test_identity_handoff_preparation_cannot_escape_deadline(self):
+        api=self.api();from unittest.mock import patch
+        clock=[0.0]
+        def slow_links(*args):clock[0]=6.0;return ()
+        with patch.object(api,'monotonic',side_effect=lambda:clock[0]),patch('research_budget.monotonic',side_effect=lambda:clock[0]),patch.object(api,'earnings_exhibit_links',side_effect=slow_links):
+            out=api.acquire_identity_captures('IRWD',[{'url':PERIODIC_URL}],deadline=5.0,
+                opener=lambda *a,**k:self.response(b'<html></html>'))
+        self.assertEqual(out,())
+
+    def test_results_acquisition_follows_only_literal_linked_exhibit(self):
+        api=self.api();import time
+        sources={url:retained(url)['text'].encode() for url in (COVER_URL,EXHIBIT_URL)};calls=[]
+        def opened(request,timeout):
+            calls.append(request.full_url)
+            return self.response(sources[request.full_url],url=request.full_url)
+        with api.identity_acquisition():
+            out=api.acquire_identity_captures('ATOM',[{'url':COVER_URL}],deadline=time.monotonic()+30,opener=opened)
+        self.assertEqual(calls,[COVER_URL,EXHIBIT_URL])
+        self.assertEqual(len(out),2)
+        from earnings_identity_evidence import resolve_earnings_capture
+        self.assertEqual(resolve_earnings_capture('ATOM',out).status,'verified')
+
+
+class RadarIdentityHandoffTests(unittest.TestCase):
+    def test_readable_pages_reach_synthesis_using_actual_identity_acquisition(self):
+        import alpha_radar as radar
+        import tempfile,time,subprocess,copy
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        import opportunity_fixtures as fixtures
+        from earnings_identity_evidence import resolve_earnings_capture
+        from earnings_identity_acquisition import acquire_identity_captures
+        helper=IdentityAcquisitionTests()
+        sources={url:retained(url)['text'].encode() for url in (COVER_URL,EXHIBIT_URL)}
+        scouts=[{'symbol':'ATOM','urls':[COVER_URL,'https://news.example/atom'],'event_date':'2026-10-29','catalyst':'Results'}]
+        pages=[{'url':COVER_URL,'title':'Results','text':'Readable primary'},
+               {'url':'https://news.example/atom','title':'News','text':'Readable corroboration'}]
+        def opened(request,timeout):return helper.response(sources[request.full_url],url=request.full_url)
+        calls=[]
+        def synthesize(cfg,selected,evidence,deadline,**kwargs):
+            calls.append((selected['symbol'],[p['text'] for p in evidence]));return {'symbol':'ATOM'}
+        with tempfile.TemporaryDirectory() as tmp,ExitStack() as stack:
+            root=Path(tmp);fixtures.make_root(root,active=True)
+            (root/'private/broker_baseline.json').write_text('{"preexisting_symbols":[]}')
+            for name,options in [
+                ('ROOT',{'new':root}),('safe_urlopen',{'side_effect':opened}),
+                ('scout_parse_result',{'return_value':(copy.deepcopy(scouts),{'reason':'ok'})}),
+                ('discovery_command',{'return_value':['synthetic']}),
+                ('gather_evidence',{'return_value':copy.deepcopy(pages)}),
+                ('sec_filing_date_for_url',{'return_value':None}),
+                ('filter_evidence',{'side_effect':lambda p:(p,[])}),
+                ('recover_publications',{'side_effect':lambda c,p,*a,**k:(p,[])}),
+                ('synthesize_candidate',{'side_effect':synthesize}),
+            ]: stack.enter_context(patch.object(radar,name,**options))
+            stack.enter_context(patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{}','')))
+            result=radar.live_research({'focused_retrieval_enabled':False},intake=lambda c:c)
+        self.assertEqual(result.get('symbol'),'ATOM','readable evidence should pass identity admission')
+        self.assertEqual(calls,[('ATOM',['Readable primary','Readable corroboration'])])
+        self.assertEqual(result['opportunity_identity']['version'],2)
+
+
 if __name__ == '__main__': unittest.main()

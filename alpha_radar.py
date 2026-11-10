@@ -19,6 +19,7 @@ from durable_jsonl import append_jsonl, read_jsonl, DurableAppendError
 from candidate_retry import pre_submission_retryable
 from json_parsing import first_object
 from earnings_calendar import SEC_USER_AGENT, default_trusted_date_loader, resolve_candidate_earnings
+from earnings_identity_acquisition import acquire_identity_captures, identity_acquisition
 
 ROOT=Path(__file__).resolve().parent
 from runtime_paths import hermes_cli
@@ -833,6 +834,7 @@ GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
 # Per-thread detail channel preserves the legacy injected fetcher signature.
 _extraction_attempt:ContextVar[dict|None]=ContextVar("extraction_attempt",default=None)
 _research_run_id:ContextVar[str|None]=ContextVar("research_run_id",default=None)
+_identity_captures:ContextVar[dict[str,tuple]|None]=ContextVar('research_identity_captures',default=None)
 _gap_directed:ContextVar[bool]=ContextVar('radar_gap_directed',default=False)
 
 
@@ -844,8 +846,11 @@ def correlated_research_run(function):
         token=_research_run_id.set(uuid.uuid4().hex)
         cfg=args[0] if args else kwargs.get('cfg',{})
         gap_token=_gap_directed.set(isinstance(cfg,dict) and cfg.get('gap_retrieval_enabled') is True)
-        try:return function(*args,**kwargs)
-        finally:_research_run_id.reset(token);_gap_directed.reset(gap_token)
+        identity_token=_identity_captures.set({})
+        try:
+            with identity_acquisition():return function(*args,**kwargs)
+        finally:
+            _research_run_id.reset(token);_gap_directed.reset(gap_token);_identity_captures.reset(identity_token)
     return wrapped
 
 
@@ -1906,13 +1911,16 @@ def _condition_enrichment(context,resolution,symbol,budget):
 
 
 def _strip_policy_metadata(candidate):
-    return {key:value for key,value in candidate.items() if key not in _POLICY_METADATA}
+    return {key:value for key,value in candidate.items() if key not in _POLICY_METADATA
+            and not key.startswith('_identity_') and key not in {'identity_captures','identity_capture','identity_evidence'}}
 
 
 def _resolve_policy(context,symbol,pages):
     from opportunity_identity import resolve_event,candidate_identity
+    captures=(_identity_captures.get() or {}).get(symbol,())
     return resolve_event(symbol,pages,known_resolutions=tuple(
-        candidate_identity(r) for r in context.index.resolutions.values()))
+        candidate_identity(r) for r in context.index.resolutions.values()),
+        **({'identity_captures':captures} if captures else {}))
 
 
 def _policy_reason(context,selected,pages=None):
@@ -1966,7 +1974,8 @@ def _bind_policy_candidate(candidate,context):
     _,resolution,pages,claim=acquisition
     decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
     if decision.outcome not in {'eligible','reopening_pending'}:raise CandidateRejection(decision.reason)
-    try:retain_observations(context.root,resolution,pages)
+    captures=(_identity_captures.get() or {}).get(symbol,())
+    try:retain_observations(context.root,resolution,pages,**({'identity_captures':captures} if captures else {}))
     except (OSError,ValueError) as error:raise ResearchFailure('research_persistence_failure') from error
     context=refresh_policy_context(context)
     decision=candidate_policy(context,resolution,symbol=symbol,reopening_claim=claim)
@@ -2286,6 +2295,17 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 # truncated/subselected representation of it.
                 policy_pages=policy_bundle(selected)
                 owned={p.get('url') for p in policy_pages}
+                # Identity I/O consumes only remaining evidence work, never its own
+                # new allowance. Article projections and quality gates stay intact.
+                if _resolve_policy(context,symbol,policy_pages).status=='unknown':
+                    identity_deadline=min(evidence_deadline,overall_deadline-
+                        float(enrichment_budget['remaining'] or 0)-MIN_SYNTHESIS_WINDOW_SECONDS-
+                        FOCUSED_TRANSITION_HEADROOM_SECONDS)
+                    with timed_research_stage('identity_evidence'):
+                        acquired=acquire_identity_captures(symbol,policy_pages,
+                            deadline=identity_deadline,opener=safe_urlopen)
+                    owned_captures=_identity_captures.get()
+                    if owned_captures is not None:owned_captures[symbol]=acquired
                 reason=_policy_reason(context,selected,policy_pages)
                 if reason:
                     if reason in {'opportunity_identity_unknown','opportunity_identity_conflict'} and any(

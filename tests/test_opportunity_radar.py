@@ -76,6 +76,9 @@ class RadarPolicyTests(unittest.TestCase):
             s.enter_context(patch.object(radar,'discovery_command',return_value=['synthetic']))
             s.enter_context(patch.object(radar,'sec_filing_date_for_url',return_value=None))
             s.enter_context(patch.object(radar,'gather_evidence',return_value=sum(self.bundles,[])))
+            # These legacy synthetic bundles provide no exact-wire transport.
+            # The separate real-source handoff tests exercise actual acquisition.
+            s.enter_context(patch.object(radar,'acquire_identity_captures',return_value=()))
             s.enter_context(patch.object(radar,'filter_evidence',side_effect=lambda p:(p,[])))
             s.enter_context(patch.object(radar,'recover_publications',side_effect=lambda c,p,*a,**k:(p,[])))
             s.enter_context(patch.object(radar,'synthesize_candidate',side_effect=synthesis))

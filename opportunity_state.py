@@ -1096,7 +1096,7 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
         if (dossier_hash is not None
                 or any(scope['issuer_cik'] == resolution.issuer.cik
                        for scope in index.unresolved_issuer_scopes.values())
-                or resolution.reason != 'current_report_cover'):
+                or resolution.reason not in {'current_report_cover','sec_periodic_filing','sec_results_exhibit'}):
             return PolicyDecision('unknown', 'opportunity_identity_unknown', resolution.event_id, None)
         return PolicyDecision('eligible', 'allowance_available', resolution.event_id,
                               allowance_identifier(resolution.event_id, 0))
