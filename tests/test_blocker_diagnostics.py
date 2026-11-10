@@ -558,7 +558,7 @@ class RunPrecheckDiagnosticsTests(unittest.TestCase):
         proposal = {"symbol": "DELL", "confidence": 0.2}
         plan = {"symbol": "DELL", "confidence": 0.8}
         snapshot, cfg, baseline = {"quote": {}}, {"enabled": False}, {"DELL"}
-        with patch("autotrader.validate_order_with_details", return_value=(["cash"], {"cash": {"measured": 1}})) as validate:
+        with tempfile.TemporaryDirectory() as td, patch.object(autotrader, "ROOT", Path(td)), patch("autotrader.validate_order_with_details", return_value=(["cash"], {"cash": {"measured": 1}})) as validate:
             pre = autotrader.pre_review_validation(proposal, snapshot, cfg, 1, 20.0, baseline)
             self.assertEqual(pre, (["cash"], {"cash": {"measured": 1}}))
             self.assertEqual(validate.call_args.args, ({**proposal, "confidence": 1.0}, snapshot, cfg, 1, 20.0, baseline))

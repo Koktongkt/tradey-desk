@@ -290,7 +290,7 @@ class RadarReuseFirstTests(unittest.TestCase):
     def test_shared_fresh_selection_keeps_review_gate_optional(self):
         now = dt.datetime(2026, 9, 5, 14, 30, tzinfo=dt.timezone.utc)
         row = {"sources_verified_at": "2026-09-05T14:29:00Z"}
-        with patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar, "ROOT", Path(td)), patch.object(alpha_radar, "candidate_preflight", return_value=[]), patch.object(alpha_radar, "qualified", return_value=True):
             self.assertIsNone(alpha_radar._select_fresh_candidate(
                 [row], {}, now, 60, latest_review="2026-09-05T14:29:00Z",
             ))
