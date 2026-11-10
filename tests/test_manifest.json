@@ -11,6 +11,7 @@
    "test_concurrent_workflow",
    "test_durable_jsonl",
    "test_earnings_calendar",
+   "test_earnings_identity_evidence",
    "test_enrichment_diagnostics",
    "test_entry_expiry",
    "test_entry_eligibility",
