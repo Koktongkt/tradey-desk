@@ -176,6 +176,133 @@ class OperationalTests(unittest.TestCase):
         for stream, stream_rows in rows.items():
             self.assertEqual(result.streams[stream], stream_rows)
 
+    def test_research_policy_diagnostics_writer_remains_readable_without_writes(self):
+        from sqlite_ledger import migrate_jsonl, append_jsonl
+        from watchdog.operational import read_operational
+        self.db.unlink()
+        migrate_jsonl(self.root)
+        stream = 'private/research_policy_diagnostics.jsonl'
+        rows = [
+            {'timestamp': '2026-11-09T14:04:26Z', 'reason': 'opportunity_identity_unknown'},
+            {'timestamp': '2026-11-09T14:04:27Z', 'reason': 'opportunity_identity_unknown'},
+        ]
+        for row in rows:
+            append_jsonl(self.root / stream, row)
+        before = self.state()
+        snapshot = read_operational(self.root)
+        self.assertTrue(snapshot.complete, snapshot.reasons)
+        self.assertEqual(snapshot.streams[stream], rows)
+        self.assertEqual(before, self.state())
+
+    def test_research_policy_diagnostics_corruption_stays_fail_closed(self):
+        from watchdog.operational import read_operational
+        stream = 'private/research_policy_diagnostics.jsonl'
+        self.connection = sqlite3.connect(self.db)
+        try:
+            self.add_row(stream, {'timestamp': '2026-11-09T14:04:26Z',
+                                  'reason': 'opportunity_identity_unknown'})
+        finally:
+            self.connection.close()
+        original = self.state()
+        for case in ('digest', 'sequence', 'projection', 'missing_projection'):
+            with self.subTest(case=case):
+                for name, (data, _, _) in original.items():
+                    (self.root / name).write_bytes(data)
+                if case in ('digest', 'sequence'):
+                    with sqlite3.connect(self.db) as connection:
+                        connection.execute(
+                            'UPDATE ledger_entries SET ' +
+                            ('record_sha256=?' if case == 'digest' else 'sequence=?') +
+                            ' WHERE stream=?',
+                            ('0' * 64 if case == 'digest' else 2, stream))
+                    connection.close()
+                elif case == 'projection':
+                    (self.root / stream).write_text('{"reason":"different"}\n')
+                else:
+                    (self.root / stream).unlink()
+                before = self.state()
+                result = read_operational(self.root)
+                self.assertFalse(result.complete)
+                self.assertIn('operational_history_incomplete', result.reasons)
+                self.assertEqual(before, self.state())
+
+    def test_research_policy_projection_without_history_stays_fail_closed(self):
+        from watchdog.operational import read_operational
+        path = self.root / 'private/research_policy_diagnostics.jsonl'
+        path.write_text('')
+        before = self.state()
+        empty = read_operational(self.root)
+        self.assertTrue(empty.complete, empty.reasons)
+        self.assertIn('private/research_policy_diagnostics.jsonl', empty.streams)
+        self.assertEqual(empty.streams[path.relative_to(self.root).as_posix()], [])
+        self.assertEqual(before, self.state())
+        path.write_text('{"reason":"opportunity_identity_unknown"}\n')
+        before = self.state()
+        unimported = read_operational(self.root)
+        self.assertFalse(unimported.complete)
+        self.assertIn('operational_history_incomplete', unimported.reasons)
+        self.assertEqual(before, self.state())
+
+    def test_watchdog_registration_preserves_existing_prospective_baseline(self):
+        import opportunity_cutover as cutover
+        import sqlite_ledger as storage
+        # Persist the exact 18-stream contract used before the watchdog repair.
+        # This fixture must not grow implicitly with DEFAULT_STREAMS.
+        prior_streams = (
+            'candidates.jsonl', 'candidate_outcomes.jsonl', 'decision_audit.jsonl',
+            'order_ledger.jsonl', 'trade_journal.jsonl',
+            'private/blocker_diagnostics.jsonl', 'private/bridge_diagnostics.jsonl',
+            'private/opportunity_policy.jsonl', 'private/order_intents.jsonl',
+            'private/order_notifications.jsonl', 'private/protection_orders.jsonl',
+            'private/research_diagnostics.jsonl', 'private/reviews.jsonl',
+            'private/source_attempts.jsonl', 'public/disagreements.jsonl',
+            'public/overlay/candidates.jsonl', 'public/overlay/decision_audit.jsonl',
+            'public/overlay/order_ledger.jsonl',
+        )
+        def digest(value):
+            raw = json.dumps(value, sort_keys=True, separators=(',', ':'),
+                             allow_nan=False, ensure_ascii=True).encode()
+            return hashlib.sha256(raw).hexdigest()
+        order_row = {'timestamp': '2026-01-01T00:00:00Z', 'symbol': 'ABC'}
+        baseline = {
+            'version': 1, 'root': str(self.root.resolve()),
+            'reopening_mode': 'manual_only',
+            'streams': {name: {
+                'sequence': 1 if name == 'order_ledger.jsonl' else 0,
+                'prefix_sha256': (hashlib.sha256(json.dumps(
+                    order_row, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                    if name == 'order_ledger.jsonl' else hashlib.sha256(b'').hexdigest()),
+            } for name in prior_streams},
+        }
+        baseline['baseline_id'] = digest(baseline)
+        manifest = {'manifest_version': 2, 'policy_version': 2, 'baseline': baseline}
+        self.connection = sqlite3.connect(self.db)
+        try:
+            self.add_row('private/opportunity_policy.jsonl', {
+                'record_type': 'activation', 'schema_version': 1, 'policy_version': 2,
+                'timestamp': '2026-11-09T10:04:32Z',
+                'manifest_sha256': digest(manifest), 'prospective_baseline': baseline,
+            })
+        finally:
+            self.connection.close()
+        before = self.state()
+        snapshot = storage.read_stream_snapshot_readonly(self.root, cutover.BASELINE_STREAMS)
+        self.assertEqual(cutover.active_baseline(snapshot), baseline)
+        self.assertEqual(before, self.state())
+
+    def test_unregistered_stream_stays_fail_closed_without_writes(self):
+        from watchdog.operational import read_operational
+        self.connection = sqlite3.connect(self.db)
+        try:
+            self.add_row('private/unregistered_diagnostic.jsonl', {'reason': 'unknown'})
+        finally:
+            self.connection.close()
+        before = self.state()
+        result = read_operational(self.root)
+        self.assertFalse(result.complete)
+        self.assertIn('operational_history_incomplete', result.reasons)
+        self.assertEqual(before, self.state())
+
     def test_money_and_timestamp_contracts(self):
         from datetime import datetime, timezone
         from decimal import Decimal

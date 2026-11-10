@@ -12,6 +12,10 @@ import tempfile
 from sqlite_ledger import DEFAULT_STREAMS, SCHEMA_VERSION
 from .types import OperationalSnapshot
 
+# Monitoring-only additions must not expand versioned opportunity baselines,
+# whose approved stream membership is bound to sqlite_ledger.DEFAULT_STREAMS.
+ADDITIONAL_STREAMS = ('private/research_policy_diagnostics.jsonl',)
+
 
 def _unique_object(pairs):
     result = {}
@@ -92,7 +96,7 @@ def _read_operational(root: Path) -> OperationalSnapshot:
     streams = {name: [] for name in DEFAULT_STREAMS}
     reasons = []
     symbols = frozenset()
-    paths = [root / name for name in DEFAULT_STREAMS] + [db, Path(str(db) + '-wal'), Path(str(db) + '-shm'), Path(str(db) + '-journal'), root / 'private/broker_baseline.json']
+    paths = [root / name for name in (*DEFAULT_STREAMS, *ADDITIONAL_STREAMS)] + [db, Path(str(db) + '-wal'), Path(str(db) + '-shm'), Path(str(db) + '-journal'), root / 'private/broker_baseline.json']
     before = None
     try:
         before = _metadata(paths)
@@ -109,6 +113,8 @@ def _read_operational(root: Path) -> OperationalSnapshot:
             for stream, sequence, payload, digest in connection.execute(
                 'SELECT stream, sequence, record_json, record_sha256 FROM ledger_entries ORDER BY stream, sequence'
             ):
+                if stream in ADDITIONAL_STREAMS:
+                    streams.setdefault(stream, [])
                 if stream not in streams or sequence != len(streams[stream]) + 1:
                     raise ValueError('invalid stream or sequence')
                 if not isinstance(payload, str) or not isinstance(digest, str):
@@ -119,6 +125,11 @@ def _read_operational(root: Path) -> OperationalSnapshot:
                 if _canonical(row) != payload:
                     raise ValueError('noncanonical row')
                 streams[stream].append(row)
+            # Absent optional diagnostics need no placeholder or migration.
+            # A projection without canonical rows must still pass parity.
+            for stream in ADDITIONAL_STREAMS:
+                if (root / stream).exists():
+                    streams.setdefault(stream, [])
             for stream, rows in streams.items():
                 raw = (root / stream).read_bytes()
                 if raw and not raw.endswith(b'\n'):
