@@ -411,23 +411,24 @@ def _private_child(parent, name):
     return fd
 
 
-def _existing_capture(directory, name, expected):
+def _existing_capture(directory, name, expected, *, max_bytes=MAX_CAPTURE_BYTES):
     try:fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except FileNotFoundError:return False
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
-                or info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_size > MAX_CAPTURE_BYTES):
+                or info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_size > max_bytes):
             raise OSError('unsafe_evidence_capture')
-        with os.fdopen(fd, 'rb', closefd=False) as handle:data = handle.read(MAX_CAPTURE_BYTES + 1)
+        with os.fdopen(fd, 'rb', closefd=False) as handle:data = handle.read(max_bytes + 1)
         if data != expected:raise ValueError('evidence_capture_collision')
         os.fsync(fd)
         return True
     finally:os.close(fd)
 
 
-def _publish_capture(directory, name, data):
-    if _existing_capture(directory, name, data):
+def _publish_capture(directory, name, data, *, max_bytes=MAX_CAPTURE_BYTES):
+    if len(data)>max_bytes:raise ValueError('capture_capacity')
+    if _existing_capture(directory, name, data, max_bytes=max_bytes):
         os.fsync(directory)
         return
     stage = '.capture-' + secrets.token_hex(16)
@@ -441,7 +442,7 @@ def _publish_capture(directory, name, data):
             # Atomic no-clobber publication; rename/replace would overwrite an incumbent.
             os.link(stage, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
         except FileExistsError:
-            if not _existing_capture(directory, name, data):raise OSError('capture_publication_race')
+            if not _existing_capture(directory, name, data, max_bytes=max_bytes):raise OSError('capture_publication_race')
     finally:
         os.close(fd)
         os.unlink(stage, dir_fd=directory)

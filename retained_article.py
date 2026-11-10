@@ -23,7 +23,7 @@ def retain_article(page,text,*,reported_metadata=None):
     result={k:v for k,v in page.items() if k not in ('_retained_article','_capture_status')}
     if not isinstance(text,str) or not text.strip():
         result['_capture_status']='missing';return result
-    if re.search(r'(?m)^\s*─{3,}\s*\[TRUNCATED\]|^\[\.\.\. middle omitted',text):
+    if re.search(r'(?m)^\s*─{3,}\s*\[TRUNCATED\]|^\[\.\.\. middle omitted|^\s*This content has been truncated to stay below [0-9]+ characters\s*$',text):
         result['_capture_status']='incomplete';return result
     try:
         report=reported_metadata if isinstance(reported_metadata,dict) else {}
