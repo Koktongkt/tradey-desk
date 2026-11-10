@@ -50,6 +50,7 @@ class EventResolution:
     documents: tuple[DocumentObservation, ...]
     support_refs: tuple[str, ...]
     reason: str
+    version: int = 1
 
     def __post_init__(self):
         object.__setattr__(self, 'documents', tuple(self.documents))
@@ -219,14 +220,15 @@ def _load_binding(record):
     """Strict versioned serialization, not an authenticity/authorization check."""
     def invalid():raise ValueError('invalid_known_resolution')
     if not isinstance(record, dict) or set(record) != _RESOLUTION_KEYS:invalid()
-    if type(record['version']) is not int or record['version'] != 1 or record['status'] != 'verified':invalid()
+    if type(record['version']) is not int or record['version'] not in (1,2) or record['status'] != 'verified':invalid()
     issuer = record['issuer']
     if not isinstance(issuer, dict) or set(issuer) != _ISSUER_KEYS or not all(isinstance(v,str) for v in issuer.values()):invalid()
     if not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,9}', issuer['symbol']) or not re.fullmatch(r'[0-9]{10}', issuer['cik']) or int(issuer['cik']) == 0:invalid()
     if not _valid_legal_name(issuer['legal_name']):invalid()
     if record['family'] != 'earnings' or not isinstance(record['period'], str) or not re.fullmatch(r'[0-9]{4}-(?:Q[1-4]|FY)', record['period']):invalid()
     if record['event_id'] != _event_id(issuer['cik'], record['period']):invalid()
-    if record['reason'] not in ('current_report_cover','explicit_binding'):invalid()
+    reasons = ('current_report_cover','explicit_binding') if record['version']==1 else ('sec_periodic_filing','sec_results_exhibit','explicit_binding')
+    if record['reason'] not in reasons:invalid()
     refs = record['support_refs']
     if not isinstance(refs, list) or not 1 <= len(refs) <= 128 or any(not isinstance(s,str) or not re.fullmatch(_CAPTURE + r'#[A-Za-z0-9:_.-]{1,180}', s) for s in refs):invalid()
     if len(set(refs)) != len(refs) or issuer['support_ref'] not in refs:invalid()
@@ -245,7 +247,7 @@ def _load_binding(record):
         parsed.append(DocumentObservation(**document))
     if len(set(parsed)) != len(parsed):invalid()
     if any(ref.split('#',1)[0] not in {d.retained_ref for d in parsed} for ref in refs):invalid()
-    return EventResolution('verified', record['event_id'], IssuerBinding(**issuer), 'earnings', record['period'], tuple(parsed), tuple(refs), record['reason'])
+    return EventResolution('verified', record['event_id'], IssuerBinding(**issuer), 'earnings', record['period'], tuple(parsed), tuple(refs), record['reason'],version=record['version'])
 
 
 def candidate_identity(resolution: EventResolution) -> dict:
@@ -303,10 +305,10 @@ def _merged_binding(bindings, document):
     anchor = min(bindings, key=lambda r:r.issuer.support_ref)
     return EventResolution('verified', anchor.event_id, anchor.issuer,
                            anchor.family, anchor.period, documents, refs,
-                           'explicit_binding')
+                           'explicit_binding',version=max(r.version for r in bindings))
 
 
-def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[dict, ...]) -> EventResolution:
+def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[dict, ...], identity_captures: tuple = ()) -> EventResolution:
     """Resolve only retained primary evidence. Index bindings are a trusted input."""
     def unresolved(status, reason):return EventResolution(status, None, None, None, None, (), (), reason)
     if not isinstance(known_resolutions, tuple):raise ValueError('invalid_known_resolutions')
@@ -314,9 +316,25 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
     if not isinstance(symbol, str) or not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,9}', symbol):return unresolved('unknown', 'invalid_symbol')
     if not isinstance(pages, list):return unresolved('unknown', 'invalid_pages')
     resolutions = []
+    captured_urls=set()
+    acquired=None
+    if identity_captures:
+        from earnings_identity_evidence import resolve_earnings_capture
+        acquired=resolve_earnings_capture(symbol,identity_captures)
+        if acquired.status!='verified':return acquired
+        captured_urls={c.url for c in identity_captures}
+        for prior in known:
+            shared={d.document_id for d in prior.documents}.intersection(d.document_id for d in acquired.documents)
+            if shared and (prior.event_id!=acquired.event_id or prior.issuer!=acquired.issuer):
+                # Support refs change across representations; issuer identity does not.
+                if (prior.event_id!=acquired.event_id or prior.issuer.symbol!=acquired.issuer.symbol
+                        or prior.issuer.cik!=acquired.issuer.cik or prior.issuer.legal_name!=acquired.issuer.legal_name):
+                    return unresolved('conflict','known_binding_disagrees')
+        resolutions.append(acquired)
     unresolved_primary = False
     for page in pages:
         if not isinstance(page, dict) or not _public_url(page.get('url')):continue
+        if page['url'] in captured_urls:continue
         locator = _locator(page['url'])
         if _sec_archive(page['url']) and locator is None:
             unresolved_primary = True
@@ -373,7 +391,9 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
     merged = _merged_binding(resolutions, None)
     merged = EventResolution('verified', merged.event_id, merged.issuer, merged.family, merged.period,
                              merged.documents, merged.support_refs,
-                             'current_report_cover' if any(r.reason == 'current_report_cover' for r in resolutions) else 'explicit_binding')
+                             acquired.reason if acquired is not None else
+                             ('current_report_cover' if any(r.reason == 'current_report_cover' for r in resolutions) else 'explicit_binding'),
+                             version=merged.version)
     return merged
 
 
@@ -449,7 +469,7 @@ def _publish_capture(directory, name, data, *, max_bytes=MAX_CAPTURE_BYTES):
     os.fsync(directory)
 
 
-def retain_observations(root: Path, resolution: EventResolution, pages: list[dict]) -> EventResolution:
+def retain_observations(root: Path, resolution: EventResolution, pages: list[dict], *, identity_captures: tuple = ()) -> EventResolution:
     """Explicit durable acquisition step, before publishing any ledger reference.
 
     All representations referenced by this resolution must be supplied by the
@@ -465,15 +485,26 @@ def retain_observations(root: Path, resolution: EventResolution, pages: list[dic
             loc = _locator(page['url'])
             document = _document(page, loc[1] if loc else 'url:' + page['url'])
             captures[document] = _canonical(page['_retained_article'])
+    limits={document:MAX_CAPTURE_BYTES for document in captures}
+    if identity_captures:
+        from earnings_identity_evidence import validate_identity_capture, MAX_IDENTITY_CAPTURE_BYTES
+        from earnings_identity_resolution import _document as identity_document
+        if resolution.version!=2 or not isinstance(identity_captures,tuple):raise ValueError('identity_capture_version')
+        for capture in identity_captures:
+            if not validate_identity_capture(capture):raise ValueError('missing_validated_capture')
+            document=identity_document(capture)
+            captures[document]=capture.canonical;limits[document]=MAX_IDENTITY_CAPTURE_BYTES
     if any(document not in captures for document in resolution.documents):raise ValueError('missing_validated_capture')
-    payloads = {Path(document.retained_ref).name:captures[document] for document in resolution.documents}
-    if any(len(data) > MAX_CAPTURE_BYTES for data in payloads.values()):raise ValueError('capture_capacity')
+    payloads = {Path(document.retained_ref).name:(captures[document],limits[document]) for document in resolution.documents}
+    if any(len(data) > limit for data,limit in payloads.values()):raise ValueError('capture_capacity')
     root_fd = _open_root(root)
     private_fd = evidence_fd = None
     try:
         private_fd = _private_child(root_fd, 'private')
         evidence_fd = _private_child(private_fd, 'opportunity_evidence')
-        for name, data in sorted(payloads.items()):_publish_capture(evidence_fd, name, data)
+        for name, (data,limit) in sorted(payloads.items()):
+            if limit==MAX_CAPTURE_BYTES:_publish_capture(evidence_fd,name,data)
+            else:_publish_capture(evidence_fd,name,data,max_bytes=limit)
     finally:
         for fd in (evidence_fd, private_fd, root_fd):
             if fd is not None:os.close(fd)

@@ -144,4 +144,109 @@ class IdentityCaptureTests(unittest.TestCase):
         self.assertEqual(value.get('_capture_status'), 'incomplete')
 
 
+class EarningsResolutionTests(IdentityCaptureTests):
+    def resolve(self, symbol, captures):
+        api=self.api()
+        self.assertTrue(hasattr(api,'resolve_earnings_capture'), 'trusted earnings resolver is missing')
+        return api.resolve_earnings_capture(symbol,tuple(captures))
+
+    def periodic(self, raw=None):
+        return self.capture(original('irwd-original.html') if raw is None else raw)
+
+    def results(self, cover_raw=None, exhibit_raw=None):
+        api=self.api()
+        return tuple(api.capture_identity_source(url,raw,returned_url=url,content_type='text/html')
+                     for url,raw in [(COVER_URL, cover_raw if cover_raw is not None else retained(COVER_URL)['text'].encode()),
+                                     (EXHIBIT_URL, exhibit_raw if exhibit_raw is not None else retained(EXHIBIT_URL)['text'].encode())])
+
+    def test_authentic_periodic_filing_handoff(self):
+        capture=self.periodic(); result=self.resolve('IRWD',[capture])
+        self.assertEqual((result.status,result.family,result.period),('verified','earnings','2026-Q3'))
+        self.assertEqual((result.issuer.symbol,result.issuer.cik),('IRWD','0001446847'))
+        wire=identity.candidate_identity(result)
+        self.assertEqual(wire['version'],2)
+        self.assertEqual(identity._load_binding(wire).event_id,result.event_id)
+        self.assertEqual(result.documents[0].content_sha256,capture.source_sha256)
+        self.assertEqual(result.documents[0].retained_ref,capture.retained_ref)
+
+    def test_authenticated_results_exhibit_handoff(self):
+        captures=self.results(); result=self.resolve('ATOM',captures)
+        self.assertEqual((result.status,result.period,result.reason),('verified','2026-Q3','sec_results_exhibit'))
+        self.assertEqual(result.issuer.cik,'0001420520')
+        self.assertEqual(len(result.documents),2)
+        self.assertEqual(identity._load_binding(identity.candidate_identity(result)).event_id,result.event_id)
+        self.assertEqual(self.resolve('ATOM',tuple(reversed(captures))).event_id,result.event_id)
+
+    def test_missing_link_future_results_and_wrong_issuer_fail_closed(self):
+        cover=retained(COVER_URL)['text'];exhibit=retained(EXHIBIT_URL)['text']
+        import re
+        future=re.sub(r'Provides\s+Third Quarter 2026 Results','Will Report Third Quarter 2026 Results',exhibit)
+        self.assertNotEqual(future,exhibit,'negative fixture must modify the actual header')
+        for symbol,captures in [
+            ('OTHER',self.results()),
+            ('ATOM',self.results(cover_raw=cover.replace('atomera_ex9901.htm','not-the-exhibit.htm').encode())),
+            ('ATOM',self.results(exhibit_raw=future.encode())),
+            ('ATOM',self.results()[:1]),
+            ('ATOM',self.results()[1:]),
+        ]:
+            with self.subTest(symbol=symbol, count=len(captures)):
+                self.assertNotEqual(self.resolve(symbol,captures).status,'verified')
+
+    def test_explicit_noncalendar_fiscal_year_and_representation_stability(self):
+        import re
+        raw=original('irwd-original.html')
+        changed=re.sub(rb'(name="dei:DocumentFiscalYearFocus"[^>]*>(?:<[^>]+>)*)2026',rb'\g<1>2027',raw)
+        self.assertNotEqual(changed,raw)
+        fiscal=self.resolve('IRWD',[self.periodic(changed)])
+        self.assertEqual((fiscal.status,fiscal.period),('verified','2027-Q3'))
+        normal=self.resolve('IRWD',[self.periodic()])
+        self.assertNotEqual(fiscal.event_id,normal.event_id)
+        another=self.api().capture_identity_source(PERIODIC_URL.replace('irwd-20260930x10q.htm','another.htm'),raw,
+            returned_url=PERIODIC_URL.replace('irwd-20260930x10q.htm','another.htm'),content_type='text/html')
+        self.assertEqual(self.resolve('IRWD',[another]).event_id,normal.event_id)
+        page={'url':PERIODIC_URL,'text':'Readable model text','_identity_captures':[json.loads(another.canonical)]}
+        self.assertEqual(identity.resolve_event('IRWD',[page],known_resolutions=()).status,'unknown')
+
+    def test_fourth_quarter_release_cannot_create_second_annual_allowance(self):
+        import re
+        text=retained(EXHIBIT_URL)['text']
+        fourth=re.sub(r'Provides\s+Third Quarter 2026 Results','Provides Fourth Quarter 2026 Results',text)
+        self.assertNotEqual(fourth,text)
+        result=self.resolve('ATOM',self.results(exhibit_raw=fourth.encode()))
+        self.assertEqual((result.status,result.period),('verified','2026-FY'))
+
+    def test_known_primary_cannot_be_repointed_to_a_new_period(self):
+        import re
+        cap=self.periodic();current=self.resolve('IRWD',[cap]);wire=identity.candidate_identity(current)
+        raw=original('irwd-original.html')
+        changed=re.sub(rb'(name="dei:DocumentFiscalYearFocus"[^>]*>(?:<[^>]+>)*)2026',rb'\g<1>2027',raw)
+        result=identity.resolve_event('IRWD',[{'url':PERIODIC_URL}],known_resolutions=(wire,),identity_captures=(self.periodic(changed),))
+        self.assertEqual((result.status,result.reason),('conflict','known_binding_disagrees'))
+
+    def test_real_policy_input_keeps_article_and_identity_evidence_separate(self):
+        import inspect,tempfile
+        self.assertIn('identity_captures',inspect.signature(identity.resolve_event).parameters)
+        capture=self.periodic()
+        page={'url':PERIODIC_URL,'title':'Report','text':'Unchanged readable article'}
+        result=identity.resolve_event('IRWD',[page],known_resolutions=(),identity_captures=(capture,))
+        self.assertEqual(result.status,'verified')
+        with tempfile.TemporaryDirectory() as tmp:
+            identity.retain_observations(Path(tmp),result,[page],identity_captures=(capture,))
+            self.assertEqual((Path(tmp)/result.documents[0].retained_ref).read_bytes(),capture.canonical)
+        self.assertEqual(page['text'],'Unchanged readable article')
+        missing={'url':PERIODIC_URL.replace('irwd-20260930x10q.htm','unavailable.htm')}
+        blocked=identity.resolve_event('IRWD',[page,missing],known_resolutions=(),identity_captures=(capture,))
+        self.assertEqual(blocked.status,'unknown')
+
+    def test_wrong_date_context_truncation_and_comparative_facts_do_not_bind(self):
+        raw=original('irwd-original.html')
+        for changed in [raw.replace(b'September 30, 2026',b'September 29, 2026'),
+                        raw.replace(b'</html>',b''),
+                        raw.replace(b'>IRWD<',b'>OTHER<')]:
+            with self.subTest(size=len(changed)):
+                self.assertNotEqual(self.resolve('IRWD',[self.periodic(changed)]).status,'verified')
+        # A different issuer's full capture cannot be used to cure missing ATOM evidence.
+        self.assertNotEqual(self.resolve('ATOM',[self.periodic()]).status,'verified')
+
+
 if __name__ == '__main__': unittest.main()

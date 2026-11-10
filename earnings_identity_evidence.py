@@ -135,3 +135,8 @@ def retain_identity_captures(root, captures: tuple[IdentityCapture, ...]) -> Non
     finally:
         for fd in (evidence_fd,private_fd,root_fd):
             if fd is not None:os.close(fd)
+
+
+def resolve_earnings_capture(symbol: str, captures: tuple[IdentityCapture, ...]):
+    from earnings_identity_resolution import resolve_earnings_capture as resolve
+    return resolve(symbol,captures)
