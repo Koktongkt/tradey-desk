@@ -288,6 +288,7 @@ class OpportunityIndex:
     missing_history_gaps: tuple[dict, ...] = ()
     unknown_history_blocks: dict[str, tuple[dict, ...]] = field(default_factory=dict)
     prospective_baseline: dict | None = None
+    historical_resolutions: tuple = ()
 
     def __post_init__(self):
         object.__setattr__(self, 'unresolved_issuer_scopes', MappingProxyType({
@@ -436,6 +437,30 @@ def _unresolved_record(row: dict, resolutions: dict, unresolved: set,
     unresolved.add(dossier)
 
 
+def _acquisition_source_proven(index, resolution) -> bool:
+    """Process-local validation or exact retained capture replay; JSON shape is not authority."""
+    from acquisition_identity_resolution import resolve_acquisition_captures, source_validated
+    from earnings_identity_evidence import validate_identity_capture, IdentityCapture, _AUTHORITY
+    from earnings_identity_resolution import _document
+    from opportunity_identity import candidate_identity
+    if source_validated(resolution):
+        return True
+    try:
+        expected = candidate_identity(resolution)
+        root = Path(index.snapshot.root)
+        captures = []
+        for document in resolution.documents:
+            payload = (root / document.retained_ref).read_bytes()
+            capture = IdentityCapture(payload, sha256(payload).hexdigest(), _AUTHORITY)
+            if not validate_identity_capture(capture) or _document(capture) != document:
+                return False
+            captures.append(capture)
+        replay = resolve_acquisition_captures(resolution.issuer.symbol, tuple(captures))
+        return replay.status == 'verified' and candidate_identity(replay) == expected
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
 def incomplete_history(index: OpportunityIndex) -> frozenset[str]:
     """Unscoped/unrepresented historical reviews cannot imply a clean install.
 
@@ -574,7 +599,11 @@ def _state_parts(snapshot: LedgerSnapshot, *, _prospective: dict | None = None) 
             baseline = _prospective
         def after(stream, sequence):
             return baseline is None or sequence > baseline['streams'][stream]['sequence']
+        historical_resolutions = ()
         if _prospective is not None:
+            historical_resolutions = tuple(
+                _load_binding(row['resolution']) for row in policy_rows
+                if row.get('record_type') == 'identity_resolution' and 'resolution' in row)
             policy_rows = tuple(row for sequence, row in enumerate(policy_rows, 1)
                                 if after(POLICY_STREAM, sequence))
             if any(row.get('record_type') == 'condition_approval'
@@ -716,7 +745,8 @@ def _state_parts(snapshot: LedgerSnapshot, *, _prospective: dict | None = None) 
                 'allowance_reviews': allowance_reviews,
                 'missing_dossier_sequences': tuple(missing_dossier_sequences),
                 'gaps': tuple(gaps), 'blockers': tuple(blockers),
-                'blocks': blocks}
+                'blocks': blocks,
+                'historical_resolutions': historical_resolutions}
     except (LedgerError, ValueError, TypeError, KeyError) as error:
         if isinstance(error, OpportunityStateError):
             raise
@@ -748,7 +778,8 @@ def _index_from_parts(snapshot: LedgerSnapshot, parts: dict) -> OpportunityIndex
                             parts['allowance_reviews'], parts['grants'],
                             parts['conditions'], frozenset(parts['unresolved']),
                             parts['allowance_events'], digest, parts['scopes'],
-                            parts['gaps'], parts['blocks'], parts.get('baseline'))
+                            parts['gaps'], parts['blocks'], parts.get('baseline'),
+                            parts.get('historical_resolutions', ()))
 
 
 def _build(snapshot: LedgerSnapshot) -> OpportunityIndex:
@@ -975,6 +1006,9 @@ def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
     if resolution.status != 'verified' or resolution.event_id is None:
         return PolicyDecision('unknown', 'opportunity_identity_unknown',
                               resolution.event_id, None)
+    if resolution.version == 3 and not _acquisition_source_proven(index, resolution):
+        return PolicyDecision('unknown', 'opportunity_identity_unknown',
+                              resolution.event_id, None)
     event_id = resolution.event_id
     if not isinstance(index, OpportunityIndex) or index.activated_version <= 0:
         return PolicyDecision('unknown', 'policy_not_activated', event_id, None)
@@ -1091,12 +1125,14 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
             return PolicyDecision('skip', 'unchanged_opportunity', resolution.event_id, None)
     if resolution.event_id not in index.resolutions:
         # No historic binding may be silently erased by a prospective capture.
+        if resolution.version==3 and not _acquisition_source_proven(index, resolution):
+            return PolicyDecision('unknown','opportunity_identity_unknown',resolution.event_id,None)
         if incomplete_history(index):
             raise OpportunityStateError('opportunity_policy_state_unavailable')
         if (dossier_hash is not None
                 or any(scope['issuer_cik'] == resolution.issuer.cik
                        for scope in index.unresolved_issuer_scopes.values())
-                or resolution.reason not in {'current_report_cover','sec_periodic_filing','sec_results_exhibit'}):
+                or resolution.reason not in {'current_report_cover','sec_periodic_filing','sec_results_exhibit','sec_original_acquisition'}):
             return PolicyDecision('unknown', 'opportunity_identity_unknown', resolution.event_id, None)
         return PolicyDecision('eligible', 'allowance_available', resolution.event_id,
                               allowance_identifier(resolution.event_id, 0))

@@ -12,6 +12,10 @@
 
 ## Execution authority
 
+Delivery scope amendment: the owner accepted the recommendation to implement acquisitions first and defer contracts after Amendment A established an authentic acquisition/update chain but no clean commercial positive. All references below to both-family delivery now mean acquisition-only delivery; contract enablement is explicitly excluded. Retain contract source negatives and the same acceptance/release gates. No further scope approval is needed for this package.
+
+Wire contract: v3 adds only `agreement` to the existing resolution envelope, retains `period=null`, and uses family `acquisition`. `agreement` is a closed object containing `root`, `executed_on`, ordered Parent/Merger Sub/Company `parties`, retained normalized-span `witnesses`, and explicit source-linked `independent_from` document IDs. The root's four fields are those fixed by Amendment A. The v3 key hashes canonical JSON `{version:3,family:acquisition,root:<root>}` with prefix `oe3:`. Earnings v1/v2 payloads omit `agreement` entirely and keep their original IDs. Automatic prospective acquisition admission additionally requires a process-local source-validation seal that is never serialized; stored shape or a reason string cannot recreate it. Literal-link and raw-byte proof remain mandatory. Synthetic independence examples test the explicitly approved relationship contract and do not claim historical evidence or universal source-format coverage.
+
 The owner explicitly requested direct implementation and conditional production rollout after approving the written spec. Execute natively without another plan-review round, as an explicit override of the default handoff gate. Retain source-readiness, TDD, independent SPEC/QUALITY acceptance and compatibility/rollback requirements. The production request authorizes application source promotion/publication only after those gates pass, not administrative binding grants, durable-state migration, configuration changes or weakened trading controls.
 
 ## Global Constraints

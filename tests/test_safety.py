@@ -32,6 +32,10 @@ def _protective_exit_parent(ref, **stop_overrides):
 
 class TradeySafetyTests(unittest.TestCase):
     def setUp(self):
+        # Entry predicates inspect policy activation even when execution is
+        # disabled. Give their default ROOT an owned unactivated fixture.
+        root=Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(autotrader,'ROOT',root))
         self.cfg = {
             "enabled": False,
             "broker_mode": "paper",
@@ -249,7 +253,7 @@ class TradeySafetyTests(unittest.TestCase):
                           autotrader.runtime_blockers(cfg, ignore_disabled=True))
 
     def test_fixture_dry_run_writes_only_test_artifacts(self):
-        source_root = autotrader.ROOT
+        source_root = Path(autotrader.__file__).resolve().parent
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "fixtures").mkdir()
@@ -976,7 +980,7 @@ class TradeySafetyTests(unittest.TestCase):
             self.assertEqual(record.call_args.args[0], Path(td) / "test_artifacts" / "shadow" / "decisions.jsonl")
 
     def test_config_pins_two_distinct_nous_reviewer_models(self):
-        cfg = autotrader.load_json(autotrader.ROOT / "autonomy_config.json")
+        cfg = autotrader.load_json(Path(autotrader.__file__).resolve().parent / "autonomy_config.json")
         self.assertIs(cfg["allow_fractional_shares"], False)
         self.assertEqual(cfg["max_position_usd"], 500)
         self.assertEqual(cfg["allowed_quote_feeds"], ["alpaca_iex"])

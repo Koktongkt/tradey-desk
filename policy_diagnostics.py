@@ -12,7 +12,11 @@ RESOLVER_REASONS=frozenset({'not_run','invalid_symbol','invalid_pages','invalid_
     'identity_capture_invalid','identity_capture_duplicate','issuer_conflict','primary_support_conflict',
     'returned_locator_mismatch','alias_collision','conflicting_known_bindings','current_report_cover',
     'explicit_binding','sec_periodic_filing','sec_results_exhibit','unresolved_primary_evidence',
-    'unsupported_or_missing_primary_support','multiple_report_subjects','known_binding_disagrees'})
+    'unsupported_or_missing_primary_support','multiple_report_subjects','known_binding_disagrees',
+    'sec_original_acquisition','acquisition_evidence_missing','acquisition_original_required',
+    'acquisition_continuity_unknown','acquisition_date_conflict','acquisition_evidence_invalid',
+    'acquisition_incomplete_structure','acquisition_agreement_ambiguous',
+    'acquisition_parties_ambiguous','acquisition_execution_missing'})
 SOURCE_REASONS=frozenset({'source_fetch_timeout','source_fetch_failed','source_http_forbidden','source_rate_limited',
     'source_upstream_error','source_connection_failed','source_deadline_exhausted','source_url_mismatch',
     'bundle_rescue_unavailable','identity_source_deadline','identity_source_forbidden','identity_source_http_error',

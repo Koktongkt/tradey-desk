@@ -281,5 +281,21 @@ class EnrichmentDiagnosticsTests(unittest.TestCase):
             rows=[json.loads(x) for x in (root/'private/enrichment_diagnostics.jsonl').read_text().splitlines()]
             self.assertEqual(rows[0]['cache_reason'],'unreadable')
 
+    def test_research_timing_is_private_and_does_not_follow_file_links(self):
+        import os
+        import stat
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            with patch.object(a,'ROOT',root),a.enable_timing():
+                with a.timed_research_stage('synthetic'):pass
+            self.assertEqual(stat.S_IMODE((root/'private').stat().st_mode),0o700)
+            target=root/'private/research_timings.jsonl'
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode),0o600)
+            target.unlink();external=root/'untouched';external.write_text('unchanged')
+            target.symlink_to(external)
+            with patch.object(a,'ROOT',root),a.enable_timing():
+                with a.timed_research_stage('synthetic'):pass
+            self.assertEqual(external.read_text(),'unchanged')
+
 if __name__ == '__main__':
     unittest.main()

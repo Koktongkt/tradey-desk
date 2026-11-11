@@ -35,6 +35,7 @@
    "test_publication_provenance",
    "test_publication_observation",
    "test_opportunity_identity",
+   "test_acquisition_identity",
    "test_opportunity_admin",
    "test_opportunity_state",
    "test_opportunity_cutover",

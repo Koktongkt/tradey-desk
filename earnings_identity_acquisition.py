@@ -115,6 +115,9 @@ def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float
         captures.append(capture)
         # A newly discovered href is a current-source literal, never a guessed filename.
         linked_urls=earnings_exhibit_links(identity_source_bytes(capture),url)
+        if not linked_urls:
+            from acquisition_identity_resolution import acquisition_links
+            linked_urls=acquisition_links(identity_source_bytes(capture),url)
         state.links[url]=linked_urls
         for linked in linked_urls:
             if linked not in queue and len(queue)<32:queue.append(linked)

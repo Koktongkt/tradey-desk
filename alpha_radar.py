@@ -68,15 +68,13 @@ def timed_research_stage(stage:str):
         raise
     finally:
         try:
-            path=ROOT/"private"/"research_timings.jsonl"
-            path.parent.mkdir(parents=True,exist_ok=True)
             row={
                 "timestamp":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
                 "stage":stage,"outcome":outcome,
                 "elapsed_seconds":round(max(0.0,perf_counter()-start),3),
             }
-            with path.open("a",encoding="utf-8") as handle:
-                handle.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+            from enrichment_diagnostics import _append
+            _append(ROOT,row,name='research_timings.jsonl')
         except Exception:
             pass
 MAX_CANDIDATE_URLS_AFTER_RESCUE=8
@@ -1922,7 +1920,7 @@ def _resolve_policy(context,symbol,pages):
     from opportunity_identity import resolve_event,candidate_identity
     captures=(_identity_captures.get() or {}).get(symbol,())
     resolution=resolve_event(symbol,pages,known_resolutions=tuple(
-        candidate_identity(r) for r in context.index.resolutions.values()),
+        candidate_identity(r) for r in (*context.index.resolutions.values(),*context.index.historical_resolutions)),
         **({'identity_captures':captures} if captures else {}))
     _last_policy_resolution.set((symbol,resolution))
     return resolution

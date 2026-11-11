@@ -51,6 +51,7 @@ class EventResolution:
     support_refs: tuple[str, ...]
     reason: str
     version: int = 1
+    agreement: dict | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'documents', tuple(self.documents))
@@ -219,15 +220,21 @@ def _valid_publication(value, precision):
 def _load_binding(record):
     """Strict versioned serialization, not an authenticity/authorization check."""
     def invalid():raise ValueError('invalid_known_resolution')
-    if not isinstance(record, dict) or set(record) != _RESOLUTION_KEYS:invalid()
-    if type(record['version']) is not int or record['version'] not in (1,2) or record['status'] != 'verified':invalid()
+    if not isinstance(record, dict):invalid()
+    version=record.get('version')
+    if set(record)!=(_RESOLUTION_KEYS|{'agreement'} if type(version) is int and version==3 else _RESOLUTION_KEYS):invalid()
+    if type(version) is not int or version not in (1,2,3) or record['status'] != 'verified':invalid()
     issuer = record['issuer']
     if not isinstance(issuer, dict) or set(issuer) != _ISSUER_KEYS or not all(isinstance(v,str) for v in issuer.values()):invalid()
     if not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,9}', issuer['symbol']) or not re.fullmatch(r'[0-9]{10}', issuer['cik']) or int(issuer['cik']) == 0:invalid()
     if not _valid_legal_name(issuer['legal_name']):invalid()
-    if record['family'] != 'earnings' or not isinstance(record['period'], str) or not re.fullmatch(r'[0-9]{4}-(?:Q[1-4]|FY)', record['period']):invalid()
-    if record['event_id'] != _event_id(issuer['cik'], record['period']):invalid()
-    reasons = ('current_report_cover','explicit_binding') if record['version']==1 else ('sec_periodic_filing','sec_results_exhibit','explicit_binding')
+    if version==3:
+        if record['family']!='acquisition' or record['period'] is not None:invalid()
+        reasons=('sec_original_acquisition','explicit_binding')
+    else:
+        if record['family'] != 'earnings' or not isinstance(record['period'], str) or not re.fullmatch(r'[0-9]{4}-(?:Q[1-4]|FY)', record['period']):invalid()
+        if record['event_id'] != _event_id(issuer['cik'], record['period']):invalid()
+        reasons = ('current_report_cover','explicit_binding') if version==1 else ('sec_periodic_filing','sec_results_exhibit','explicit_binding')
     if record['reason'] not in reasons:invalid()
     refs = record['support_refs']
     if not isinstance(refs, list) or not 1 <= len(refs) <= 128 or any(not isinstance(s,str) or not re.fullmatch(_CAPTURE + r'#[A-Za-z0-9:_.-]{1,180}', s) for s in refs):invalid()
@@ -247,7 +254,13 @@ def _load_binding(record):
         parsed.append(DocumentObservation(**document))
     if len(set(parsed)) != len(parsed):invalid()
     if any(ref.split('#',1)[0] not in {d.retained_ref for d in parsed} for ref in refs):invalid()
-    return EventResolution('verified', record['event_id'], IssuerBinding(**issuer), 'earnings', record['period'], tuple(parsed), tuple(refs), record['reason'],version=record['version'])
+    agreement=None
+    if version==3:
+        from acquisition_identity_resolution import validate_agreement,event_id
+        agreement=validate_agreement(record['agreement'],issuer['cik'],parsed,refs)
+        if record['event_id']!=event_id(agreement['root']):invalid()
+        agreement=json.loads(_canonical(agreement))
+    return EventResolution('verified', record['event_id'], IssuerBinding(**issuer), record['family'], record['period'], tuple(parsed), tuple(refs), record['reason'],version=version,agreement=agreement)
 
 
 def candidate_identity(resolution: EventResolution) -> dict:
@@ -256,6 +269,9 @@ def candidate_identity(resolution: EventResolution) -> dict:
     result = {'version':1, **asdict(resolution)}
     result['documents'] = list(result['documents'])
     result['support_refs'] = list(result['support_refs'])
+    if resolution.version!=3:
+        if resolution.agreement is not None:raise ValueError('invalid_agreement_version')
+        result.pop('agreement')
     if resolution.status == 'verified':_load_binding(result)
     elif (resolution.status not in ('unknown','conflict') or resolution.documents or resolution.support_refs
           or any(v is not None for v in (resolution.event_id, resolution.issuer, resolution.family, resolution.period))):
@@ -303,9 +319,10 @@ def _merged_binding(bindings, document):
     refs = tuple(sorted({s for r in bindings for s in r.support_refs}))
     # Agreed issuer fields; support_ref is provenance, chosen deterministically.
     anchor = min(bindings, key=lambda r:r.issuer.support_ref)
+    if any(r.agreement!=anchor.agreement for r in bindings):raise ValueError('conflicting_known_bindings')
     return EventResolution('verified', anchor.event_id, anchor.issuer,
                            anchor.family, anchor.period, documents, refs,
-                           'explicit_binding',version=max(r.version for r in bindings))
+                           'explicit_binding',version=max(r.version for r in bindings),agreement=anchor.agreement)
 
 
 def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[dict, ...], identity_captures: tuple = ()) -> EventResolution:
@@ -321,6 +338,9 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
     if identity_captures:
         from earnings_identity_evidence import resolve_earnings_capture
         acquired=resolve_earnings_capture(symbol,identity_captures)
+        if acquired.status=='unknown' and acquired.reason=='unsupported_or_missing_primary_support':
+            from acquisition_identity_resolution import resolve_acquisition_captures
+            acquired=resolve_acquisition_captures(symbol,identity_captures,known_resolutions=known)
         if acquired.status!='verified':return acquired
         captured_urls={c.url for c in identity_captures}
         for prior in known:
@@ -393,7 +413,11 @@ def resolve_event(symbol: str, pages: list[dict], *, known_resolutions: tuple[di
                              merged.documents, merged.support_refs,
                              acquired.reason if acquired is not None else
                              ('current_report_cover' if any(r.reason == 'current_report_cover' for r in resolutions) else 'explicit_binding'),
-                             version=merged.version)
+                             version=merged.version,agreement=merged.agreement)
+    if acquired is not None and acquired.version==3:
+        from acquisition_identity_resolution import source_validated,seal_resolution
+        if not source_validated(acquired):return unresolved('unknown','acquisition_evidence_invalid')
+        merged=seal_resolution(merged)
     return merged
 
 
@@ -489,7 +513,12 @@ def retain_observations(root: Path, resolution: EventResolution, pages: list[dic
     if identity_captures:
         from earnings_identity_evidence import validate_identity_capture, MAX_IDENTITY_CAPTURE_BYTES
         from earnings_identity_resolution import _document as identity_document
-        if resolution.version!=2 or not isinstance(identity_captures,tuple):raise ValueError('identity_capture_version')
+        if resolution.version not in (2,3) or not isinstance(identity_captures,tuple):raise ValueError('identity_capture_version')
+        if resolution.version==3:
+            from acquisition_identity_resolution import resolve_acquisition_captures
+            replay=resolve_acquisition_captures(resolution.issuer.symbol,identity_captures)
+            if (replay.status!='verified' or candidate_identity(replay)!=candidate_identity(resolution)):
+                raise ValueError('acquisition_source_proof_mismatch')
         for capture in identity_captures:
             if not validate_identity_capture(capture):raise ValueError('missing_validated_capture')
             document=identity_document(capture)
