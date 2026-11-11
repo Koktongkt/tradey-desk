@@ -92,6 +92,13 @@ def _isolate_main_root(self):
 
 
 def _isolate_model_config(self):
+    # Policy activation lookup must never consult the checkout's private ledger,
+    # including in the real configured-model loader tests below.
+    root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+    source = Path(__file__).resolve().parents[1]
+    for name in ('autonomy_config.json', 'alpha_radar.py'):
+        (root / name).write_bytes((source / name).read_bytes())
+    self.enterContext(patch.object(alpha_radar, 'ROOT', root))
     alpha_radar.configured_default_model.cache_clear()
     self.addCleanup(alpha_radar.configured_default_model.cache_clear)
     if self._testMethodName.startswith('test_configured_default_model_'):
