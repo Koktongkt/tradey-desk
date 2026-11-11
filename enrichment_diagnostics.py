@@ -44,8 +44,10 @@ def _snapshot():
         return None
 
 
-def _append(root, row):
+def _append(root, row, *, name='enrichment_diagnostics.jsonl'):
     """Open only the named private regular file; never follow final symlinks."""
+    if name not in {'enrichment_diagnostics.jsonl','research_timings.jsonl'}:
+        raise ValueError('unknown_private_telemetry')
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         try:
@@ -54,10 +56,13 @@ def _append(root, row):
             pass
         directory = os.open('private', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
         try:
-            fd = os.open('enrichment_diagnostics.jsonl', os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+            directory_info = os.fstat(directory)
+            if directory_info.st_uid != os.geteuid() or stat.S_IMODE(directory_info.st_mode) != 0o700:
+                return
+            fd = os.open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
             try:
                 info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
                     return
                 os.fchmod(fd, 0o600)
                 data = (json.dumps(row, sort_keys=True, separators=(',', ':'), allow_nan=False)+'\n').encode()

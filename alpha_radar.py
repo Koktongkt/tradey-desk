@@ -68,15 +68,13 @@ def timed_research_stage(stage:str):
         raise
     finally:
         try:
-            path=ROOT/"private"/"research_timings.jsonl"
-            path.parent.mkdir(parents=True,exist_ok=True)
             row={
                 "timestamp":dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z"),
                 "stage":stage,"outcome":outcome,
                 "elapsed_seconds":round(max(0.0,perf_counter()-start),3),
             }
-            with path.open("a",encoding="utf-8") as handle:
-                handle.write(json.dumps(row,sort_keys=True,separators=(",",":"))+"\n")
+            from enrichment_diagnostics import _append
+            _append(ROOT,row,name='research_timings.jsonl')
         except Exception:
             pass
 MAX_CANDIDATE_URLS_AFTER_RESCUE=8
@@ -835,6 +833,7 @@ GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
 _extraction_attempt:ContextVar[dict|None]=ContextVar("extraction_attempt",default=None)
 _research_run_id:ContextVar[str|None]=ContextVar("research_run_id",default=None)
 _identity_captures:ContextVar[dict[str,tuple]|None]=ContextVar('research_identity_captures',default=None)
+_research_leads:ContextVar[dict|None]=ContextVar('acquisition_research_leads',default=None)
 _last_policy_resolution:ContextVar[Any]=ContextVar('last_policy_resolution',default=None)
 _gap_directed:ContextVar[bool]=ContextVar('radar_gap_directed',default=False)
 
@@ -848,11 +847,13 @@ def correlated_research_run(function):
         cfg=args[0] if args else kwargs.get('cfg',{})
         gap_token=_gap_directed.set(isinstance(cfg,dict) and cfg.get('gap_retrieval_enabled') is True)
         identity_token=_identity_captures.set({})
+        lead_token=_research_leads.set({})
         resolution_token=_last_policy_resolution.set(None)
         try:
             with identity_acquisition():return function(*args,**kwargs)
         finally:
             _research_run_id.reset(token);_gap_directed.reset(gap_token);_identity_captures.reset(identity_token)
+            _research_leads.reset(lead_token)
             _last_policy_resolution.reset(resolution_token)
     return wrapped
 
@@ -1859,6 +1860,8 @@ class _RadarAuthority:
 
 
 def _final_policy_check(candidate):
+    from acquisition_research import is_research_only_input
+    if is_research_only_input(candidate):raise CandidateRejection('opportunity_identity_unknown')
     from opportunity_state import candidate_policy,OpportunityStateError
     authority=candidate.pop('_radar_authority',None)
     context=_run_policy_context(ROOT)
@@ -1914,8 +1917,39 @@ def _condition_enrichment(context,resolution,symbol,budget):
 
 
 def _strip_policy_metadata(candidate):
+    from acquisition_research import is_research_only_input
+    if is_research_only_input(candidate) or (_research_leads.get() or {}).get(str(candidate.get('symbol') or '').upper()):
+        raise CandidateRejection('opportunity_identity_unknown')
     return {key:value for key,value in candidate.items() if key not in _POLICY_METADATA
             and not key.startswith('_identity_') and key not in {'identity_captures','identity_capture','identity_evidence'}}
+
+
+def _retain_acquisition_research(selected,pages,*,deadline):
+    """Observation-only side route, before ranked/active-policy synthesis paths."""
+    from acquisition_research import acquisition_hint,publish_lead
+    from earnings_identity_acquisition import acquisition_notes,acquisition_observation_captures
+    symbol=str(selected.get('symbol') or '').upper()
+    urls=[p.get('url') for p in pages if isinstance(p,dict) and isinstance(p.get('url'),str)]
+    owned_captures=_identity_captures.get()
+    admitted=(owned_captures or {}).get(symbol,())
+    captures=admitted or acquisition_observation_captures(urls)
+    if not acquisition_hint(selected,pages,captures):return False
+    leads=_research_leads.get()
+    if leads is not None:leads[symbol]=selected
+    if not captures:
+        try:admitted=acquire_identity_captures(symbol,pages,deadline=deadline,opener=safe_urlopen)
+        except (OSError,ValueError,TypeError) as error:raise ResearchFailure('research_persistence_failure') from error
+        if owned_captures is not None:owned_captures[symbol]=admitted
+        # Expired handoff bytes remain observation-only, never placed into the
+        # earnings admission map or returned as timely identity evidence.
+        captures=admitted or acquisition_observation_captures(urls)
+    notes=acquisition_notes(urls)
+    status=('unavailable' if not captures else 'partial' if any(n.get('capture_status')!='complete' for n in notes) else 'retained')
+    try:
+        publish_lead(ROOT,symbol=symbol,captures=captures,evidence_status=status,
+                     observed_at=dt.datetime.now(dt.timezone.utc).isoformat())
+    except (OSError,ValueError,TypeError) as error:raise ResearchFailure('research_persistence_failure') from error
+    return True
 
 
 def _resolve_policy(context,symbol,pages):
@@ -2056,6 +2090,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     """
     context=_run_policy_context(ROOT)
     policy_skipped_symbols=set()
+    acquisition_observed_symbols=set()
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
     overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     if cfg.get('discovery_v2_enabled',False) is True:
@@ -2081,7 +2116,8 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         if scout.returncode: raise ResearchFailure("research_scout_unavailable")
         scout_candidates,scout_diagnostic=scout_parse_result(scout.stdout,max_candidates=5,max_urls=5)
     scout_candidates=scout_candidates[:5]  # Policy skips never admit a sixth lead.
-    original_policy_urls={str(c.get('symbol') or '').upper():tuple(c.get('urls',[])) for c in scout_candidates}
+    original_selected={str(c.get('symbol') or '').upper():dict(c) for c in scout_candidates}
+    original_policy_urls={symbol:tuple(c.get('urls',[])) for symbol,c in original_selected.items()}
     try:record_scout_diagnostic(scout_diagnostic)
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     if not scout_candidates:
@@ -2144,13 +2180,28 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             sec_dates[url]=sec_filing_date_for_url(url,deadline=evidence_deadline)
     fetched_evidence=attach_sec_filing_dates(fetched_evidence,sec_dates)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
-    def policy_bundle(selected):
+    def policy_bundle(selected,pages=None):
         # Missing acquired primary URLs are explicit unknown observations, not
         # evidence that the remaining old anchor is the whole event bundle.
         symbol=str(selected.get('symbol') or '').upper()
-        owned=dict.fromkeys((*original_policy_urls.get(symbol,()),*selected.get('urls',[])))
-        by_url={p.get('url'):p for p in fetched_evidence}
+        owned=dict.fromkeys(url for url in (*original_policy_urls.get(symbol,()),*selected.get('urls',[])) if isinstance(url,str))
+        by_url={p.get('url'):p for p in [*fetched_evidence,*(pages or [])]
+                if isinstance(p,dict) and isinstance(p.get('url'),str)}
         return [by_url.get(url,{'url':url}) for url in owned]
+    def route_acquisition(selected,pages=None):
+        symbol=str(selected.get('symbol') or '').upper()
+        if symbol in policy_skipped_symbols:return False
+        if _retain_acquisition_research(original_selected.get(symbol,selected),policy_bundle(selected,pages),
+                deadline=min(evidence_deadline,overall_deadline-downstream_reserve)):
+            acquisition_observed_symbols.add(symbol)
+            policy_skipped_symbols.add(symbol)
+            return True
+        return False
+    remaining_candidates=[]
+    for selected in scout_candidates:
+        if not route_acquisition(selected):remaining_candidates.append(selected)
+    scout_candidates=remaining_candidates
+    if not scout_candidates:return {'status':'none','none_reason':'no_new_eligible_opportunity'}
     def recover_stage(pages, *, allow_model, stage_deadline=None):
         nonlocal evidence_deadline
         # Pause ONLY unspent evidence work. Recovery charges its own cumulative
@@ -2173,6 +2224,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             except OSError as error:raise ResearchFailure("research_persistence_failure") from error
         evidence_deadline=min(overall_deadline-downstream_reserve,monotonic()+evidence_remaining)
         source_diagnostics.extend({**note,"stage":"publication_recovery"} for note in notes)
+        for selected in scout_candidates:route_acquisition(selected,updated)
         return updated
     fetched_evidence=recover_stage(fetched_evidence,allow_model=False)
     filtered_evidence,initial_quality=filter_evidence(fetched_evidence)
@@ -2236,6 +2288,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                             continue
                         following.append((symbol,state))
                     rescue_turns[symbol]=rescue_turns.get(symbol,0)+1
+                    # Route the actual delivered bundle even if publication/quality
+                    # filtering later omits it. Such filtering grants no authority.
+                    selected=next(c for c in scout_candidates if str(c.get('symbol') or '')==symbol)
+                    route_acquisition(selected,rescued_pages)
                     for page in filter_evidence(rescued_pages)[0]:
                         url=page.get("url")
                         if isinstance(url,str) and url and url not in accepted_urls:
@@ -2278,7 +2334,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     except OSError as error:raise ResearchFailure("research_persistence_failure") from error
     ranked=initially_ranked if initially_ranked else ranked_candidate_evidence(scout_candidates,filtered_evidence)
     if not ranked:
-        if (context is not None and scout_candidates
+        # Completed inert observations are successful even when ordinary evidence
+        # quality/rescue failed. Policy refusals or unrelated candidates are not
+        # observation success, and persistence exceptions never reach this set.
+        if (scout_candidates
+                and all(str(c.get('symbol') or '').upper() in acquisition_observed_symbols for c in scout_candidates)):
+            return {'status':'none','none_reason':'no_new_eligible_opportunity'}
+        if (scout_candidates
                 and all(str(c.get('symbol') or '').upper() in policy_skipped_symbols for c in scout_candidates)
                 and not fetch_diagnostics):
             return {'status':'none','none_reason':'no_new_eligible_opportunity'}
@@ -2303,6 +2365,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
         for selected,evidence in ranked:
             symbol=str(selected.get("symbol") or "").upper()
             if symbol in attempted_symbols or symbol in policy_skipped_symbols:continue
+            if route_acquisition(selected,evidence):continue
             if context is not None:
                 # Resolve the entire acquired primary bundle, not a ranker's
                 # truncated/subselected representation of it.
@@ -2319,6 +2382,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                             deadline=identity_deadline,opener=safe_urlopen)
                     owned_captures=_identity_captures.get()
                     if owned_captures is not None:owned_captures[symbol]=acquired
+                if route_acquisition(selected,policy_pages):continue
                 reason=_policy_reason(context,selected,policy_pages)
                 if reason:
                     from earnings_identity_acquisition import acquisition_notes

@@ -918,6 +918,9 @@ def require_current_allowance(root: Path, candidate: dict, *,
     Absent activation keeps the legacy compatibility floor with no new-entry
     denial; once activated, malformed or incompatible state fails closed.
     """
+    from acquisition_research import is_research_only_input
+    if is_research_only_input(candidate):
+        return PolicyDecision('unknown', 'opportunity_identity_unknown', None, None)
     root = Path(root)
     try:
         version = activation_version(root)
@@ -966,6 +969,9 @@ def event_decision(index: OpportunityIndex, resolution: EventResolution, *,
     safety decision; unknown, corrupt, lagging or unbound state can never
     mean eligible. `reopening_pending` is research-only and provisional.
     """
+    from acquisition_research import is_research_only_input
+    if is_research_only_input(resolution):
+        return PolicyDecision('unknown', 'opportunity_identity_unknown', None, None)
     index = _reload_if_changed(index)
     if not isinstance(resolution, EventResolution):
         return PolicyDecision('unknown', 'opportunity_identity_unknown', None, None)
@@ -1052,6 +1058,9 @@ def candidate_policy(context: PolicyContext, resolution: EventResolution, *,
     historical/index bindings still belong to the read-only canonical index.
     Reopening claims must satisfy the approved condition, not merely be sealed.
     """
+    from acquisition_research import is_research_only_input
+    if is_research_only_input(resolution):
+        return PolicyDecision('unknown', 'opportunity_identity_unknown', None, None)
     context = refresh_policy_context(context)
     index = context.index
     if symbol in context.known_exclusions:

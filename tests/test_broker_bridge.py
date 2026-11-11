@@ -173,6 +173,7 @@ class BrokerBridgeTests(unittest.IsolatedAsyncioTestCase):
         from test_safety import TradeySafetyTests
         fixture = TradeySafetyTests()
         fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
         # Literal exchange sessions spanning Labor Day; exit is Sept 3.
         dates = ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04',
                  '2026-09-08', '2026-09-09', '2026-09-10']

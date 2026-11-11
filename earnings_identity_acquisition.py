@@ -42,6 +42,22 @@ def acquisition_notes(urls):
     return tuple(state.notes[url] for url in queue if url in state.notes)
 
 
+def acquisition_observation_captures(urls):
+    """Already authenticated attempt bytes, for private observation ONLY.
+
+    No I/O, deadline extension or identity admission. A handoff can expire
+    after authentication; its cached bytes remain useful with failure notes.
+    Restrict to the same bounded literal-link closure as the attempt notes.
+    """
+    state=_state.get()
+    if state is None:return ()
+    queue=list(dict.fromkeys(urls))[:32]
+    for url in queue:
+        for linked in state.links.get(url,()):
+            if linked not in queue and len(queue)<32:queue.append(linked)
+    return tuple(state.cache[url] for url in queue if state.cache.get(url) is not None)
+
+
 def _fetch(url,deadline,opener,state):
     if url in state.cache:return state.cache[url]
     if len(state.cache)>=32:return None
@@ -115,6 +131,9 @@ def acquire_identity_captures(symbol: str, pages: list[dict], *, deadline: float
         captures.append(capture)
         # A newly discovered href is a current-source literal, never a guessed filename.
         linked_urls=earnings_exhibit_links(identity_source_bytes(capture),url)
+        if not linked_urls:
+            from acquisition_research import literal_acquisition_links
+            linked_urls=literal_acquisition_links(identity_source_bytes(capture),url)
         state.links[url]=linked_urls
         for linked in linked_urls:
             if linked not in queue and len(queue)<32:queue.append(linked)

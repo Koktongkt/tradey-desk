@@ -28,9 +28,10 @@ class DeadlineContextTests(unittest.TestCase):
                 pass
             row=json.loads((Path(td)/"private"/"research_timings.jsonl").read_text().strip())
             self.assertEqual((row["stage"],row["outcome"],row["elapsed_seconds"]),("discovery","completed",7))
-        with patch.object(Path,"open",side_effect=OSError("telemetry unavailable")), alpha_radar.enable_timing():
+        with tempfile.TemporaryDirectory() as td, patch.object(alpha_radar,'ROOT',Path(td)), patch('enrichment_diagnostics._append',side_effect=OSError('telemetry unavailable')), alpha_radar.enable_timing():
             with alpha_radar.timed_research_stage("discovery"):
                 pass
+            self.assertFalse((Path(td)/'private').exists())
 
     def test_active_deadline_clamps_remaining_and_raises_when_expired(self):
         for label, deadline in (('clamps_individual_network_timeout_inside_deadline',108),
