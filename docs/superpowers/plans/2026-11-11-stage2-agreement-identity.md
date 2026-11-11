@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Python, unittest, urllib and existing evidence/state APIs; no dependencies or provider changes.
 
-**Spec:** docs/superpowers/specs/2026-11-11-stage2-agreement-identity-design.md, owner-approved in Telegram.
+**Spec:** docs/superpowers/specs/2026-11-11-stage2-agreement-identity-design.md plus owner-approved amendment `docs/superpowers/specs/2026-11-11-stage2-original-agreement-amendment.md` (commit 87a603a, SHA-256 c01c70b66dfca2002229e200c3cb25a94ebb9f996c886c97df45152ea9270e3d). Amendment A controls any conflict about automatic original-agreement roots.
 
 ## Execution authority
 
@@ -37,11 +37,11 @@ The owner explicitly requested direct implementation and conditional production 
 
 **Files:** private source-only evidence under `test_artifacts/stage2_agreements/`; no runtime edits. Approved spec and this plan are the source contract.
 
-**Interfaces:** consumes existing SEC exact-URL capture and locator contracts; produces a source-readiness table binding an actual issuer, stable agreement identifier/namespace, parties, independent continuity proof, exact supporting source references and raw-byte digest. A reviewed-root positive requires genuinely approved binding authority, not a proposed record.
+**Interfaces:** consumes existing SEC exact-URL capture and locator contracts; produces a source-readiness table binding an actual issuer, admitted root kind, original entry/parties/roles, authenticated item-to-executed-agreement relationship, independent continuity proof, exact supporting spans and raw-byte digest. For `sec_original_agreement`, identity fields are exactly `kind`, `issuer_cik`, `original_report_document_id`, `original_agreement_document_id`; source proof, not locator shape alone, establishes originality. A reviewed-root positive still requires genuinely approved binding authority, not a proposed record.
 
-- [ ] Inspect authentic retained source-only fixtures first and locate candidate SEC documents through bounded public retrieval. Maximum four public web searches and eight public document fetches in this readiness attempt, cumulative across helpers. No Radar run, broker calls, production ledger access, model subprocess, broad SEC crawl or repeated acquisition until success. Search/extract results may locate evidence but cannot establish trusted full-capture authority. Record failures and exact acquisition paths honestly.
-- [ ] Require one authentic automatic acquisition positive and one authentic automatic contract positive with the spec's stable identifier/continuity contract. Include real near-negative updates. Check the named MNDO/WYFI examples if retrievable within the same bound; unsupported examples remain negative.
-- [ ] Resolve missing source contracts before product edits. If the evidence offers only agreement title/date/parties, document locator or transaction prose, STOP with that precise dependency and a minimal proposed amendment. No v3 skeleton, blanket-rejection implementation, synthetic identity authority or deployment can satisfy this gate.
+- [ ] Preserve the original failed investigation (four searches/eight document fetches) without reclassifying it as successful. Amendment-readiness has a new cumulative cap: four searches, twelve exact public document attempts and sixteen HTTP requests including redirects. No Radar run, broker calls, production ledger access, model subprocess, broad crawl, unsafe redirect or acquisition-until-success. Search/extraction locates evidence but is not trusted full-capture authority. Count actual requests/failures.
+- [ ] Require one authentic automatic acquisition original-disclosure/linked-executed-agreement positive and one contract positive, plus an authentic explicit update-to-original chain. Apply all five Amendment A evidence predicates. Use supported text-native original 8-K bundles; MNDO/WYFI and periodic summaries are not promised positives.
+- [ ] Before product edits, freeze the exact supported source structures and normalization/span contract from authentic full-byte captures. If required originals, issuer facts, executed agreement or continuity proof remain missing, return the precise blocker. No v3 skeleton, blanket-rejection adapter, synthetic authority or deployment satisfies readiness. No further general design/plan approval is needed for the already approved root contract.
 - [ ] Verify the existing linked worktree, protected-main HEAD/status and interpreter. Inspect tests' actual guards before running unchanged targeted identity baselines. Preserve real logs/exits; dependency/import failures are harness failures, not behavioral RED.
 
 Expected: authentic source-readiness table plus unchanged targeted baseline proof, or an explicit source-contract blocker. No claimed implementation completion from readiness alone.
@@ -52,9 +52,9 @@ Expected: authentic source-readiness table plus unchanged targeted baseline proo
 
 **Interfaces:** `resolve_agreement_captures(symbol: str, captures: tuple, *, known_resolutions: tuple[dict, ...]) -> EventResolution`; pure, no I/O. Exact root and payload grammar must be recorded from Task 1's admitted source contract before writing tests; no unsupported authority or default root is permitted.
 
-- [ ] Add behavioral RED tests for authentic acquisition/contract captures, same event/new URL, distinct same-party/day agreements, lifecycle updates and unresolved replacement chains.
+- [ ] Add behavioral RED tests for authentic original acquisition/contract bundles, all five source predicates, misleading 'entered into' amendment wording, multiple exhibits/subjects, subsidiary roles, same event/new URL, amendment-first, distinct same-party/day agreements with independence proof, and unresolved replacement chains.
 - [ ] Extend the strict identity representation with a new non-earnings version, closed family/root grammar and recomputed event key. Do not overload earnings `period`; preserve old payloads and IDs. Bind supporting spans to retained bytes and authenticated relations. Reject shape-valid forged model authority.
-- [ ] Implement only the exact source formats established by Task 1. Unknown identifier/namespace, ambiguous issuer, multi-agreement bundle and conflicting roots fail closed; no generic text classifier.
+- [ ] Implement only Task 1's admitted source formats. Resolve updates to the original root. Require complete coherent known-root comparison across root kinds, including spent events; missing known evidence cannot establish novelty. Unknown identifier/namespace, ambiguous issuer/subject, conflicting aliases and unresolved continuity fail closed; no generic text classifier.
 - [ ] Run actual identity and new agreement test modules RED then GREEN, retaining both receipts and the independent frozen old earnings fixtures.
 
 Expected: both real positive families pass the pure boundary and every continuity/authority negative is blocked. A source contract absent in Task 1 cannot be invented here.
@@ -65,7 +65,7 @@ Expected: both real positive families pass the pure boundary and every continuit
 
 **Interfaces:** existing `candidate_identity`, `_load_binding`, state reconstruction, dossier validation and reviewed binding paths consume the exact Task 2 representation. No new authority producer or allowance algorithm.
 
-- [ ] Write RED tests for mixed v1/v2/new-version replay, serializer round trips, durable evidence references, immutable old dossier attribution, spent HOLD/disagreement/fill, held/pending exclusions and unchanged manual reopening.
+- [ ] Write RED tests for mixed v1/v2/new-version replay, cross-root-kind duplicate handling, serializer round trips, durable evidence references, immutable dossier attribution, spent HOLD/disagreement/fill, held/pending exclusions and unchanged manual reopening. Exercise the real prospective-reason allowlist in `candidate_policy`; a model/caller reason string is not trusted producer authority.
 - [ ] Wire all real consumers to the shared strict loader; preserve version-specific validation. No rewriting existing records or baseline fixtures.
 - [ ] Run all affected full modules GREEN. Inventory the actual producer-consumer closure, including saved-dossier reuse, before claiming compatibility.
 
