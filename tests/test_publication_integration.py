@@ -96,7 +96,7 @@ class PublicationIntegrationTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'research_source_freshness_insufficient')
         self.assertEqual(calls, [[URL, late['url']]])
 
-    def test_frozen_retained_incident_late_gnw_reaches_only_batch_but_stays_unknown(self):
+    def _retained_incident(self):
         fixture = Path(__file__).resolve().parents[1]/'test_artifacts/recovery-fair-handoff'
         paths = [fixture/'incident-advfn.json', fixture/'incident-gnw.json']
         if not all(p.exists() for p in paths):
@@ -109,13 +109,46 @@ class PublicationIntegrationTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(late['text'].encode()).hexdigest(),
                          'b9edb2af2ac2569181dbd162bf5b3fa98a76655e01d26156ff41f44a1086a2ce')
         self.assertIn('October 19, 2026 15:37 ET',late['text'])
-        import publication_recovery as recovery
-        clock=[100.0]
-        frozen=dt.datetime(2026,10,21,15,43,7,tzinfo=dt.timezone.utc)
+        return seed, late
+
+    def test_frozen_retained_incident_late_gnw_reaches_only_batch_but_stays_unknown(self):
+        # The acquisition headline is routed before investment publication work.
+        # Temporal admissibility of the same retained bytes is tested separately.
+        from acquisition_research import read_lead
+        seed, late = self._retained_incident()
+        config=Path(__file__).resolve().parents[1]/'autonomy_config.json'
+        (self.home/'autonomy_config.json').write_bytes(config.read_bytes())
+        def authority_bytes():
+            # Only inert lead storage and sanitized research diagnostics may grow.
+            return {str(p.relative_to(self.home)):p.read_bytes()
+                    for p in self.home.rglob('*') if p.is_file()
+                    and 'acquisition_research' not in p.relative_to(self.home).parts
+                    and p.relative_to(self.home)!=Path('private/research_policy_diagnostics.jsonl')}
+        before = authority_bytes()
         scout={'symbol':'RAMP','urls':[seed['url']], '_alternate_urls':[late['url']]}
-        calls=[]; diagnostics=[]
-        def gather(urls, **kw):
-            return [late] if urls==[late['url']] else [seed]
+        def forbidden(*args, **kwargs):
+            self.fail('research-only lead reached an investment boundary')
+        with patch.object(radar,'discovery_command',return_value=['offline']), patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'record_research_diagnostics'), patch.object(radar,'gather_evidence',return_value=[seed]), patch.object(radar,'interpret_publications',side_effect=forbidden), patch.object(radar,'synthesize_candidate',side_effect=forbidden), patch.object(radar,'prepare_candidate',side_effect=forbidden):
+            result=radar.live_research({},intake=forbidden)
+        self.assertEqual(result,{'status':'none','none_reason':'no_new_eligible_opportunity'})
+        leads=list((self.home/'private/acquisition_research').glob('*.json'))
+        self.assertEqual(len(leads),1)
+        lead=read_lead(self.home,'al1:'+leads[0].stem)
+        self.assertEqual(lead['symbol'],'RAMP')
+        self.assertEqual(lead['status'],'research_only')
+        self.assertEqual(lead['reason'],'explicit_binding_required')
+        self.assertEqual(lead['evidence_status'],'unavailable')
+        self.assertEqual(lead['capture_refs'],[])
+        self.assertEqual(authority_bytes(),before)
+
+    def test_frozen_retained_incident_publication_recovery_stays_unknown(self):
+        # Directly exercise the real temporal-recovery API. Acquisition routing
+        # must not be disabled merely to force live_research into this stage.
+        import publication_recovery as recovery
+        seed, late = self._retained_incident()
+        frozen=dt.datetime(2026,10,21,15,43,7,tzinfo=dt.timezone.utc)
+        scout={'symbol':'RAMP','urls':[seed['url'],late['url']]}
+        calls=[]
         def runner(command, *, input, deadline):
             payload=json.loads(input);calls.append(payload)
             rows=[{'id':p['id'],'value':'2026-10-19','precision':'day',
@@ -123,19 +156,27 @@ class PublicationIntegrationTests(unittest.TestCase):
                   if p['url']==late['url'] else {'id':p['id'],'status':'unknown'}
                   for p in payload['pages']]
             return subprocess.CompletedProcess(command,0,json.dumps({'version':1,'results':rows}).encode(),b'')
-        real_filter=radar.filter_evidence
-        real_interpret=radar.interpret_publications
-        def filtering(pages, **kw):return real_filter(pages,now=frozen)
-        def interpreting(pages, **kw):
-            kw['now']=frozen
-            return real_interpret(pages,**kw)
-        with patch.object(radar,'filter_evidence',side_effect=filtering), patch.object(radar,'interpret_publications',side_effect=interpreting), patch.object(recovery,'utc_now',return_value=frozen), patch.object(radar,'monotonic',side_effect=lambda:clock[0]), patch.object(recovery,'monotonic',side_effect=lambda:clock[0]), patch('publication_interpreter.monotonic',side_effect=lambda:clock[0]), patch.object(radar,'discovery_command',return_value=['offline']), patch.object(radar.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'scout','')), patch.object(radar,'scout_parse_result',return_value=([scout],{})), patch.object(radar,'record_scout_diagnostic'), patch.object(radar,'record_research_diagnostics',side_effect=lambda rows:diagnostics.extend(rows)), patch.object(radar,'gather_evidence',side_effect=gather), patch.object(radar,'sec_edgar_filing_url',return_value=None), patch.object(radar,'gateway_rescue_url',return_value=None), patch.object(radar,'research_subprocess_command',return_value=['offline']), patch.object(radar,'run_publication_process',side_effect=runner):
-            with self.assertRaises(radar.ResearchFailure) as error:
-                radar.live_research({},intake=lambda c:c)
-        self.assertEqual(error.exception.code,'research_source_freshness_insufficient')
+        def interpreting(pages, *, deadline):
+            return radar.interpret_publications(pages,deadline=deadline,now=frozen,
+                command_factory=lambda:['offline'],runner=runner)
+        state=recovery.RecoveryState()
+        def recover(pages, *, allow_model):
+            return recovery.recover_publications([scout],pages,[],state=state,
+                overall_deadline=400,downstream_reserve=80,cache_path=None,
+                fetcher=lambda *a:self.fail('unexpected temporal refetch'),
+                interpreter=interpreting,allow_model=allow_model)
+        with patch.object(recovery,'utc_now',return_value=frozen), patch.object(recovery,'monotonic',return_value=100.0), patch('publication_interpreter.monotonic',return_value=100.0):
+            prepared,_=recover([seed],allow_model=False)
+            self.assertEqual(calls,[])
+            updated,diagnostics=recover([*prepared,late],allow_model=True)
+            # A second recovery does not spend a second interpretation batch.
+            recover(updated,allow_model=True)
+        self.assertTrue(state.attempted_model)
         self.assertEqual(len(calls),1)
         self.assertIn(late['url'],[p['url'] for p in calls[0]['pages']])
         self.assertEqual(radar.filter_evidence([seed,late],now=frozen)[0],[])
+        self.assertEqual(radar.filter_evidence(updated,now=frozen)[0],[])
+        self.assertTrue(all(not p.get('publication_observation') for p in updated))
         self.assertFalse(any(d.get('reason')=='fetched' for d in diagnostics))
         self.assertIn('inadmissible_publication',[d.get('reason') for d in diagnostics])
 
