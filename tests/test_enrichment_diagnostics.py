@@ -165,6 +165,14 @@ class EnrichmentDiagnosticsTests(unittest.TestCase):
                 with d.span('body','sec'): pass
                 self.assertEqual(d.traced('config','massive')(lambda: 3)(),3)
 
+    def test_existing_public_private_directory_refuses_telemetry(self):
+        import enrichment_diagnostics as d
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);private=root/'private';private.mkdir();private.chmod(0o755)
+            with d.attempt(True,root,'f'*32,'AAPL'):pass
+            self.assertFalse((private/'enrichment_diagnostics.jsonl').exists())
+            self.assertEqual(private.stat().st_mode & 0o777,0o755)
+
     def test_symlinks_and_hardlinks_do_not_reach_other_files(self):
         import enrichment_diagnostics as d
         import os
