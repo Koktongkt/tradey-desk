@@ -24,6 +24,7 @@
    "test_research_memory_keys",
    "test_research_memory_store",
    "test_research_memory_transition",
+   "test_review_history",
    "test_research_budget",
    "test_synthesis_horizon_prompt",
    "test_discovery_collection",

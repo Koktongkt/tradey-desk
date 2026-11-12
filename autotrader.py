@@ -1177,6 +1177,12 @@ def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> b
     cash rejection permits retry. All other completed reviews remain spent.
     Rows with no reviewer content can retry if no earlier review completed.
     """
+    root = Path(reviews_path).parent.parent
+    if entry_policy_version(root) >= 3:
+        from research_mode import context
+        from review_history import dossier_status
+        context(root)  # Unsupported/corrupt transitions are never not-reviewed.
+        return dossier_status(root, candidate.get('dossier_hash')) == 'completed'
     expected = candidate.get("dossier_hash")
     if not isinstance(expected, str):
         return False
