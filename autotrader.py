@@ -1333,6 +1333,17 @@ def buy_eligibility_errors(symbol, snapshot, *, pending_proof=None, now=None, ro
 def require_entry_allowance(root: Path, candidate: dict, *, attempt=None):
     """Reload authoritative state; accept only an eligible allowance or a
     verified provisional reopening claim (never unknown/skip/absent binding)."""
+    if entry_policy_version(root) == 3:
+        import entry_authority
+        from opportunity_state import PolicyDecision
+        from review_history import dossier_status
+        entry_authority.validate_candidate(root,candidate)
+        if attempt is not None:
+            entry_authority.validate_attempt(root,candidate=candidate,
+                proposal=json.loads(attempt.proposal_json),evidence_id=attempt.evidence_id,proof=attempt)
+        elif dossier_status(root,candidate.get('dossier_hash')) == 'completed':
+            return PolicyDecision('skip','already_reviewed',None,None)
+        return PolicyDecision('eligible','exact_dossier_ready',None,None)
     import opportunity_state
     return opportunity_state.require_current_allowance(root, candidate, attempt=attempt)
 
@@ -1353,12 +1364,15 @@ def _verified_reopening_claim(root: Path, candidate: dict):
         return None
 
 
-def _authorize_current_attempt(root: Path, candidate: dict, proposal_hash: str, evidence_id: str):
-    """Bind the exact approved attempt to the coherent current allowance.
-
-    Only the persisted dual approval of this exact proposal and evidence ID,
-    still bound to the current grant chain, authorizes execution.
-    """
+def _authorize_current_attempt(root: Path, candidate: dict, proposal_hash: str, evidence_id: str, *, proposal=None):
+    """Bind exact persisted dual approval; v3 has no event allowance."""
+    if entry_policy_version(root)==3:
+        import entry_authority
+        if not isinstance(proposal,dict) or proposal.get('proposal_hash')!=proposal_hash:
+            raise entry_authority.AuthorityError('exact_proposal_required')
+        return entry_authority.authorize_attempt(root,candidate=candidate,proposal=proposal,
+            evidence_id=evidence_id,review_ref=dict(dossier_hash=candidate.get('dossier_hash'),
+                evidence_id=evidence_id,proposal_hash=proposal_hash))
     import opportunity_state
     index = opportunity_state.load_index(Path(root))
     return opportunity_state.authorize_current_attempt(
@@ -1383,6 +1397,10 @@ def _final_entry_recheck_errors(root: Path, candidate: dict, plan: dict,
         if errors:
             return errors
         try:
+            if policy_version == 3:
+                import entry_authority
+                entry_authority.validate_attempt(root,candidate=candidate,proposal=plan,
+                    evidence_id=attempt.evidence_id,proof=attempt)
             decision = require_entry_allowance(root, candidate, attempt=attempt)
         except Exception:
             return ['opportunity_policy_state_unavailable']
@@ -1460,12 +1478,18 @@ def _run_locked(args: argparse.Namespace) -> int:
                 print(f"TRADE SELL {update.get('quantity')} {update.get('symbol')} @ {update.get('entry')}")
                 return 0
         from opportunity_activation import (
-            ActivationStateError, SUPPORTED_POLICY_VERSION, require_supported_activation,
+            ActivationStateError, SUPPORTED_POLICY_VERSION, require_supported_activation, activation_version,
         )
         try:
-            require_supported_activation(ROOT, supported=SUPPORTED_POLICY_VERSION)
+            if activation_version(ROOT)==3:
+                from research_mode import context
+                context(ROOT)
+            else:
+                require_supported_activation(ROOT, supported=SUPPORTED_POLICY_VERSION)
         except ActivationStateError as error:
             print("BLOCKER " + str(error)); return 2
+        except (RuntimeError,OSError,ValueError):
+            print("BLOCKER research_mode_unavailable"); return 2
         candidates=read_jsonl(ROOT/"candidates.jsonl", strict=True)
         if not candidates:
             print("BLOCKER no_candidate"); return 2
@@ -1563,7 +1587,8 @@ def _run_locked(args: argparse.Namespace) -> int:
     else:
         reviews=[{**review,"proposal_hash":proposal["proposal_hash"]} for review in reviews]
     lineage=private_lineage({"candidate_id":candidate.get("candidate_id"),"dossier_hash":candidate.get("dossier_hash"),"proposal_hash":proposal["proposal_hash"]})
-    append_jsonl(reviews_path, {"timestamp":utcnow(),"dossier_hash":candidate.get("dossier_hash"),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews,**lineage})
+    review_mode = {"research_transition_id":candidate.get("research_transition_id")} if policy_version==3 else {}
+    append_jsonl(reviews_path, {"timestamp":utcnow(),"dossier_hash":candidate.get("dossier_hash"),"evidence_id":private_id,"proposal_hash":proposal["proposal_hash"],"reviews":reviews,**lineage,**review_mode})
     con=aggregate_proposal_reviews(proposal,reviews,cfg)
     record_shadow_if_live(args,candidate,proposal,con,utcnow())
     if not con["approved"]:
@@ -1576,7 +1601,10 @@ def _run_locked(args: argparse.Namespace) -> int:
         # dual approval of this exact proposal/evidence pair, still bound to
         # the current allowance, is re-proven against a fresh coherent index.
         try:
-            attempt=_authorize_current_attempt(ROOT,candidate,proposal["proposal_hash"],private_id)
+            if policy_version==3:
+                attempt=_authorize_current_attempt(ROOT,candidate,proposal["proposal_hash"],private_id,proposal=proposal)
+            else:
+                attempt=_authorize_current_attempt(ROOT,candidate,proposal["proposal_hash"],private_id)
         except RuntimeError:
             print("BLOCKER current_attempt_unauthorized"); return 2
     plan=normalize_order_metrics({k:con["order"].get(k) for k in con["order"] if k not in BROKER_FIELDS})
