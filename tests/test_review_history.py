@@ -68,6 +68,13 @@ class ReviewHistoryTests(unittest.TestCase):
         with self.assertRaises(Exception):
             autotrader.dossier_already_reviewed({'dossier_hash':HASH},self.root/'private/reviews.jsonl')
 
+    def test_malformed_matching_outputs_fail_closed_for_every_present_shape(self):
+        api=self.api()
+        for i,output in enumerate(({'decision':None},{'decision':''},{'decision':False},{}, {'action':'UNKNOWN'})):
+            with self.subTest(output=output):
+                dossier=f'{i:064x}';self.row([output],dossier_hash=dossier)
+                with self.assertRaises(api.ReviewHistoryError):api.dossier_status(self.root,dossier)
+
     def test_invalid_dossier_hash_is_not_not_reviewed(self):
         api=self.api()
         for bad in [None,'dossier-a','',False]:

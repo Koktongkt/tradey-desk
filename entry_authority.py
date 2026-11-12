@@ -93,7 +93,8 @@ def _approval(root,snapshot,candidate,proposal,evidence_id,mode):
     from candidate_retry import pre_submission_retryable
     from opportunity_state import _legacy_completed_outputs, _spends, _completed_dissent
     if not isinstance(evidence_id,str) or not evidence_id:raise AuthorityError('evidence_id_invalid')
-    matching=[r for r in snapshot.rows['private/reviews.jsonl'] if r.get('dossier_hash')==candidate['dossier_hash']]
+    from review_history import validated_reviews
+    matching=validated_reviews(snapshot.rows['private/reviews.jsonl'],candidate['dossier_hash'])
     approvals=[r for r in matching if r.get('evidence_id')==evidence_id]
     if len(approvals)!=1 or approvals[0]!=matching[-1]:raise AuthorityError('current_attempt_unauthorized')
     row=approvals[0]

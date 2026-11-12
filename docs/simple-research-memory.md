@@ -12,9 +12,15 @@ Completed work expires no later than 24 hours after original completion; stricte
 
 An exact issuer/URL/transient-category failure cools down that resource for 20 minutes. Alternate URLs remain eligible. Only failures with deterministically established ownership are stored; unavailable issuer attribution means uncached fetch, not a symbol ban. No publisher blacklist, added discovery call or restarted research deadline is authorized.
 
+Completed document stages cache complete-cover attribution and source-role processing separately from synthesis. A shared processed document can be reused while a changed second source still receives fresh synthesis. Each stage validates its immutable captures/results and current publication fingerprint; document-stage reuse is counted independently.
+
+Complete captures carrying an explicit producer representation use retained-article version 2. The direct HTTP producer binds its UTF-8-replacement HTML contract; the extraction dispatcher binds the actual selected primary/keyless provider and output format, not a provider/model-supplied label. Rebinding and private worker serialization preserve that contract. Version-1 captures remain readable for historical evidence but lack a proven representation contract and therefore run uncached.
+
+Cache operations inherit the original absolute evidence/overall deadline. Canonical optimization lock waits use nonblocking polling, SQLite work uses a deadline progress handler and remaining-time busy limit, and parsing/publication is checked before successful return. Expired hits cannot return qualified work. A contended entry lock causes cache-write fallback rather than an optimization wait. Cache stream reads are capped at 8,000,000 bytes; larger or broken caches are unusable, never success. These are application/local-storage controls, not an OS guarantee against a stalled filesystem syscall. No cache failure relaxes mandatory history or execution validation.
+
 ## Private diagnostics and public outcomes
 
-Private reason tokens are `research_memory_hit`, `research_memory_miss`, `research_memory_unusable`, and `research_memory_cooldown`. Bounded outcomes distinguish `duplicate_bundle_skipped`, `completed_dossier_reused`, and `new_dossier_qualified`; count these separately. Reuse is not fresh qualification. Public decision/no-setup/failure envelopes stay unchanged and contain no capture bodies, paths, private hashes, reviews or broker identifiers. Offline functional replay is evidence of avoided work for its pinned sequence, not market coverage, yield, profitability or latency guarantees.
+Private reason tokens are `research_memory_hit`, `research_memory_miss`, `research_memory_unusable`, and `research_memory_cooldown`. Bounded outcomes distinguish `document_stage_reused`, `duplicate_bundle_skipped`, `completed_dossier_reused`, and `new_dossier_qualified`; sum their explicit bounded `count` fields separately. Reuse is not fresh qualification. Public decision/no-setup/failure envelopes stay unchanged and contain no capture bodies, paths, private hashes, reviews or broker identifiers. Offline functional replay is evidence of avoided work for its pinned sequence, not market coverage, yield, profitability or latency guarantees.
 
 ## Transition and release
 

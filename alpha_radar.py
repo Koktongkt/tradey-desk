@@ -828,7 +828,7 @@ def fetch_source(url:str,timeout_seconds:int=15)->dict[str,Any]:
     projected=prepare_publication_evidence(page,extracted_text=text)
     if conflict:projected.update(published_at=None,publication_observation=None)
     from retained_article import retain_article
-    return retain_article(projected,body,reported_metadata=capture_headers)
+    return retain_article(projected,body,reported_metadata=capture_headers,representation='http:utf8-replace-html:v1')
 
 
 GATEWAY_FALLBACK_TIMEOUT_SECONDS=30
@@ -1152,7 +1152,7 @@ def gather_evidence(
         issuer=(memory_issuers or {}).get(u)
         if issuer is not None:
             from radar_memory import retry_allowed
-            if not retry_allowed(ROOT,issuer,u,dt.datetime.now(dt.timezone.utc).isoformat()):
+            if not retry_allowed(ROOT,issuer,u,dt.datetime.now(dt.timezone.utc).isoformat(),deadline=deadline):
                 with lock:
                     failures[i]={"url":u,"domain":host,"reason":"source_retry_cooldown"}
                     attempts[i].update(direct_reason="source_retry_cooldown",remaining_ms=max(0,round((deadline-monotonic())*1000)))
@@ -1868,12 +1868,15 @@ def _memory_context(root=None):
     return stored[1] if stored is not None and stored[0]==target else None
 
 
-def _memory_note(reason,*,outcome=None):
+def _memory_note(reason,*,outcome=None,count=1,deadline=None):
     if reason not in {'research_memory_hit','research_memory_miss','research_memory_unusable','research_memory_cooldown'}:return
-    fields={'outcome':outcome} if outcome in {'duplicate_bundle_skipped','completed_dossier_reused','new_dossier_qualified'} else {}
-    try:append_jsonl(ROOT/'private/research_diagnostics.jsonl',{'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),
-        'stage':'research_memory','reason':reason,**fields,**research_correlation()})
-    except (OSError,ValueError):pass
+    fields={'outcome':outcome,'count':count} if outcome in {'duplicate_bundle_skipped','completed_dossier_reused','new_dossier_qualified','document_stage_reused'} and type(count) is int and 1<=count<=32 else {}
+    import sqlite_ledger as storage
+    try:
+        with storage.operation_deadline(deadline):
+            append_jsonl(ROOT/'private/research_diagnostics.jsonl',{'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),
+                'stage':'research_memory','reason':reason,**fields,**research_correlation()})
+    except Exception:pass
 
 
 def _complete_memory(work,result,disposition):
@@ -2464,20 +2467,26 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
             if route_acquisition(selected,evidence):continue
             memory_work=None
             if memory_active and memory_rules is not None and monotonic()<evidence_deadline:
-                from radar_memory import issuer_for_pages,MemoryWork
-                issuer=issuer_for_pages(symbol,evidence)
+                from radar_memory import issuer_for_pages,MemoryWork,IssuerConflict
+                try:issuer=issuer_for_pages(symbol,evidence)
+                except IssuerConflict as error:raise CandidateRejection('research_source_attribution_conflict') from error
                 if issuer is not None:
                     info=research_memory_for_bundle(ROOT,issuer=issuer,pages=evidence,
-                        now=dt.datetime.now(dt.timezone.utc).isoformat(),rule_version=memory_rules)
+                        now=dt.datetime.now(dt.timezone.utc).isoformat(),rule_version=memory_rules,deadline=evidence_deadline)
+                    if monotonic()>=min(evidence_deadline,overall_deadline):raise ResearchFailure('research_synthesis_timeout')
+                    if info.get('document_stages_reused'):
+                        _memory_note('research_memory_hit',outcome='document_stage_reused',count=info['document_stages_reused'],deadline=evidence_deadline)
                     _memory_note(info['reason'] if info['reason'] in {'research_memory_hit','research_memory_miss'} else 'research_memory_unusable',
-                        outcome='duplicate_bundle_skipped' if info['status']=='hit' else None)
+                        outcome='duplicate_bundle_skipped' if info['status']=='hit' and info.get('candidate') is None else None,deadline=evidence_deadline)
                     if info['status']=='hit':
+                        if monotonic()>=min(evidence_deadline,overall_deadline):raise ResearchFailure('research_synthesis_timeout')
                         if info.get('candidate') is not None:
-                            _memory_note('research_memory_hit',outcome='completed_dossier_reused')
+                            _memory_note('research_memory_hit',outcome='completed_dossier_reused',deadline=evidence_deadline)
+                            if monotonic()>=min(evidence_deadline,overall_deadline):raise ResearchFailure('research_synthesis_timeout')
                             return _MemoryReusedCandidate(info['candidate'])
                         policy_skipped_symbols.add(symbol)
                         continue
-                    if info.get('key'):memory_work=MemoryWork(ROOT.resolve(),info,memory_rules)
+                    if info.get('key'):memory_work=MemoryWork(ROOT.resolve(),info,memory_rules,overall_deadline)
             if context is not None:
                 # Resolve the entire acquired primary bundle, not a ranker's
                 # truncated/subselected representation of it.

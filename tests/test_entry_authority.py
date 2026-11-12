@@ -55,6 +55,25 @@ class AuthorityTests(ExecutionCase):
         self.approve(evidence='late',decision='HOLD')
         with self.assertRaises(RuntimeError):api.validate_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',proof=proof)
 
+    def test_malformed_review_arriving_during_paid_review_stops_actual_entry(self):
+        original=autotrader.build_review_bundle
+        def race(*args,**kwargs):
+            storage.append_jsonl(self.root/'private/reviews.jsonl',{
+                'dossier_hash':self.candidate['dossier_hash'],'evidence_id':'malformed-during-review','reviews':'MALFORMED'})
+            return original(*args,**kwargs)
+        with patch.object(autotrader,'build_review_bundle',side_effect=race):code,output=self.run_locked()
+        self.assertNotEqual(code,0,output)
+        self.assertNotIn('place',self.broker_operations)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'private/order_intents.jsonl'),[])
+
+    def test_null_prior_decision_cannot_mint_exact_approval_authority(self):
+        api=self.api()
+        storage.append_jsonl(self.root/'private/reviews.jsonl',{'dossier_hash':self.candidate['dossier_hash'],
+            'evidence_id':'null-prior','reviews':[{'decision':None}]})
+        row=self.approve()
+        with self.assertRaises(RuntimeError):api.authorize_attempt(self.root,candidate=self.candidate,
+            proposal=self.proposal,evidence_id='e1',review_ref=row)
+
     def test_new_durable_intent_invalidates_old_attempt_even_without_submission_row(self):
         api=self.api();row=self.approve()
         proof=api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',review_ref=row)

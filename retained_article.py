@@ -19,7 +19,7 @@ _UNSAFE_RELATION=re.compile(r'\b(?:event|meeting|conference|webcast|updated?|mod
 def _digest(text):return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
-def retain_article(page,text,*,reported_metadata=None):
+def retain_article(page,text,*,reported_metadata=None,representation=None):
     result={k:v for k,v in page.items() if k not in ('_retained_article','_capture_status')}
     if not isinstance(text,str) or not text.strip():
         result['_capture_status']='missing';return result
@@ -33,6 +33,10 @@ def retain_article(page,text,*,reported_metadata=None):
                  'title':page.get('title',''),'text':text,'sha256':_digest(text),
                  'projection_sha256':_digest(page['text']),'reported_metadata':metadata,
                  'metadata_sha256':_digest(meta_json),'metadata_omitted':len(metadata)!=len(report)}
+        if representation is not None:
+            if not isinstance(representation,str) or re.fullmatch(r'[a-z0-9_-]+(?::[a-z0-9_-]+){1,6}:v[1-9][0-9]*',representation) is None:
+                raise ValueError('invalid_representation_contract')
+            capture.update(version=2,representation=representation)
         if len(json.dumps(capture,ensure_ascii=True,allow_nan=False).encode())>MAX_CAPTURE_BYTES:
             result['_capture_status']='capacity';return result
     except (KeyError,TypeError,ValueError,UnicodeError):
@@ -44,8 +48,10 @@ def retain_article(page,text,*,reported_metadata=None):
 def original_text(page):
     c=page.get('_retained_article') if isinstance(page,dict) else None
     try:
-        if (not isinstance(c,dict) or set(c)!=KEYS or type(c['version']) is not int or c['version']!=1
-                or not all(isinstance(c[k],str) for k in KEYS-{'version','reported_metadata','metadata_omitted'})
+        keys=KEYS|{'representation'} if isinstance(c,dict) and c.get('version')==2 else KEYS
+        if (not isinstance(c,dict) or set(c)!=keys or type(c['version']) is not int or c['version'] not in (1,2)
+                or not all(isinstance(c[k],str) for k in keys-{'version','reported_metadata','metadata_omitted'})
+                or (c['version']==2 and re.fullmatch(r'[a-z0-9_-]+(?::[a-z0-9_-]+){1,6}:v[1-9][0-9]*',c['representation']) is None)
                 or not isinstance(c['reported_metadata'],dict) or type(c['metadata_omitted']) is not bool
                 or c['metadata_sha256']!=_digest(json.dumps(c['reported_metadata'],sort_keys=True,ensure_ascii=True,allow_nan=False))
                 or c['url']!=page['url'] or c['returned_url']!=page.get('returned_url',page['url'])
@@ -60,7 +66,8 @@ def rebind_article(source,projection):
     """Trusted normalizer rebind; hints never gain publication authority."""
     raw=original_text(source)
     if raw is None:return projection
-    result=retain_article(projection,raw,reported_metadata=source['_retained_article']['reported_metadata'])
+    result=retain_article(projection,raw,reported_metadata=source['_retained_article']['reported_metadata'],
+                          representation=source['_retained_article'].get('representation'))
     if '_retained_article' in result:result['_retained_article']['metadata_omitted']=source['_retained_article']['metadata_omitted']
     return result
 

@@ -43,6 +43,7 @@ def bundle_key(*, issuer: str, document_keys: tuple[str, ...],
 # This stream is an optimization only. Mandatory entry/review history has its
 # own strict reader; cache damage must never authorize entry or claim success.
 STREAM='private/research_memory.jsonl'
+MAX_STREAM_BYTES=8_000_000
 _KEY=re.compile(r'(?:rm1|rb1):[0-9a-f]{64}')
 _TRANSIENT=frozenset({'source_fetch_timeout','source_http_forbidden','source_http_error',
                       'source_rate_limited','source_unavailable'})
@@ -93,7 +94,10 @@ def _url(value):
 
 def _rows(root):
     import sqlite_ledger as storage
-    return [_validate(row) for row in storage.read_jsonl_stream_readonly(root/STREAM)]
+    storage.check_deadline()
+    path=root/STREAM
+    if path.exists() and path.stat().st_size>MAX_STREAM_BYTES:raise ValueError('research_memory_capacity')
+    return [_validate(row) for row in storage.read_jsonl_stream_readonly(path)]
 
 
 def complete(root, *, key: str, stage: str, rule_version: str, capture_refs: tuple[dict,...],
@@ -112,7 +116,8 @@ def complete(root, *, key: str, stage: str, rule_version: str, capture_refs: tup
     row=dict(record_type='complete',schema_version=1,key=key,stage=stage,rule_version=rule_version,
              capture_refs=list(capture_refs),result_ref=result_ref,disposition=disposition,completed_at=completed_at)
     _validate(row)
-    with entry_state.lock(root,attempts=20):
+    storage.check_deadline()
+    with entry_state.lock(root,attempts=20 if storage._operation_deadline.get() is None else 1):
         for old in reversed(_rows(root)):
             if old['record_type']=='complete' and old['key']==key:
                 same_work=all(old[k]==row[k] for k in ('stage','rule_version','result_ref','disposition'))

@@ -81,6 +81,22 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(r['error'], str)
             self.assertFalse(r.get('content'))
 
+    async def test_owned_dispatcher_contract_is_bound_to_actual_provider_and_format(self):
+        import tempfile
+        from pathlib import Path
+        import evidence_capture_store as captures
+        refs=[]
+        with tempfile.TemporaryDirectory() as td:
+            for name,format in (('firecrawl','markdown'),('exa','markdown'),('firecrawl','html')):
+                self.provider.name=name
+                encoded=await self.d.extract_owned_tool([URL],format=format,deadline=time.monotonic()+10)
+                value=json.loads(encoded)['results'][0]
+                page=radar.validate_structured_page(URL,worker.project_row(value,guarded_location=True),deadline=time.monotonic()+10)
+                self.assertIsNotNone(page)
+                refs.append(captures.retain_page(Path(td),page))
+            self.assertEqual(len({r['representation'] for r in refs}),3)
+            self.assertEqual(len({r['content_sha256'] for r in refs}),1)
+
     async def test_malformed_declarations_never_hide_behind_rate_limit_errors(self):
         for field, value in [('success', 0), ('status', None), ('blocked_by_policy', 0)]:
             self.anonymous = True; self.calls.clear()

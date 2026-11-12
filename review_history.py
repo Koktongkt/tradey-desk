@@ -8,6 +8,25 @@ from candidate_retry import pre_submission_retryable
 class ReviewHistoryError(RuntimeError):pass
 
 
+def validated_reviews(rows,dossier_hash):
+    """Validate every relevant output before selecting current/prior attempts."""
+    matching=[]
+    for row in rows:
+        if row.get('dossier_hash')!=dossier_hash:continue
+        values=row.get('reviews')
+        if not isinstance(values,list) or any(not isinstance(r,dict) for r in values):
+            raise ReviewHistoryError('review_history_invalid')
+        for value in values:
+            if 'decision' in value:
+                decision=value['decision']
+                if not isinstance(decision,str) or not decision.strip() or decision!=decision.strip():
+                    raise ReviewHistoryError('review_history_invalid')
+            elif value.get('action') not in ('BUY','HOLD'):
+                raise ReviewHistoryError('review_history_invalid')
+        matching.append(row)
+    return matching
+
+
 def dossier_status(root:Path,dossier_hash:str)->str:
     if not isinstance(dossier_hash,str) or re.fullmatch(r'[0-9a-f]{64}',dossier_hash) is None:
         raise ReviewHistoryError('review_dossier_hash_invalid')
@@ -15,21 +34,15 @@ def dossier_status(root:Path,dossier_hash:str)->str:
     try:
         snap=storage.read_stream_snapshot_readonly(root,('private/reviews.jsonl','order_ledger.jsonl','private/order_intents.jsonl'))
         reviews=list(snap.rows['private/reviews.jsonl']);orders=list(snap.rows['order_ledger.jsonl'])
-        matching=[];completed=False;legacy=False;orphan=False
-        for row in reviews:
-            if row.get('dossier_hash')!=dossier_hash:continue
-            values=row.get('reviews')
-            if not isinstance(values,list) or any(not isinstance(r,dict) for r in values):
-                raise ReviewHistoryError('review_history_invalid')
+        matching=validated_reviews(reviews,dossier_hash);completed=False;legacy=False;orphan=False
+        for row in matching:
+            values=row['reviews']
             for value in values:
                 decision=value.get('decision')
-                if decision is not None and (not isinstance(decision,str) or not decision):
-                    raise ReviewHistoryError('review_history_invalid')
                 old='decision' not in value and value.get('action') in ('BUY','HOLD')
                 legacy=legacy or old
                 completed=completed or old or bool(decision and decision not in {'reconciliation_blocked','execution_retryable'})
             orphan=orphan or values==[{'decision':'execution_retryable'}]
-            matching.append(row)
         ids={r.get('evidence_id') for r in matching if isinstance(r.get('evidence_id'),str)}
         for row in orders:
             if row.get('evidence_id') in ids or row.get('dossier_hash')==dossier_hash:

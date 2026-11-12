@@ -50,10 +50,11 @@ def _retain(root, payload, *, representation, content_sha256):
 
 def retain_page(root: Path, page: dict) -> dict:
     text=original_text(page)
-    if text is None or page.get('returned_url',page.get('url'))!=page.get('url'):
+    if (text is None or page.get('returned_url',page.get('url'))!=page.get('url')
+            or page['_retained_article'].get('version')!=2):
         raise ValueError('complete_owned_representation_required')
     return _retain(root,dict(version=1,kind='article',capture=page['_retained_article']),
-                   representation='provider:text:v1',content_sha256=hashlib.sha256(text.encode('utf-8')).hexdigest())
+                   representation=page['_retained_article']['representation'],content_sha256=hashlib.sha256(text.encode('utf-8')).hexdigest())
 
 
 def retain_result(root: Path, result: dict) -> dict:
@@ -89,7 +90,7 @@ def _read(root, ref):
 
 def read_capture(root: Path, ref: dict) -> bytes:
     value=_read(root,ref)
-    if set(value)!={'version','kind','capture'} or value['kind']!='article' or ref['representation']!='provider:text:v1':
+    if set(value)!={'version','kind','capture'} or value['kind']!='article':
         raise ValueError('research_capture_kind_mismatch')
     c=value['capture']
     if not isinstance(c,dict):raise ValueError('invalid_research_capture')
@@ -98,7 +99,9 @@ def read_capture(root: Path, ref: dict) -> bytes:
     # Verify the complete representation using its saved projection digest, not
     # manufacture a projected text to satisfy original_text's binding check.
     from retained_article import KEYS
-    if (set(c)!=KEYS or type(c['version']) is not int or c['version']!=1
+    if (set(c)!=KEYS|{'representation'} or type(c['version']) is not int or c['version']!=2
+        or not isinstance(c['representation'],str) or c['representation']!=ref['representation']
+        or re.fullmatch(r'[a-z0-9_-]+(?::[a-z0-9_-]+){1,6}:v[1-9][0-9]*',c['representation']) is None
         or not isinstance(c['text'],str) or not c['text'].strip()
         or c['url']!=c['returned_url'] or type(c['metadata_omitted']) is not bool
         or not isinstance(c['reported_metadata'],dict)

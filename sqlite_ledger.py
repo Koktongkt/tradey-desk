@@ -9,6 +9,9 @@ and forensic tools can therefore keep consuming JSONL during the migration.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from contextvars import ContextVar
+import time
 import datetime as dt
 import dataclasses
 import fcntl
@@ -66,6 +69,38 @@ class LedgerDurabilityError(OSError):
     """A durable append could not be acknowledged safely."""
 
 
+class LedgerDeadlineExceeded(LedgerError, TimeoutError):pass
+
+
+_operation_deadline=ContextVar('ledger_operation_deadline',default=None)
+
+
+@contextmanager
+def operation_deadline(deadline):
+    old=_operation_deadline.get()
+    value=min(old,deadline) if old is not None and deadline is not None else old if deadline is None else deadline
+    token=_operation_deadline.set(value)
+    try:
+        check_deadline()
+        yield
+        check_deadline()
+    finally:_operation_deadline.reset(token)
+
+
+def check_deadline():
+    deadline=_operation_deadline.get()
+    if deadline is not None and time.monotonic()>=deadline:raise LedgerDeadlineExceeded('ledger_operation_deadline')
+
+
+def _canonical_lock(fd):
+    deadline=_operation_deadline.get()
+    if deadline is None:return fcntl.flock(fd,fcntl.LOCK_EX)
+    while True:
+        check_deadline()
+        try:return fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:time.sleep(min(0.01,max(0,deadline-time.monotonic())))
+
+
 def _canonical(row: dict) -> str:
     if not isinstance(row, dict):
         raise ValueError("ledger record must be an object")
@@ -119,7 +154,10 @@ def _connect(db: Path) -> sqlite3.Connection:
     _ensure_parent(db)
     connection = sqlite3.connect(db, timeout=30, isolation_level=None)
     try:
-        connection.execute("PRAGMA busy_timeout=30000")
+        deadline=_operation_deadline.get()
+        timeout_ms=30000 if deadline is None else max(1,min(30000,int((deadline-time.monotonic())*1000)))
+        connection.execute(f"PRAGMA busy_timeout={timeout_ms}")
+        if deadline is not None:connection.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA journal_mode=WAL")
@@ -183,7 +221,9 @@ def _parse_projection(path: Path, strict: bool = True) -> list[dict]:
     if not path.exists():
         return []
     try:
+        check_deadline()
         raw_bytes = path.read_bytes()
+        check_deadline()
         if raw_bytes and not raw_bytes.endswith(b"\n"):
             raise LedgerIntegrityError("ledger projection has an unterminated final record")
         lines = raw_bytes.decode("utf-8").splitlines()
@@ -193,6 +233,7 @@ def _parse_projection(path: Path, strict: bool = True) -> list[dict]:
         raise LedgerIntegrityError("ledger projection is unreadable") from error
     rows = []
     for number, raw in enumerate(lines, 1):
+        check_deadline()
         if not raw.strip():
             continue
         try:
@@ -227,6 +268,7 @@ def _database_rows(connection: sqlite3.Connection, stream: str) -> list[str]:
     ).fetchall()
     payloads = []
     for payload, expected_digest in rows:
+        check_deadline()
         if not isinstance(payload, str):
             raise LedgerIntegrityError(f"stored ledger payload is not text for {stream}")
         actual_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -262,7 +304,7 @@ def migrate_jsonl(root: Path | str, paths: Iterable[Path] | None = None) -> dict
     rows = 0
     imported = 0
     with _lock_path(db).open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _canonical_lock(lock.fileno())
         connection = _connect(db)
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -296,7 +338,7 @@ def append_jsonl(path: Path | str, row: dict, *, expected_watermark: tuple | Non
     try:
         _ensure_parent(lock_path)
         with lock_path.open("a+", encoding="utf-8") as global_lock:
-            fcntl.flock(global_lock.fileno(), fcntl.LOCK_EX)
+            _canonical_lock(global_lock.fileno())
             if expected_watermark is not None:
                 names = [name for name, _, _ in expected_watermark]
                 observed = _snapshot_readonly_locked(root, names)
@@ -369,7 +411,10 @@ def _readonly_connection(db: Path) -> sqlite3.Connection:
     if any(p.exists() and p.stat().st_size for p in
            (Path(str(db) + '-wal'), Path(str(db) + '-journal'))):
         raise LedgerRepairRequired('storage recovery required')
+    check_deadline()
     connection = sqlite3.connect(db.as_uri() + '?mode=ro&immutable=1', uri=True)
+    deadline=_operation_deadline.get()
+    if deadline is not None:connection.set_progress_handler(lambda:int(time.monotonic()>=deadline),1000)
     try:
         if connection.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
             raise LedgerIntegrityError('unsupported ledger schema')
@@ -379,7 +424,9 @@ def _readonly_connection(db: Path) -> sqlite3.Connection:
             raise LedgerIntegrityError('foreign key integrity check failed')
     except Exception:
         connection.close()
+        check_deadline()
         raise
+    check_deadline()
     return connection
 
 
@@ -448,7 +495,7 @@ def read_stream_snapshot_readonly(root: Path | str, streams: tuple[str, ...]) ->
     lock_path = _lock_path(db)
     _ensure_parent(lock_path)
     with lock_path.open('a+') as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _canonical_lock(lock.fileno())
         return _snapshot_readonly_locked(root, names)
 
 
@@ -466,7 +513,7 @@ def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
     lock_path = _lock_path(db)
     _ensure_parent(lock_path)
     with lock_path.open('a+') as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _canonical_lock(lock.fileno())
         # Migration's canonical manifest plus the explicit request define the
         # projection scope; SQLite adds every registered custom stream below.
         # A .jsonl extension alone does not register archives or test artifacts.
@@ -523,7 +570,7 @@ def read_jsonl(path: Path | str, strict: bool = False) -> list[dict]:
     lock_path = _lock_path(db)
     _ensure_parent(lock_path)
     with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _canonical_lock(lock.fileno())
         connection = _connect(db)
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -546,7 +593,7 @@ def verify_database(root: Path | str) -> dict:
     lock_path = _lock_path(db)
     _ensure_parent(lock_path)
     with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _canonical_lock(lock.fileno())
         connection = _connect(db)
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -591,7 +638,7 @@ def backup_database(root: Path | str, destination: Path | str) -> dict:
     temporary = Path(temporary_name)
     try:
         with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _canonical_lock(lock.fileno())
             source = _connect(db)
             target = sqlite3.connect(temporary)
             try:

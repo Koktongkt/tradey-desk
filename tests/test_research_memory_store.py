@@ -29,7 +29,7 @@ class MemoryStoreTests(unittest.TestCase):
 
     def page(self):
         return retain_article(dict(url='https://issuer.example/report',title='Results',text='excerpt'),
-                              'Complete original results, revenue 100')
+                              'Complete original results, revenue 100',representation='fixture:complete-text:v1')
 
     def completed(self, **changes):
         captures,memory=self.api();ref=captures.retain_page(self.root,self.page())
@@ -130,6 +130,58 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertTrue(mem.retry_allowed(self.root,**args,now='2026-11-12T00:20:00+00:00'))
         for changed in [dict(issuer='CIK:2'),dict(url='https://one.example/b'),dict(reason='source_http_forbidden')]:
             self.assertTrue(mem.retry_allowed(self.root,**{**args,**changed},now=STAMP))
+
+    def test_cold_cross_process_completion_is_idempotent(self):
+        import subprocess,sys,time
+        driver=r'''
+import json,sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from retained_article import retain_article
+import evidence_capture_store as captures,research_memory as memory
+root=Path(sys.argv[2]);ready=Path(sys.argv[3]);ready.write_text('ready')
+limit=time.monotonic()+5
+while not (root/'start').exists():
+ if time.monotonic()>limit:raise RuntimeError('barrier timeout')
+ time.sleep(0.005)
+page=retain_article(dict(url='https://issuer.example/report',title='Results',text='excerpt'),'Complete original results, revenue 100',representation='fixture:complete-text:v1')
+ref=captures.retain_page(root,page)
+key=memory.document_key(issuer='CIK:0001446847',representation=ref['representation'],content=captures.read_capture(root,ref),rule_version='r1',stage='document')
+row=memory.complete(root,key=key,stage='document',rule_version='r1',capture_refs=(ref,),result={'publication_validated':True},disposition='document_processed',completed_at='2026-11-12T00:00:00+00:00')
+print(json.dumps(row,sort_keys=True))
+'''
+        source=str(Path(__file__).resolve().parents[1]);children=[]
+        try:
+            for i in range(2):children.append(subprocess.Popen([sys.executable,'-B','-c',driver,source,str(self.root),str(self.root/f'ready{i}')],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True))
+            until=time.monotonic()+5
+            while not all((self.root/f'ready{i}').exists() for i in range(2)) and time.monotonic()<until:time.sleep(0.005)
+            self.assertTrue(all((self.root/f'ready{i}').exists() for i in range(2)))
+            self.assertFalse((self.root/'private/research_memory.jsonl').exists())
+            (self.root/'start').write_text('start')
+            rows=[]
+            for child in children:
+                stdout,stderr=child.communicate(timeout=10)
+                self.assertEqual(child.returncode,0,stderr);rows.append(json.loads(stdout))
+            self.assertEqual(rows[0],rows[1])
+            self.assertEqual(len(storage.read_jsonl_stream_readonly(self.root/'private/research_memory.jsonl')),1)
+        finally:
+            for child in children:
+                if child.poll() is None:child.kill();child.communicate()
+
+    def test_completion_lost_ack_replay_does_not_duplicate_completion(self):
+        append=storage.append_jsonl;lost=[False]
+        def fail_ack(path,row,**kwargs):
+            append(path,row,**kwargs)
+            if row.get('record_type')=='complete' and not lost[0]:lost[0]=True;raise OSError('completion ack lost')
+        with patch.object(storage,'append_jsonl',side_effect=fail_ack):
+            with self.assertRaises(OSError):self.completed()
+        self.completed()
+        self.assertEqual(len(storage.read_jsonl_stream_readonly(self.root/'private/research_memory.jsonl')),1)
+
+    def test_legacy_capture_without_producer_contract_runs_uncached(self):
+        cap,_=self.api()
+        legacy=retain_article(dict(url='https://issuer.example/report',title='Results',text='excerpt'),'Complete original results, revenue 100')
+        with self.assertRaises(ValueError):cap.retain_page(self.root,legacy)
 
     def test_concurrent_identical_completions_are_idempotent(self):
         # Build references once; concurrent writers exercise actual entry/storage locks.

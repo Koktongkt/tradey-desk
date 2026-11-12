@@ -165,7 +165,7 @@ def _truncate(content, limit):
     return content[:head] + marker + content[-(available - head):] + footer
 
 
-def _project(row, original, limit, *, retain_capture=False, validation_only=False):
+def _project(row, original, limit, *, retain_capture=False, validation_only=False, representation=None):
     # Lazy import prevents the eventual worker -> dispatcher dependency cycling.
     from extraction_worker import declaration_failure
     if isinstance(row, compat._TransportFailure):
@@ -210,7 +210,8 @@ def _project(row, original, limit, *, retain_capture=False, validation_only=Fals
             'error': None, **extensions}
     if not retain_capture:return result
     from retained_article import retain_article
-    owned=retain_article({'url':result['url'],'title':result['title'],'text':result['content']},row['content'],reported_metadata=row.get('metadata'))
+    owned=retain_article({'url':result['url'],'title':result['title'],'text':result['content']},row['content'],
+                         reported_metadata=row.get('metadata'),representation=representation)
     result.update({k:v for k,v in owned.items() if k in ('_retained_article','_capture_status')})
     # Retention is optional; it never converts a full-envelope overflow to success.
     if len(json.dumps({'results':[result]},ensure_ascii=True).encode())>MAX_ENVELOPE_BYTES:
@@ -265,7 +266,7 @@ async def _extract_tool(urls: list, format: str | None = None, char_limit: int |
         provider = compat.resolve()
         anonymous = compat.uses_keyless(provider)
 
-        async def consume(rows):
+        async def consume(rows,representation):
             rows = await _bind(rows, originals, normalized, deadline)
             # Complete full-original validation for every row before duplicate
             # accounting or bounded public/private projection. Do not mutate the
@@ -275,7 +276,7 @@ async def _extract_tool(urls: list, format: str | None = None, char_limit: int |
             # Error/refusal rows retain their full original byte cost: folding
             # must never turn a previous capacity refusal into rescue admission.
             _size(rows, fold_duplicates={i for i, result in enumerate(valid) if not result})
-            projected = [_project(r, u, char_limit,retain_capture=retain_capture) for r, u in zip(rows, originals)]
+            projected = [_project(r, u, char_limit,retain_capture=retain_capture,representation=representation) for r, u in zip(rows, originals)]
             _remaining(deadline)
             _size(projected)
             return rows, projected
@@ -290,7 +291,7 @@ async def _extract_tool(urls: list, format: str | None = None, char_limit: int |
                 if exc.reason != 'provider_error' or not compat.rescue_allowed(provider):
                     raise
             else:
-                raw, projected = await consume(raw)
+                raw, projected = await consume(raw,'extract:primary:'+str(provider.name)+':'+format+':v1')
                 # No partial-result replay, no malformed/policy/empty-body rescue.
                 if (not all(r.get('reason') == 'provider_error' for r in projected)
                         or _policy_refusal(raw) or not compat.rescue_allowed(provider)):
@@ -302,7 +303,7 @@ async def _extract_tool(urls: list, format: str | None = None, char_limit: int |
         projected = [_error(u, 'provider_error') for u in originals]
         for vendor in order:
             raw = await _bounded(lambda: compat.keyless(vendor, normalized, deadline=deadline), deadline)
-            raw, projected = await consume(raw)
+            raw, projected = await consume(raw,'extract:keyless:'+vendor+':markdown:v1')
             # Installed extraction semantics: EVERY row must be rate-limited.
             # Strict/malformed declarations never become a free-walk admission.
             if (any(r.get('reason') != 'provider_error' for r in projected)

@@ -21,7 +21,7 @@ class MemoryRadarTests(unittest.TestCase):
         radar_fixtures.RadarPolicyTests.setUp(self)
         for bundle in self.bundles:
             for i,p in enumerate(bundle):
-                if original_text(p) is None:bundle[i]=retain_article(p,p['text'])
+                bundle[i]=retain_article(p,original_text(p) or p['text'],representation='fixture:complete-text:v1')
         self.cfg={'broker_mode':'paper','max_research_age_minutes':60}
         (self.root/'autonomy_config.json').write_text(json.dumps(self.cfg))
         m=transition.prepare_manifest(self.root,source_revision='f'*40,rule_version='r1')
@@ -189,6 +189,59 @@ class MemoryRadarTests(unittest.TestCase):
             with self.assertRaisesRegex(radar.CandidateRejection,'near_term_earnings'):radar.prepare_candidate(c,self.cfg,ledger_path=self.root/'order_ledger.jsonl')
         with patch.object(radar,'candidate_preflight',return_value=[]),patch.object(radar,'qualified',return_value=True),patch.object(radar,'source_verification_result',return_value={'passed':False}):
             with self.assertRaisesRegex(radar.CandidateRejection,'research_source_verification_failed'):radar.prepare_candidate(c,self.cfg,ledger_path=self.root/'order_ledger.jsonl')
+
+    def test_expired_qualified_cache_hit_cannot_return_success(self):
+        bound,work=self.stored_qualified();adapter=radar.research_memory_for_bundle
+        import time
+        clock=[time.monotonic()]
+        def delayed(*args,**kwargs):
+            result=adapter(*args,**kwargs);self.assertEqual(result['status'],'hit');clock[0]+=10000.0;return result
+        with patch.object(radar,'monotonic',side_effect=lambda:clock[0]),patch.object(radar,'research_memory_for_bundle',side_effect=delayed):
+            with self.assertRaises(radar.ResearchFailure):self.run_research()
+        self.assertEqual(self.synthesized,[])
+
+    def test_conflicting_explicit_cik_never_produces_cache_identity(self):
+        import radar_memory
+        original=self.bundles[0][0];raw=original_text(original)
+        conflict=retain_article(original,raw.replace('>1999999<','>1888888<').replace('>0001999999<','>0001888888<'))
+        self.assertNotEqual(original_text(conflict),raw)
+        with self.assertRaises(ValueError):radar_memory.issuer_for_pages('ACME',[original,conflict])
+        info=self.api()(self.root,issuer='CIK:0001999999',pages=[original,conflict],
+            now=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),rule_version='r1')
+        self.assertIsNone(info.get('key'))
+
+    def test_changed_bundle_reuses_completed_document_stage_but_runs_new_synthesis(self):
+        import radar_memory
+        self.seed_first_no_setup()
+        p=self.bundles[0][1]
+        self.bundles[0][1]=retain_article(p,original_text(p)+' Newly published facts.',representation='fixture:complete-text:v1')
+        self.assertTrue(hasattr(radar_memory,'_process_document'),'document-stage producer/consumer missing')
+        process=radar_memory._process_document
+        with patch.object(radar_memory,'_process_document',wraps=process) as calls:
+            result=self.run_research()
+        self.assertEqual(result['symbol'],'ACME')
+        self.assertEqual(self.synthesized,['ACME'])
+        self.assertEqual(calls.call_count,1)
+        import sqlite_ledger as storage
+        rows=storage.read_jsonl_stream_readonly(self.root/'private/research_diagnostics.jsonl')
+        self.assertEqual(sum(r.get('count',0) for r in rows if r.get('outcome')=='document_stage_reused'),1)
+
+    def test_retry_resource_discovery_never_waits_past_cache_deadline_on_writer_lock(self):
+        import fcntl,threading,time,sqlite_ledger as storage,radar_memory
+        self.seed_first_no_setup()
+        held=threading.Event()
+        def writer():
+            with storage._lock_path(storage.database_path(self.root/'order_ledger.jsonl')).open('a+') as lock:
+                fcntl.flock(lock.fileno(),fcntl.LOCK_EX);held.set();time.sleep(1.0)
+        thread=threading.Thread(target=writer);thread.start();held.wait(2)
+        start=time.monotonic()
+        try:
+            result=radar_memory.resource_issuers(self.root,self.scouts[0]['urls'],
+                radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),start+0.05)
+            elapsed=time.monotonic()-start
+        finally:thread.join(2)
+        self.assertLess(elapsed,0.6)
+        self.assertEqual(result,{})
 
     def test_source_cooldown_skips_only_that_exact_transport(self):
         issuer='CIK:0001999999';url=self.bundles[0][0]['url'];alternate='https://news.example/alternate'

@@ -10,6 +10,9 @@ import evidence_capture_store as captures
 from retained_article import original_text
 
 
+class IssuerConflict(ValueError):pass
+
+
 def _subjects(symbol,raw,url):
     # Reuse the complete-source cover parser only for explicit issuer fields.
     # No fiscal-period, transaction, event or allowance resolver is invoked.
@@ -21,10 +24,12 @@ def _subjects(symbol,raw,url):
     if parser.bad_structure:return found
     for facts in parser.facts.values():
         symbols=facts.get('dei:TradingSymbol',[]);ciks=facts.get('dei:EntityCentralIndexKey',[])
-        if symbols==[symbol] and len(ciks)==1:
+        if symbol in symbols and ciks:
+            if symbols!=[symbol] or len(ciks)!=1:raise IssuerConflict('conflicting_explicit_issuer')
             cik=str(ciks[0]).strip()
-            if re.fullmatch(r'[0-9]{1,10}',cik) and int(cik)==int(locator[0]):
-                found.add('CIK:'+cik.zfill(10))
+            if not re.fullmatch(r'[0-9]{1,10}',cik) or int(cik)!=int(locator[0]):
+                raise IssuerConflict('conflicting_explicit_issuer')
+            found.add('CIK:'+cik.zfill(10))
     return found
 
 
@@ -33,7 +38,20 @@ def issuer_for_pages(symbol,pages):
     for page in pages:
         raw=original_text(page)
         if raw is not None:found.update(_subjects(symbol,raw,page['url']))
+    if len(found)>1:raise IssuerConflict('conflicting_explicit_issuer')
     return next(iter(found)) if len(found)==1 else None
+
+
+def _check_bundle_issuer(issuer,pages):
+    from opportunity_identity import _Cover
+    found=set()
+    for page in pages:
+        raw=original_text(page)
+        if raw is None:continue
+        parser=_Cover();parser.feed(raw);parser.close()
+        for facts in parser.facts.values():
+            for symbol in facts.get('dei:TradingSymbol',[]):found.update(_subjects(symbol,raw,page['url']))
+    if found and found!={issuer}:raise IssuerConflict('conflicting_explicit_issuer')
 
 
 def cached_issuer(root,symbol,now):
@@ -50,6 +68,13 @@ def cached_issuer(root,symbol,now):
 
 
 def resource_issuers(root,urls,now,deadline):
+    import sqlite_ledger as storage
+    try:
+        with storage.operation_deadline(deadline):return _resource_issuers(root,urls,now,deadline)
+    except TimeoutError:return {}
+
+
+def _resource_issuers(root,urls,now,deadline):
     from time import monotonic
     found={url:set() for url in urls};clock=memory._timestamp(now)
     try:
@@ -86,16 +111,70 @@ def _publication_fingerprint(pages):
         [{k:p.get(k) for k in fields} for p in pages],key=lambda p:p['url']))).hexdigest()
 
 
-def research_memory_for_bundle(root:Path,*,issuer:str,pages:list[dict],now:str,rule_version:str)->dict:
+def _process_document(page):
+    """Reusable complete-document work: cover attribution and source-role parse."""
+    from opportunity_identity import _Cover
+    import alpha_radar as radar
+    raw=original_text(page)
+    if raw is None:raise ValueError('complete_document_required')
+    parser=_Cover();parser.feed(raw);parser.close();subjects=set()
+    for facts in parser.facts.values():
+        for symbol in facts.get('dei:TradingSymbol',[]):subjects.update(_subjects(symbol,raw,page['url']))
+    return {'issuer_subjects':sorted(subjects),'source_role':radar.source_profile(page['url'])['role']}
+
+
+def _document(root,issuer,page,now,rules):
+    import sqlite_ledger as storage
+    storage.check_deadline()
+    raw=original_text(page);capture=page.get('_retained_article',{})
+    if raw is None or capture.get('version')!=2:raise ValueError('representation_contract_required')
+    representation=capture['representation']
+    key=memory.document_key(issuer=issuer,representation=representation,content=raw.encode(),rule_version=rules,stage='document')
+    fingerprint=_publication_fingerprint([page]);cached=[]
+    def fresh(row,result):
+        if (row['stage']!='document' or row['rule_version']!=rules or row['disposition']!='document_processed'
+            or len(row['capture_refs'])!=1 or row['capture_refs'][0]['representation']!=representation
+            or set(result)!={'issuer','representation','publication_fingerprint','issuer_subjects','source_role'}
+            or result['issuer']!=issuer or result['representation']!=representation
+            or result['publication_fingerprint']!=fingerprint or not isinstance(result['issuer_subjects'],list)
+            or any(not isinstance(s,str) or not re.fullmatch(r'CIK:[0-9]{10}',s) for s in result['issuer_subjects'])
+            or not isinstance(result['source_role'],str)):return False
+        if result['issuer_subjects'] and set(result['issuer_subjects'])!={issuer}:return False
+        cached.append(result);return True
+    hit=memory.lookup(root,key=key,now=now,freshness_check=fresh)
+    storage.check_deadline()
+    if hit['status']=='hit':return key,hit['record']['capture_refs'][0],cached[0],True
+    processed=_process_document(page)
+    if processed['issuer_subjects'] and set(processed['issuer_subjects'])!={issuer}:raise IssuerConflict('conflicting_explicit_issuer')
+    ref=captures.retain_page(root,page)
+    result={'issuer':issuer,'representation':representation,'publication_fingerprint':fingerprint,**processed}
+    memory.complete(root,key=key,stage='document',rule_version=rules,capture_refs=(ref,),
+                    result=result,disposition='document_processed',completed_at=now)
+    storage.check_deadline()
+    return key,ref,result,False
+
+
+def research_memory_for_bundle(root:Path,*,issuer:str,pages:list[dict],now:str,rule_version:str,deadline=None)->dict:
+    import sqlite_ledger as storage
+    try:
+        with storage.operation_deadline(deadline):
+            return _research_memory_for_bundle(root,issuer=issuer,pages=pages,now=now,rule_version=rule_version)
+    except TimeoutError:
+        return dict(status='unusable',reason='research_memory_unusable',record=None,key=None,
+                    capture_refs=[],publication_fingerprint=None,issuer=issuer,candidate=None,document_stages_reused=0)
+
+
+def _research_memory_for_bundle(root:Path,*,issuer:str,pages:list[dict],now:str,rule_version:str)->dict:
     from opportunity_state import OpportunityStateError
     info=dict(status='unusable',reason='research_memory_unusable',record=None,key=None,capture_refs=[],
-              publication_fingerprint=None,issuer=issuer,candidate=None)
+              publication_fingerprint=None,issuer=issuer,candidate=None,document_stages_reused=0)
     fatal=[]
     try:
         if not re.fullmatch(r'CIK:[0-9]{10}',issuer) or not pages or len(pages)>32:return info
-        refs=tuple(captures.retain_page(root,p) for p in pages)
-        keys=tuple(memory.document_key(issuer=issuer,representation=r['representation'],
-            content=captures.read_capture(root,r),rule_version=rule_version,stage='document') for r in refs)
+        documents=[_document(root,issuer,p,now,rule_version) for p in pages]
+        if set(s for _,_,r,_ in documents for s in r['issuer_subjects'])!={issuer}:return info
+        keys=tuple(d[0] for d in documents);refs=tuple(d[1] for d in documents)
+        info['document_stages_reused']=sum(int(d[3]) for d in documents)
         key=memory.bundle_key(issuer=issuer,document_keys=keys,rule_version=rule_version,stage='synthesis')
         fingerprint=_publication_fingerprint(pages)
         def fresh(row,result):
@@ -122,7 +201,9 @@ def research_memory_for_bundle(root:Path,*,issuer:str,pages:list[dict],now:str,r
                     return dossier_status(root,stored['dossier_hash'])=='completed'
                 info['candidate']=stored
                 return True
+            except TimeoutError:raise
             except Exception as error:
+                storage.check_deadline()
                 fatal.append(OpportunityStateError('opportunity_policy_state_unavailable'))
                 raise fatal[-1] from error
         info.update(memory.lookup(root,key=key,now=now,freshness_check=fresh))
@@ -138,16 +219,23 @@ class MemoryWork:
     root:Path
     info:dict
     rule_version:str
+    deadline:float|None=None
 
 
 def complete_work(work,result,disposition,now):
     if not isinstance(work,MemoryWork) or not work.info.get('key'):return None
-    return memory.complete(work.root,key=work.info['key'],stage='synthesis',rule_version=work.rule_version,
-        capture_refs=tuple(work.info['capture_refs']),
-        result={**result,'publication_fingerprint':work.info['publication_fingerprint'],'issuer':work.info['issuer']},
-        disposition=disposition,completed_at=now)
+    import sqlite_ledger as storage
+    with storage.operation_deadline(work.deadline):
+        return memory.complete(work.root,key=work.info['key'],stage='synthesis',rule_version=work.rule_version,
+            capture_refs=tuple(work.info['capture_refs']),
+            result={**result,'publication_fingerprint':work.info['publication_fingerprint'],'issuer':work.info['issuer']},
+            disposition=disposition,completed_at=now)
 
 
-def retry_allowed(root,issuer,url,now):
-    return all(memory.retry_allowed(root,issuer=issuer,url=url,reason=reason,now=now)
-               for reason in memory._TRANSIENT)
+def retry_allowed(root,issuer,url,now,*,deadline=None):
+    import sqlite_ledger as storage
+    try:
+        with storage.operation_deadline(deadline):
+            return all(memory.retry_allowed(root,issuer=issuer,url=url,reason=reason,now=now)
+                       for reason in memory._TRANSIENT)
+    except TimeoutError:return True
