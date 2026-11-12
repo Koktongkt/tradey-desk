@@ -16,7 +16,9 @@ import entry_state
 import sqlite_ledger as storage
 
 POLICY_STREAM = 'private/opportunity_policy.jsonl'
-BASELINE_STREAMS = storage.DEFAULT_STREAMS
+# Historical v2 descriptors are immutable and predate research memory.
+BASELINE_STREAMS = tuple(name for name in storage.DEFAULT_STREAMS
+                         if name != 'private/research_memory.jsonl')
 POLICY_VERSION = 2
 _DIGEST = re.compile(r'[0-9a-f]{64}')
 
