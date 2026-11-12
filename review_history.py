@@ -13,7 +13,7 @@ def dossier_status(root:Path,dossier_hash:str)->str:
         raise ReviewHistoryError('review_dossier_hash_invalid')
     root=Path(root)
     try:
-        snap=storage.read_stream_snapshot_readonly(root,('private/reviews.jsonl','order_ledger.jsonl'))
+        snap=storage.read_stream_snapshot_readonly(root,('private/reviews.jsonl','order_ledger.jsonl','private/order_intents.jsonl'))
         reviews=list(snap.rows['private/reviews.jsonl']);orders=list(snap.rows['order_ledger.jsonl'])
         matching=[];completed=False;legacy=False;orphan=False
         for row in reviews:
@@ -35,6 +35,8 @@ def dossier_status(root:Path,dossier_hash:str)->str:
             if row.get('evidence_id') in ids or row.get('dossier_hash')==dossier_hash:
                 if not isinstance(row.get('status'),str) or not row['status']:
                     raise ReviewHistoryError('review_order_history_invalid')
+        if any(r.get('evidence_id') in ids or r.get('dossier_hash')==dossier_hash
+                for r in snap.rows['private/order_intents.jsonl']):return 'completed'
         if not legacy and pre_submission_retryable(dossier_hash,reviews,root/'order_ledger.jsonl',ledger_rows=orders):
             return 'retryable'
         return 'completed' if completed or orphan else 'unreviewed'

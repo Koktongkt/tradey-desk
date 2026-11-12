@@ -87,6 +87,12 @@ class MemoryTransitionTests(unittest.TestCase):
         self.assertFalse(result['appended_activation'])
         self.assertEqual(len(storage.read_jsonl_stream_readonly(root/'private/opportunity_policy.jsonl')),2)
 
+    def test_cache_projection_damage_is_not_a_mandatory_mode_blocker(self):
+        self.api();root=self.root(2);self.activate(root)
+        (root/'private/research_memory.jsonl').write_text('broken-cache\n')
+        import research_mode
+        self.assertEqual(research_mode.context(root).policy_version,3)
+
     def test_storage_writer_race_invalidates_approved_watermark(self):
         api=self.api();root=self.root(2);m=self.prepare(root);append=storage.append_jsonl
         def race(path,row,**kwargs):

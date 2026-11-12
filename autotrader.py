@@ -1159,8 +1159,14 @@ def research_age_minutes(candidate:dict[str,Any],now:dt.datetime|None=None)->flo
 
 
 def research_acceptable(candidate:dict[str,Any],cfg:dict[str,Any],age_minutes:float,allow_stale:bool=False)->bool:
-    from acquisition_research import is_research_only_input
-    if is_research_only_input(candidate):return False
+    from acquisition_research import is_research_only_input,is_observation_envelope
+    if candidate.get('research_transition_id') is not None:
+        try:
+            from entry_authority import validate_candidate
+            validate_candidate(ROOT,candidate)
+        except RuntimeError:return False
+        if is_observation_envelope(candidate):return False
+    elif is_research_only_input(candidate):return False
     fresh=age_minutes <= cfg["max_research_age_minutes"]
     return ((fresh or allow_stale) and len(candidate.get("sources",[])) >= 2
             and bool(candidate.get("sources_verified_at")) and _dossier_intact(candidate))

@@ -35,6 +35,13 @@ class ReviewHistoryTests(unittest.TestCase):
         self.assertEqual(self.status(),'retryable')
         storage.append_jsonl(self.root/'order_ledger.jsonl',{'evidence_id':'e1','status':'submission_started'})
         self.assertEqual(self.status(),'completed')
+    def test_lost_ack_intent_blocks_pre_submission_retry_without_ledger_status(self):
+        self.row([{'decision':'APPROVE'},{'decision':'APPROVE'}]);self.row([{'decision':'execution_retryable'}])
+        storage.append_jsonl(self.root/'order_ledger.jsonl',{'evidence_id':'e1','status':'rejected','reason':['stale_quote']})
+        self.assertEqual(self.status(),'retryable')
+        storage.append_jsonl(self.root/'private/order_intents.jsonl',{'client_order_id':'lost-ack','evidence_id':'e1','dossier_hash':HASH})
+        self.assertEqual(self.status(),'completed')
+
     def test_earlier_legacy_completion_cannot_be_erased_by_approval_retry(self):
         self.row([{'action':'HOLD'}]);self.row([{'decision':'APPROVE'},{'decision':'APPROVE'}])
         self.row([{'decision':'execution_retryable'}])

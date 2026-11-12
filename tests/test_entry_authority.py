@@ -55,6 +55,15 @@ class AuthorityTests(ExecutionCase):
         self.approve(evidence='late',decision='HOLD')
         with self.assertRaises(RuntimeError):api.validate_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',proof=proof)
 
+    def test_new_durable_intent_invalidates_old_attempt_even_without_submission_row(self):
+        api=self.api();row=self.approve()
+        proof=api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',review_ref=row)
+        storage.append_jsonl(self.root/'private/order_intents.jsonl',{
+            'client_order_id':'lost-ack-parent','dossier_hash':self.candidate['dossier_hash'],
+            'evidence_id':'e1','plan':self.proposal})
+        with self.assertRaises(RuntimeError):api.validate_attempt(self.root,candidate=self.candidate,
+            proposal=self.proposal,evidence_id='e1',proof=proof)
+
     def test_missing_approval_and_held_or_pending_truth_do_not_bypass_entry(self):
         api=self.api()
         with self.assertRaises(RuntimeError):api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',review_ref={})
@@ -85,6 +94,15 @@ class AuthorityTests(ExecutionCase):
         self.assertEqual(self.reviewer_calls,[])
         self.assertFalse((self.root/'private/order_intents.jsonl').exists())
 
+    def test_v3_acquisition_thesis_is_not_rejected_by_legacy_word_filter(self):
+        api=self.api();raw={k:v for k,v in self.candidate.items() if k not in {'dossier_hash','research_transition_id'}}
+        raw['catalyst']='Acquisition announcement with independently verified evidence'
+        bound=api.bind_candidate(self.root,raw,context=research_mode.context(self.root));bound['dossier_hash']=_dossier(bound)
+        storage.append_jsonl(self.root/'candidates.jsonl',bound)
+        with patch.object(autotrader,'ROOT',self.root):
+            self.assertTrue(autotrader.research_acceptable(bound,self.cfg,5))
+            self.assertFalse(autotrader.research_acceptable({**bound,'status':'research_only'},self.cfg,5))
+
     def test_v3_completed_hold_skips_before_paid_review(self):
         self.approve(decision='HOLD')
         code,output=self.run_locked()
@@ -100,6 +118,24 @@ class AuthorityTests(ExecutionCase):
         storage.append_jsonl(self.root/'private/reviews.jsonl',row)
         with self.assertRaises(RuntimeError):
             api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='low',review_ref=row)
+
+    def test_real_v3_intent_lost_ack_retains_one_obligation_and_never_places_twice(self):
+        append=autotrader.append_jsonl;lost=[False]
+        def fail_ack(path,row):
+            append(path,row)
+            if str(path).endswith('private/order_intents.jsonl') and not lost[0]:
+                lost[0]=True;raise OSError('synthetic intent acknowledgement lost')
+        with patch.object(autotrader,'append_jsonl',side_effect=fail_ack):code,output=self.run_locked()
+        self.assertNotEqual(code,0,output)
+        self.assertNotIn('place',self.broker_operations)
+        intents=storage.read_jsonl_stream_readonly(self.root/'private/order_intents.jsonl')
+        self.assertEqual(len(intents),1)
+        ledger=storage.read_jsonl_stream_readonly(self.root/'order_ledger.jsonl')
+        self.assertEqual(sum(r.get('status')=='submission_unknown' for r in ledger),1)
+        code,output=self.run_locked()
+        self.assertNotIn('place',self.broker_operations)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'private/order_intents.jsonl'),intents)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'trade_journal.jsonl'),[])
 
     def test_v3_real_entry_path_remains_operational_after_allowances_retired(self):
         code,output=self.run_locked()

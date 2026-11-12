@@ -425,6 +425,9 @@ def append(row:dict[str,Any])->None:
     import entry_state
     with entry_state.lock(ROOT):
         context=_run_policy_context(ROOT)
+        if _memory_context() is not None:
+            from entry_authority import validate_intake
+            validate_intake(ROOT,row)
         if context is not None and context.index.prospective_baseline is not None:
             from opportunity_identity import _load_binding
             from opportunity_state import candidate_policy
@@ -1068,11 +1071,15 @@ def gather_evidence(
     attempt_path:Path|None=None,
     focused_pages:dict[str,Any]|None=None,
     cache_hits:set[str]|None=None,
+    memory_issuers:dict[str,str]|None=None,
 )->list[dict[str,Any]]:
     """Concurrently fetch evidence pages and retain typed fetch outcomes."""
     urls=list(dict.fromkeys(urls))  # one in-flight fetch and one result per exact URL
     budget=(per_source_timeout+5)*2+GATEWAY_FALLBACK_TIMEOUT_SECONDS+10 if collection_budget_seconds is None else max(0,collection_budget_seconds)
     deadline=collection_deadline if collection_deadline is not None else monotonic()+budget
+    if memory_issuers is None and _memory_context() is not None:
+        from radar_memory import resource_issuers
+        memory_issuers=resource_issuers(ROOT,urls,dt.datetime.now(dt.timezone.utc).isoformat(),min(deadline,monotonic()+0.5))
     results:list[dict[str,Any]]=[{} for _ in urls]
     failures:list[dict[str,str]|None]=[None for _ in urls]
     fatal_failures:list[ResearchFailure|None]=[None for _ in urls]
@@ -1142,6 +1149,14 @@ def gather_evidence(
                     publish_page(i,u,accepted[0])
                     return
         host=(urllib.parse.urlparse(u).hostname or "").lower()
+        issuer=(memory_issuers or {}).get(u)
+        if issuer is not None:
+            from radar_memory import retry_allowed
+            if not retry_allowed(ROOT,issuer,u,dt.datetime.now(dt.timezone.utc).isoformat()):
+                with lock:
+                    failures[i]={"url":u,"domain":host,"reason":"source_retry_cooldown"}
+                    attempts[i].update(direct_reason="source_retry_cooldown",remaining_ms=max(0,round((deadline-monotonic())*1000)))
+                return
         if monotonic()>=deadline:
             with lock:failures[i]={"url":u,"domain":urllib.parse.urlparse(u).netloc.lower(),"reason":"source_deadline_exhausted"}
             return
@@ -1248,6 +1263,18 @@ def gather_evidence(
             snapshot.append(row)
         try:record_attempts(snapshot,attempt_path)
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+    for failure in failures:
+        if failure is None:continue
+        issuer=(memory_issuers or {}).get(failure['url'])
+        reason={'source_upstream_error':'source_http_error',
+                'source_connection_failed':'source_unavailable'}.get(failure['reason'],failure['reason'])
+        from research_memory import _TRANSIENT,note_failure
+        if issuer is not None and reason in _TRANSIENT:
+            try:
+                note_failure(ROOT,issuer=issuer,url=failure['url'],reason=reason,
+                             failed_at=dt.datetime.now(dt.timezone.utc).isoformat())
+            except Exception:_memory_note('research_memory_unusable')
+        if failure['reason']=='source_retry_cooldown':_memory_note('research_memory_cooldown')
     for fatal in fatal_failures:
         if fatal is not None:raise fatal
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
@@ -1832,19 +1859,53 @@ class SynthesisWindowExhausted(ResearchFailure):
     """No model launched: preserve a prior candidate rejection when available."""
 
 
+_memory_mode:ContextVar[Any]=ContextVar('radar_memory_mode',default=None)
+
+
+def _memory_context(root=None):
+    stored=_memory_mode.get()
+    target=Path(root if root is not None else ROOT).resolve()
+    return stored[1] if stored is not None and stored[0]==target else None
+
+
+def _memory_note(reason,*,outcome=None):
+    if reason not in {'research_memory_hit','research_memory_miss','research_memory_unusable','research_memory_cooldown'}:return
+    fields={'outcome':outcome} if outcome in {'duplicate_bundle_skipped','completed_dossier_reused','new_dossier_qualified'} else {}
+    try:append_jsonl(ROOT/'private/research_diagnostics.jsonl',{'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),
+        'stage':'research_memory','reason':reason,**fields,**research_correlation()})
+    except (OSError,ValueError):pass
+
+
+def _complete_memory(work,result,disposition):
+    from radar_memory import MemoryWork,complete_work
+    if not isinstance(work,MemoryWork) or work.root!=ROOT.resolve():return
+    try:
+        complete_work(work,result,disposition,dt.datetime.now(dt.timezone.utc).isoformat())
+        if disposition=='qualified':_memory_note('research_memory_miss',outcome='new_dossier_qualified')
+    except Exception:_memory_note('research_memory_unusable')
+
+
+from radar_memory import research_memory_for_bundle
+
+
 def _run_policy_context(root:Path):
     from opportunity_state import load_policy_context,OpportunityStateError
     from opportunity_activation import activation_version,ActivationStateError
+    _memory_mode.set(None)
     try:
-        # Legacy dossiers have no event links. Do not feed them to the active
-        # index, but always read the non-repairing activation floor first.
-        if activation_version(Path(root))==0:return None
-    except ActivationStateError as error:
+        version=activation_version(Path(root))
+        if version==0:return None
+        if version==3:
+            from research_mode import context
+            _memory_mode.set((Path(root).resolve(),context(root)))
+            return None
+    except (ActivationStateError,RuntimeError,OSError,ValueError) as error:
         raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     return load_policy_context(root)
 
 
 _POLICY_METADATA=frozenset({'opportunity_baseline_id','opportunity_identity','event_id','allowance_id','reopening_claim',
+    'research_transition_id','_memory_work',
     'condition_observation','opportunity_observations','condition_approval','_radar_authority',
     'condition','condition_id','observation','claim_sha256','prior_allowance_id',
     'reopening_pending','reopening_condition','condition_evidence','current_attempt','opportunity_policy'})
@@ -1859,7 +1920,26 @@ class _RadarAuthority:
     claim: Any
 
 
+class _MemoryReusedCandidate(dict):
+    """Internal signal: preserve this already-durable dossier byte-for-byte."""
+
+
+@dataclass(frozen=True)
+class _MemoryIntakeAuthority:
+    root: Path
+    transition_id: str
+
+
 def _final_policy_check(candidate):
+    _run_policy_context(ROOT)
+    mode=_memory_context()
+    if mode is not None:
+        from acquisition_research import is_observation_envelope
+        authority=candidate.pop('_radar_authority',None)
+        if (is_observation_envelope(candidate) or not isinstance(authority,_MemoryIntakeAuthority)
+                or authority.root!=ROOT.resolve() or authority.transition_id!=mode.transition_id):
+            raise CandidateRejection('research_intake_untrusted')
+        return
     from acquisition_research import is_research_only_input
     if is_research_only_input(candidate):raise CandidateRejection('opportunity_identity_unknown')
     from opportunity_state import candidate_policy,OpportunityStateError
@@ -1917,6 +1997,11 @@ def _condition_enrichment(context,resolution,symbol,budget):
 
 
 def _strip_policy_metadata(candidate):
+    if _memory_context() is not None:
+        from acquisition_research import is_observation_envelope
+        if is_observation_envelope(candidate):raise CandidateRejection('research_intake_untrusted')
+        return {key:value for key,value in candidate.items() if key not in _POLICY_METADATA
+            and not key.startswith('_identity_') and key not in {'identity_captures','identity_capture','identity_evidence'}}
     from acquisition_research import is_research_only_input
     if is_research_only_input(candidate) or (_research_leads.get() or {}).get(str(candidate.get('symbol') or '').upper()):
         raise CandidateRejection('opportunity_identity_unknown')
@@ -1926,6 +2011,7 @@ def _strip_policy_metadata(candidate):
 
 def _retain_acquisition_research(selected,pages,*,deadline):
     """Observation-only side route, before ranked/active-policy synthesis paths."""
+    if _memory_context() is not None:return False
     from acquisition_research import acquisition_hint,publish_lead
     from earnings_identity_acquisition import acquisition_notes,acquisition_observation_captures
     symbol=str(selected.get('symbol') or '').upper()
@@ -2069,6 +2155,9 @@ def prepare_candidate(candidate:dict[str,Any],cfg:dict[str,Any],verify_sources:b
             try:record_source_verification_diagnostic(verification)
             except OSError:pass
             raise CandidateRejection("research_source_verification_failed")
+    mode=_memory_context(ledger_path.parent if ledger_path is not None else ROOT)
+    if mode is not None:
+        c['_radar_authority']=_MemoryIntakeAuthority((ledger_path.parent if ledger_path is not None else ROOT).resolve(),mode.transition_id)
     return c
 
 
@@ -2091,6 +2180,13 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     context=_run_policy_context(ROOT)
     policy_skipped_symbols=set()
     acquisition_observed_symbols=set()
+    memory_active=_memory_context() is not None
+    memory_rules=None
+    if memory_active:
+        try:
+            from radar_memory import rule_version
+            memory_rules=rule_version(ROOT)
+        except Exception:_memory_note('research_memory_unusable')
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
     overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     if cfg.get('discovery_v2_enabled',False) is True:
@@ -2363,9 +2459,25 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     deferred_rescue_deadline=min(evidence_deadline,overall_deadline-ENRICHMENT_BUDGET_SECONDS-deferred_synthesis_reserve)
     for batch in range(2):
         for selected,evidence in ranked:
-            symbol=str(selected.get("symbol") or "").upper()
+            symbol=str(selected.get('symbol') or '').upper()
             if symbol in attempted_symbols or symbol in policy_skipped_symbols:continue
             if route_acquisition(selected,evidence):continue
+            memory_work=None
+            if memory_active and memory_rules is not None and monotonic()<evidence_deadline:
+                from radar_memory import issuer_for_pages,MemoryWork
+                issuer=issuer_for_pages(symbol,evidence)
+                if issuer is not None:
+                    info=research_memory_for_bundle(ROOT,issuer=issuer,pages=evidence,
+                        now=dt.datetime.now(dt.timezone.utc).isoformat(),rule_version=memory_rules)
+                    _memory_note(info['reason'] if info['reason'] in {'research_memory_hit','research_memory_miss'} else 'research_memory_unusable',
+                        outcome='duplicate_bundle_skipped' if info['status']=='hit' else None)
+                    if info['status']=='hit':
+                        if info.get('candidate') is not None:
+                            _memory_note('research_memory_hit',outcome='completed_dossier_reused')
+                            return _MemoryReusedCandidate(info['candidate'])
+                        policy_skipped_symbols.add(symbol)
+                        continue
+                    if info.get('key'):memory_work=MemoryWork(ROOT.resolve(),info,memory_rules)
             if context is not None:
                 # Resolve the entire acquired primary bundle, not a ranker's
                 # truncated/subselected representation of it.
@@ -2428,10 +2540,15 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                     enrichment_spent=enrichment_before-float(enrichment_budget["remaining"] or 0.0)
                     synthesis_remaining=max(0.0,synthesis_remaining-max(0.0,monotonic()-synthesis_started-enrichment_spent))
                 if candidate.get("status")=="none":
+                    if memory_work is not None and candidate.get('none_reason') in {'no_fresh_setup','catalyst_stale'}:
+                        _complete_memory(memory_work,{'none_reason':candidate['none_reason']},'no_setup')
                     last_synthesis_none=candidate
                     last_rejection=None
                     continue
-                if context is None:return intake(_strip_policy_metadata(candidate))
+                if context is None:
+                    prepared=intake(_strip_policy_metadata(candidate))
+                    if memory_work is not None:prepared['_memory_work']=memory_work
+                    return prepared
                 resolution=_resolve_policy(context,symbol,policy_pages)
                 token=_policy_acquisition.set((context.root,resolution,policy_pages,claim))
                 try:
@@ -2560,7 +2677,21 @@ def synthesize_candidate(cfg:dict[str,Any],_selected_scout_candidate:dict[str,An
 def _stored_policy_eligible(row,context,retryable_hashes=frozenset()):
     from opportunity_identity import _load_binding
     from opportunity_state import candidate_policy,refresh_policy_context
-    if context is None:return True
+    if context is None:
+        mode=_memory_context()
+        if mode is None:return True
+        from entry_authority import validate_candidate,AuthorityError
+        from review_history import dossier_status,ReviewHistoryError
+        from opportunity_state import OpportunityStateError
+        root=_memory_mode.get()[0]
+        try:
+            validate_candidate(root,row)
+            return dossier_status(root,row.get('dossier_hash'))!='completed'
+        except ReviewHistoryError as error:
+            raise OpportunityStateError('opportunity_policy_state_unavailable') from error
+        except AuthorityError as error:
+            if str(error) in {'candidate_transition_mismatch','candidate_hash_invalid','candidate_not_durable'}:return False
+            raise OpportunityStateError('opportunity_policy_state_unavailable') from error
     context=refresh_policy_context(context)
     if not any(stored==row for stored in context.index.snapshot.rows.get('candidates.jsonl',())):return False
     try:
@@ -2583,26 +2714,34 @@ def _stored_policy_eligible(row,context,retryable_hashes=frozenset()):
     return (result.reason=='unchanged_opportunity' and dossier in retryable_hashes)
 
 
+def _fresh_stored_candidate(row,cfg,now,max_age_minutes,*,root,context,latest_review=None,retryable_hashes=frozenset()):
+    """One history/freshness policy for normal reuse, fallback and cache hits."""
+    if not isinstance(row,dict) or not _stored_policy_eligible(row,context,retryable_hashes):return False
+    reuse_age=max(0,min(max_age_minutes,int(cfg.get('max_research_age_minutes',max_age_minutes)))-EXECUTION_FRESHNESS_RESERVE_MINUTES)
+    verified=row.get('sources_verified_at')
+    if not isinstance(verified,str) or not verified:return False
+    try:
+        verified_at=dt.datetime.fromisoformat(verified.replace('Z','+00:00'))
+        age=(now-verified_at).total_seconds()
+    except (TypeError,ValueError):return False
+    if age<0 or age>reuse_age*60:return False
+    if _memory_context(root) is None and latest_review is not None and latest_review>=verified and row.get('dossier_hash') not in retryable_hashes:return False
+    from earnings_spending import is_spent
+    if is_spent(row,root/'order_ledger.jsonl'):return False
+    return not candidate_preflight(row,cfg,now) and qualified(row,cfg,now=now)
+
+
 def _select_fresh_candidate(
     rows:list[dict[str,Any]],cfg:dict[str,Any],now:dt.datetime,
     max_age_minutes:int,latest_review:str|None=None,
     retryable_hashes:set[str]|None=None,*,root:Path|None=None,
 )->dict[str,Any]|None:
-    context=_run_policy_context(root if root is not None else ROOT)
-    reuse_age_minutes=max(
-        0,min(max_age_minutes,int(cfg.get("max_research_age_minutes",max_age_minutes)))
-        - EXECUTION_FRESHNESS_RESERVE_MINUTES,
-    )
+    root=Path(root if root is not None else ROOT)
+    context=_run_policy_context(root)
     for row in reversed(rows):
-        if not isinstance(row,dict):continue
-        if not _stored_policy_eligible(row,context,retryable_hashes or set()):continue
-        verified=row.get("sources_verified_at")
-        if not isinstance(verified,str) or not verified:continue
-        try:verified_at=dt.datetime.fromisoformat(verified.replace("Z","+00:00"))
-        except ValueError:continue
-        if (now-verified_at).total_seconds()>reuse_age_minutes*60:continue
-        if latest_review is not None and latest_review>=verified and row.get("dossier_hash") not in (retryable_hashes or set()):continue
-        if candidate_preflight(row,cfg,now) or not qualified(row,cfg,now=now):continue
+        if not _fresh_stored_candidate(row,cfg,now,max_age_minutes,root=root,context=context,
+                latest_review=latest_review,retryable_hashes=retryable_hashes or frozenset()):continue
+        if _memory_context(root) is not None:_memory_note('research_memory_hit',outcome='completed_dossier_reused')
         return row
     return None
 
@@ -2713,6 +2852,11 @@ def main_with_args(a:argparse.Namespace)->int:
         return prepared
     try:
         raw=json.loads((ROOT/"fixtures"/"candidate.json").read_text()) if a.dry_run_fixture else live_research(cfg,intake=intake)
+        if isinstance(raw,_MemoryReusedCandidate):
+            context=_run_policy_context(ROOT)
+            if not _fresh_stored_candidate(raw,cfg,dt.datetime.now(dt.timezone.utc),60,root=ROOT,context=context):
+                raise CandidateRejection('unchanged_opportunity')
+            print('DECISION reused_fresh_candidate '+str(raw.get('symbol','')).upper());return 0
         c=normalize_candidate(raw)
         if c.get("status")=="none":
             if c.get('none_reason')=='no_new_eligible_opportunity':
@@ -2725,10 +2869,16 @@ def main_with_args(a:argparse.Namespace)->int:
         if 'opportunity_identity' not in c:c.pop("_source_receipts",None)
         c["sources_verified_at"]=dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00","Z")
         c["candidate_id"]=hashlib.sha256(f"{c['symbol']}|{c['researched_at']}".encode()).hexdigest()[:20]
+        memory_work=c.pop('_memory_work',None)
         _final_policy_check(c)
+        mode=_memory_context()
+        if mode is not None:
+            from entry_authority import bind_candidate
+            c=bind_candidate(ROOT,c,context=mode)
         c["dossier_hash"]=hashlib.sha256(json.dumps(c,sort_keys=True,separators=(",",":")).encode()).hexdigest()
         try:append(c)
         except OSError as error:raise ResearchFailure("research_persistence_failure") from error
+        if mode is not None:_complete_memory(memory_work,{'dossier_hash':c['dossier_hash']},'qualified')
         print(decision_line(c)); return 0
     except Exception as e:
         if isinstance(e,OpportunityStateError):

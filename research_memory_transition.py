@@ -31,11 +31,12 @@ def _prefix(rows):
     return hashlib.sha256(''.join(storage._canonical(r) for r in rows).encode()).hexdigest()
 
 
-def _snapshot(root):
+def _snapshot(root, *, include_cache=True):
     root=Path(root).absolute()
     if root.resolve()!=root or storage._storage_root(root/'order_ledger.jsonl')!=root:
         raise TransitionError('research_transition_root_invalid')
-    return storage.read_stream_snapshot_readonly(root,storage.DEFAULT_STREAMS)
+    names=storage.DEFAULT_STREAMS if include_cache else tuple(n for n in storage.DEFAULT_STREAMS if n!='private/research_memory.jsonl')
+    return storage.read_stream_snapshot_readonly(root,names)
 
 
 def _legacy(snapshot):
@@ -99,6 +100,10 @@ def _active(snapshot):
         raise TransitionError('research_transition_digest_mismatch')
     prefix={}
     for name,bound in m['streams'].items():
+        # After activation, optimization data is not a mandatory authority
+        # dependency. Apply/manifest validation still checks the full snapshot.
+        if name=='private/research_memory.jsonl' and name not in snapshot.rows:
+            continue
         original=snapshot.rows[name][:bound['sequence']]
         if len(original)!=bound['sequence'] or _prefix(original)!=bound['prefix_sha256']:
             raise TransitionError('research_transition_prefix_mismatch')

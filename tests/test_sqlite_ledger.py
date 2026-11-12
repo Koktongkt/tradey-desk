@@ -340,7 +340,10 @@ ledger.append_jsonl(path, {"event": stage})
     def test_readonly_checks_every_canonical_stream_when_reading_unrelated_target(self):
         module = self.module()
         for migrated in (False, True):
-            for name in module.DEFAULT_STREAMS:
+            # The new research cache is explicitly non-authoritative (spec 4.3).
+            # All preexisting canonical authority streams retain this assertion;
+            # cache-specific integrity is exercised independently below.
+            for name in (n for n in module.DEFAULT_STREAMS if n!='private/research_memory.jsonl'):
                 with self.subTest(migrated=migrated, name=name):
                     with tempfile.TemporaryDirectory() as td:
                         root = Path(td)
@@ -361,6 +364,18 @@ ledger.append_jsonl(path, {"event": stage})
                                 module.read_jsonl_readonly(target)
                         else:
                             self.assertEqual(module.read_jsonl_readonly(target), [{"event": "target"}])
+
+    def test_cache_damage_is_local_but_direct_cache_read_still_refuses(self):
+        module=self.module()
+        for migrated in (False,True):
+            with self.subTest(migrated=migrated),tempfile.TemporaryDirectory() as td:
+                root=Path(td);target=root/'order_ledger.jsonl'
+                target.write_text('{"status":"filled"}\n')
+                if migrated:module.migrate_jsonl(root)
+                cache=root/'private/research_memory.jsonl';cache.parent.mkdir(exist_ok=True)
+                cache.write_text('not-json\n')
+                self.assertEqual(module.read_jsonl_readonly(target),[{'status':'filled'}])
+                with self.assertRaises(module.LedgerIntegrityError):module.read_jsonl_stream_readonly(cache)
 
     def test_readonly_checks_registered_custom_streams_without_directory_blacklists(self):
         module = self.module()

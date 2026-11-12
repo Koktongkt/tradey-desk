@@ -11,7 +11,8 @@ import entry_state
 from research_mode import context as current_context, ModeContext
 
 _SECRET=secrets.token_bytes(32)
-_STREAMS=('private/opportunity_policy.jsonl','candidates.jsonl','private/reviews.jsonl','order_ledger.jsonl')
+_STREAMS=('private/opportunity_policy.jsonl','candidates.jsonl','private/reviews.jsonl',
+          'order_ledger.jsonl','private/order_intents.jsonl')
 _FORBIDDEN={'dossier_hash','research_transition_id','event_id','allowance_id','opportunity_identity',
             'opportunity_baseline_id','reopening_claim','current_attempt'}
 
@@ -108,6 +109,12 @@ def _approval(root,snapshot,candidate,proposal,evidence_id,mode):
             candidate['dossier_hash'],previous,Path(root)/'order_ledger.jsonl',ledger_rows=orders):
         raise AuthorityError('dossier_previously_completed')
     ids={r.get('evidence_id') for r in matching if isinstance(r.get('evidence_id'),str)}
+    intents=snapshot.rows['private/order_intents.jsonl']
+    if any(r.get('evidence_id') in ids or r.get('dossier_hash')==candidate['dossier_hash'] for r in intents):
+        # Intent persistence begins the uncertain-submission obligation even
+        # when its acknowledgement/next ledger row was lost. This proof is
+        # strictly pre-intent; reconciliation, not a new proof, owns recovery.
+        raise AuthorityError('dossier_submission_obligation')
     linked=[r for r in orders if r.get('evidence_id') in ids or r.get('dossier_hash')==candidate['dossier_hash']]
     if any(r.get('status') not in {'proposed','rejected'} for r in linked):
         raise AuthorityError('dossier_submission_obligation')

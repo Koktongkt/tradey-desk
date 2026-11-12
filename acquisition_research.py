@@ -74,6 +74,15 @@ def acquisition_hint(selected: dict, pages: list[dict], captures: tuple) -> bool
     return False
 
 
+def is_observation_envelope(value: object) -> bool:
+    """Inert storage records are not candidates; catalyst wording is not a ban."""
+    return isinstance(value,dict) and (
+        any(k in value for k in ('lead_id','capture_refs','agreement'))
+        or value.get('record_type')=='acquisition_research_lead'
+        or value.get('status')=='research_only'
+        or value.get('reason')=='explicit_binding_required')
+
+
 def is_research_only_input(value: object) -> bool:
     """Explicit unsupported acquisition/lead markers refuse BEFORE legacy fallback."""
     if isinstance(value,dict):

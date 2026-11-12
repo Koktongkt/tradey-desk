@@ -479,6 +479,12 @@ def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
                 connection = _readonly_connection(db)
             if whole_ledger and connection is not None:
                 names.update(row[0] for row in connection.execute('SELECT DISTINCT stream FROM ledger_entries'))
+            # Research memory is registered for migration/manifest parity but is
+            # explicitly non-authoritative optimization data. Validate it when
+            # requested; a broken cache projection cannot invalidate an unrelated
+            # earnings/order read. DB-wide structural checks still ran above.
+            if _stream_name(path,root) != 'private/research_memory.jsonl':
+                names.discard('private/research_memory.jsonl')
             result = []
             repair = False
             for name in sorted(names):

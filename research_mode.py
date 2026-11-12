@@ -13,7 +13,7 @@ class ModeContext:
 
 
 def context(root:Path)->ModeContext:
-    snapshot=_snapshot(root)
+    snapshot=_snapshot(root,include_cache=False)
     row=_active(snapshot)
     if row is None:
         old=_predecessor(snapshot)

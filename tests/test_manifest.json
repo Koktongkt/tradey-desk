@@ -24,6 +24,8 @@
    "test_research_memory_keys",
    "test_research_memory_store",
    "test_research_memory_transition",
+   "test_research_memory_radar",
+   "test_research_memory_workflow",
    "test_review_history",
    "test_entry_authority",
    "test_research_budget",
