@@ -365,6 +365,17 @@ ledger.append_jsonl(path, {"event": stage})
                         else:
                             self.assertEqual(module.read_jsonl_readonly(target), [{"event": "target"}])
 
+    def test_readonly_connection_closes_when_deadline_expires_after_health_checks(self):
+        module=self.module()
+        from unittest.mock import Mock,patch
+        with tempfile.TemporaryDirectory() as td:
+            connection=Mock()
+            connection.execute.return_value.fetchone.return_value=(module.SCHEMA_VERSION,)
+            connection.execute.return_value.fetchall.side_effect=[[('ok',)],[]]
+            with patch.object(module.sqlite3,'connect',return_value=connection),patch.object(module,'check_deadline',side_effect=[None,module.LedgerDeadlineExceeded('expired')]):
+                with self.assertRaises(module.LedgerDeadlineExceeded):module._readonly_connection(Path(td)/'journal.sqlite3')
+            connection.close.assert_called_once()
+
     def test_cache_damage_is_local_but_direct_cache_read_still_refuses(self):
         module=self.module()
         for migrated in (False,True):

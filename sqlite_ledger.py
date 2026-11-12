@@ -422,11 +422,11 @@ def _readonly_connection(db: Path) -> sqlite3.Connection:
             raise LedgerIntegrityError('database integrity check failed')
         if connection.execute('PRAGMA foreign_key_check').fetchall():
             raise LedgerIntegrityError('foreign key integrity check failed')
+        check_deadline()
     except Exception:
         connection.close()
-        check_deadline()
+        if _operation_deadline.get() is not None:check_deadline()
         raise
-    check_deadline()
     return connection
 
 
