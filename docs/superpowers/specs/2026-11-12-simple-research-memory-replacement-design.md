@@ -1,6 +1,6 @@
 # Replace event-identity admission with simple research memory
 
-Status: proposed written specification; conversational scope approved, implementation and production cutover not yet approved.
+Status: written specification approved by the operator's “Approved and proceed” after commit `72ee766`; implementation-plan review/execution selection and production cutover approval remain separate gates.
 
 Source baseline: `0cad12b8860938035f839ffb3f46d0b6b2db5533`.
 
