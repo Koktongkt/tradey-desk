@@ -1271,10 +1271,12 @@ def gather_evidence(
         from research_memory import _TRANSIENT,note_failure
         if issuer is not None and reason in _TRANSIENT:
             try:
-                note_failure(ROOT,issuer=issuer,url=failure['url'],reason=reason,
-                             failed_at=dt.datetime.now(dt.timezone.utc).isoformat())
-            except Exception:_memory_note('research_memory_unusable')
-        if failure['reason']=='source_retry_cooldown':_memory_note('research_memory_cooldown')
+                import sqlite_ledger as storage
+                with storage.operation_deadline(deadline):
+                    note_failure(ROOT,issuer=issuer,url=failure['url'],reason=reason,
+                                 failed_at=dt.datetime.now(dt.timezone.utc).isoformat())
+            except Exception:_memory_note('research_memory_unusable',deadline=deadline)
+        if failure['reason']=='source_retry_cooldown':_memory_note('research_memory_cooldown',deadline=deadline)
     for fatal in fatal_failures:
         if fatal is not None:raise fatal
     if diagnostics is not None:diagnostics.extend(failure for failure in failures if failure is not None)
@@ -1872,6 +1874,7 @@ def _memory_note(reason,*,outcome=None,count=1,deadline=None):
     if reason not in {'research_memory_hit','research_memory_miss','research_memory_unusable','research_memory_cooldown'}:return
     fields={'outcome':outcome,'count':count} if outcome in {'duplicate_bundle_skipped','completed_dossier_reused','new_dossier_qualified','document_stage_reused'} and type(count) is int and 1<=count<=32 else {}
     import sqlite_ledger as storage
+    if deadline is None:deadline=monotonic()+0.05
     try:
         with storage.operation_deadline(deadline):
             append_jsonl(ROOT/'private/research_diagnostics.jsonl',{'timestamp':dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1884,8 +1887,8 @@ def _complete_memory(work,result,disposition):
     if not isinstance(work,MemoryWork) or work.root!=ROOT.resolve():return
     try:
         complete_work(work,result,disposition,dt.datetime.now(dt.timezone.utc).isoformat())
-        if disposition=='qualified':_memory_note('research_memory_miss',outcome='new_dossier_qualified')
-    except Exception:_memory_note('research_memory_unusable')
+        if disposition=='qualified':_memory_note('research_memory_miss',outcome='new_dossier_qualified',deadline=work.deadline)
+    except Exception:_memory_note('research_memory_unusable',deadline=work.deadline)
 
 
 from radar_memory import research_memory_for_bundle
@@ -2180,6 +2183,7 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
 
     The CLI injects the same intake to track completion without validating twice.
     """
+    overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     context=_run_policy_context(ROOT)
     policy_skipped_symbols=set()
     acquisition_observed_symbols=set()
@@ -2188,10 +2192,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
     if memory_active:
         try:
             from radar_memory import rule_version
-            memory_rules=rule_version(ROOT)
-        except Exception:_memory_note('research_memory_unusable')
+            import sqlite_ledger as storage
+            with storage.operation_deadline(overall_deadline):memory_rules=rule_version(ROOT)
+        except Exception:_memory_note('research_memory_unusable',deadline=overall_deadline)
     if intake is None:intake=lambda candidate:prepare_candidate(candidate,cfg,ledger_path=ROOT/"order_ledger.jsonl")
-    overall_deadline=monotonic()+RESEARCH_ACTIVE_BUDGET_SECONDS
     if cfg.get('discovery_v2_enabled',False) is True:
         from discovery_pipeline import discover,DiscoveryFailure
         try:
@@ -2471,8 +2475,10 @@ def live_research(cfg:dict[str,Any],intake:Callable[[dict[str,Any]],dict[str,Any
                 try:issuer=issuer_for_pages(symbol,evidence)
                 except IssuerConflict as error:raise CandidateRejection('research_source_attribution_conflict') from error
                 if issuer is not None:
-                    info=research_memory_for_bundle(ROOT,issuer=issuer,pages=evidence,
-                        now=dt.datetime.now(dt.timezone.utc).isoformat(),rule_version=memory_rules,deadline=evidence_deadline)
+                    try:
+                        info=research_memory_for_bundle(ROOT,issuer=issuer,pages=evidence,
+                            now=dt.datetime.now(dt.timezone.utc).isoformat(),rule_version=memory_rules,deadline=evidence_deadline)
+                    except IssuerConflict as error:raise CandidateRejection('research_source_attribution_conflict') from error
                     if monotonic()>=min(evidence_deadline,overall_deadline):raise ResearchFailure('research_synthesis_timeout')
                     if info.get('document_stages_reused'):
                         _memory_note('research_memory_hit',outcome='document_stage_reused',count=info['document_stages_reused'],deadline=evidence_deadline)

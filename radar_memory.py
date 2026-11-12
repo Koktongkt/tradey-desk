@@ -106,7 +106,7 @@ def rule_version(root):
 
 
 def _publication_fingerprint(pages):
-    fields=('url','title','published_at','publication_precision','publication_basis')
+    fields=('url','returned_url','title','published_at','publication_precision','publication_basis')
     return hashlib.sha256(memory._canonical(sorted(
         [{k:p.get(k) for k in fields} for p in pages],key=lambda p:p['url']))).hexdigest()
 
@@ -128,6 +128,8 @@ def _document(root,issuer,page,now,rules):
     storage.check_deadline()
     raw=original_text(page);capture=page.get('_retained_article',{})
     if raw is None or capture.get('version')!=2:raise ValueError('representation_contract_required')
+    if page.get('returned_url',page['url'])!=page['url'] or capture.get('returned_url')!=page['url']:
+        raise ValueError('current_source_ownership_required')
     representation=capture['representation']
     key=memory.document_key(issuer=issuer,representation=representation,content=raw.encode(),rule_version=rules,stage='document')
     fingerprint=_publication_fingerprint([page]);cached=[]
@@ -210,7 +212,7 @@ def _research_memory_for_bundle(root:Path,*,issuer:str,pages:list[dict],now:str,
         if fatal:raise fatal[0]
         info.update(key=key,capture_refs=list(refs),publication_fingerprint=fingerprint)
         return info
-    except OpportunityStateError:raise
+    except (OpportunityStateError,IssuerConflict):raise
     except Exception:return info
 
 

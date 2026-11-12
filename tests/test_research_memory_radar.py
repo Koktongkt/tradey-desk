@@ -203,12 +203,11 @@ class MemoryRadarTests(unittest.TestCase):
     def test_conflicting_explicit_cik_never_produces_cache_identity(self):
         import radar_memory
         original=self.bundles[0][0];raw=original_text(original)
-        conflict=retain_article(original,raw.replace('>1999999<','>1888888<').replace('>0001999999<','>0001888888<'))
+        conflict=retain_article(original,raw.replace('>1999999<','>1888888<').replace('>0001999999<','>0001888888<'),representation='fixture:complete-text:v1')
         self.assertNotEqual(original_text(conflict),raw)
         with self.assertRaises(ValueError):radar_memory.issuer_for_pages('ACME',[original,conflict])
-        info=self.api()(self.root,issuer='CIK:0001999999',pages=[original,conflict],
+        with self.assertRaises(ValueError):self.api()(self.root,issuer='CIK:0001999999',pages=[original,conflict],
             now=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),rule_version='r1')
-        self.assertIsNone(info.get('key'))
 
     def test_changed_bundle_reuses_completed_document_stage_but_runs_new_synthesis(self):
         import radar_memory
@@ -242,6 +241,63 @@ class MemoryRadarTests(unittest.TestCase):
         finally:thread.join(2)
         self.assertLess(elapsed,0.6)
         self.assertEqual(result,{})
+
+    def test_warm_cache_rechecks_current_redirect_ownership(self):
+        self.seed_first_no_setup();p=self.bundles[0][0]
+        for returned in ('https://other.example/unrelated',p['url']+'?redirected=1'):
+            with self.subTest(returned=returned):
+                changed=retain_article({**p,'returned_url':returned},original_text(p),representation=p['_retained_article']['representation'])
+                self.assertIsNotNone(original_text(changed))
+                info=self.api()(self.root,issuer='CIK:0001999999',pages=[changed,self.bundles[0][1]],
+                    now=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),rule_version='r1')
+                self.assertNotEqual(info['status'],'hit');self.assertIsNone(info.get('key'))
+
+    def test_mixed_proposed_sources_are_deduplicated_before_synthesis_but_adapter_conflict_refuses(self):
+        import radar_memory
+        self.bundles[0].append(copy.deepcopy(self.bundles[1][0]));self.bundles=self.bundles[:1]
+        self.scouts=self.scouts[:1];self.scouts[0]['urls']=[p['url'] for p in self.bundles[0]]
+        _,selected=radar.select_candidate_evidence(self.scouts,self.bundles[0])
+        self.assertEqual([p['url'] for p in selected],[p['url'] for p in self.bundles[0][:2]])
+        with patch.object(radar,'gateway_rescue_url',return_value=None):result=self.run_research()
+        self.assertEqual(result['symbol'],'ACME');self.assertEqual(self.synthesized,['ACME'])
+        with self.assertRaises(radar_memory.IssuerConflict):
+            self.api()(self.root,issuer='CIK:0001999999',pages=self.bundles[0],
+                now=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),rule_version='r1')
+
+    def test_live_adapter_conflict_has_typed_refusal_before_synthesis(self):
+        import radar_memory
+        with patch.object(radar,'research_memory_for_bundle',side_effect=radar_memory.IssuerConflict('conflicting_explicit_issuer')):
+            with self.assertRaisesRegex(radar.CandidateRejection,'research_source_attribution_conflict'):self.run_research()
+        self.assertEqual(self.synthesized,[])
+
+    def test_failure_cache_write_and_complete_diagnostic_inherit_original_deadline(self):
+        import fcntl,threading,time,sqlite_ledger as storage,radar_memory
+        self.seed_first_no_setup();issuer='CIK:0001999999';url='https://news.example/terminal-deadline'
+        threads=[]
+        def hold():
+            ready=threading.Event()
+            def writer():
+                with storage._lock_path(storage.database_path(self.root/'order_ledger.jsonl')).open('a+') as lock:
+                    fcntl.flock(lock.fileno(),fcntl.LOCK_EX);ready.set();time.sleep(0.8)
+            thread=threading.Thread(target=writer);threads.append(thread);thread.start();self.assertTrue(ready.wait(2))
+        def failed(*args,**kwargs):hold();raise TimeoutError('synthetic source timeout')
+        try:
+            start=time.monotonic()
+            with patch.object(radar,'fetch_source',side_effect=failed),patch.object(radar,'fetch_source_via_gateway',return_value=None):
+                self.assertEqual(radar.gather_evidence([url],memory_issuers={url:issuer},collection_deadline=start+0.1),[])
+            write_elapsed=time.monotonic()-start
+        finally:
+            for thread in threads:thread.join(2)
+        info=self.api()(self.root,issuer=issuer,pages=self.bundles[0],
+            now=radar.dt.datetime.now(radar.dt.timezone.utc).isoformat(),rule_version='r1')
+        hold();start=time.monotonic()
+        try:
+            radar._complete_memory(radar_memory.MemoryWork(self.root,info,'r1',start+0.1),{'none_reason':'no_fresh_setup'},'no_setup')
+            diagnostic_elapsed=time.monotonic()-start
+        finally:
+            for thread in threads:thread.join(2)
+        with self.subTest(path='failure_write'):self.assertLess(write_elapsed,0.5)
+        with self.subTest(path='completion_diagnostic'):self.assertLess(diagnostic_elapsed,0.5)
 
     def test_source_cooldown_skips_only_that_exact_transport(self):
         issuer='CIK:0001999999';url=self.bundles[0][0]['url'];alternate='https://news.example/alternate'
