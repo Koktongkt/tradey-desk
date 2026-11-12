@@ -36,6 +36,7 @@ DEFAULT_STREAMS = (
     "private/order_notifications.jsonl",
     "private/protection_orders.jsonl",
     "private/research_diagnostics.jsonl",
+    "private/research_memory.jsonl",
     "private/reviews.jsonl",
     "private/source_attempts.jsonl",
     "public/disagreements.jsonl",
