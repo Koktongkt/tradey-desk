@@ -33,6 +33,29 @@ class OperationalTests(unittest.TestCase):
         self.connection.commit()
         (self.root / stream).write_text(payload + '\n')
 
+    def test_absent_empty_research_cache_does_not_block_protection_snapshot(self):
+        from watchdog.operational import read_operational
+        cache=self.root/'private/research_memory.jsonl';cache.unlink()
+        before=self.state();result=read_operational(self.root)
+        self.assertTrue(result.complete,result.reasons)
+        self.assertEqual(result.streams['order_ledger.jsonl'][0]['symbol'],'ABC')
+        self.assertNotIn('private/research_memory.jsonl',result.streams)
+        self.assertEqual(before,self.state());self.assertFalse(cache.exists())
+
+    def test_research_cache_damage_is_not_protection_authority(self):
+        from watchdog.operational import read_operational
+        stream='private/research_memory.jsonl'
+        (self.root/stream).write_text('{broken cache projection')
+        with sqlite3.connect(self.db) as connection:
+            connection.execute('INSERT INTO ledger_entries VALUES (?,?,?,?,?)',
+                (stream,9,'not valid cache JSON','0'*64,'2026-01-01T00:00:00Z'))
+        connection.close()
+        before=self.state();result=read_operational(self.root)
+        self.assertTrue(result.complete,result.reasons)
+        self.assertEqual(result.streams['order_ledger.jsonl'][0]['symbol'],'ABC')
+        self.assertNotIn(stream,result.streams)
+        self.assertEqual(before,self.state())
+
     def test_invalid_inputs_are_incomplete_without_writes(self):
         from watchdog.operational import read_operational
         cases = ('missing_db', 'missing_history', 'partial', 'digest', 'sequence', 'payload_type', 'baseline')

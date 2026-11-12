@@ -15,6 +15,10 @@ from .types import OperationalSnapshot
 # Monitoring-only additions must not expand versioned opportunity baselines,
 # whose approved stream membership is bound to sqlite_ledger.DEFAULT_STREAMS.
 ADDITIONAL_STREAMS = ('private/research_policy_diagnostics.jsonl',)
+# Completed research is an optimization, never evidence of position ownership
+# or protection. Its absent/damaged cache must not disable broker monitoring.
+NON_AUTHORITY_STREAMS = frozenset({'private/research_memory.jsonl'})
+OPERATIONAL_STREAMS = tuple(name for name in DEFAULT_STREAMS if name not in NON_AUTHORITY_STREAMS)
 
 
 def _unique_object(pairs):
@@ -87,16 +91,16 @@ def read_operational(root: Path) -> OperationalSnapshot:
         reason = 'operational_lock_busy'
     except OSError:
         reason = 'operational_lock_unavailable'
-    return OperationalSnapshot({name: [] for name in DEFAULT_STREAMS}, frozenset(), datetime.now(timezone.utc).isoformat(), False, [reason])
+    return OperationalSnapshot({name: [] for name in OPERATIONAL_STREAMS}, frozenset(), datetime.now(timezone.utc).isoformat(), False, [reason])
 
 
 def _read_operational(root: Path) -> OperationalSnapshot:
     root = Path(root).resolve()
     db = root / 'private/trading_journal.sqlite3'
-    streams = {name: [] for name in DEFAULT_STREAMS}
+    streams = {name: [] for name in OPERATIONAL_STREAMS}
     reasons = []
     symbols = frozenset()
-    paths = [root / name for name in (*DEFAULT_STREAMS, *ADDITIONAL_STREAMS)] + [db, Path(str(db) + '-wal'), Path(str(db) + '-shm'), Path(str(db) + '-journal'), root / 'private/broker_baseline.json']
+    paths = [root / name for name in (*OPERATIONAL_STREAMS, *ADDITIONAL_STREAMS)] + [db, Path(str(db) + '-wal'), Path(str(db) + '-shm'), Path(str(db) + '-journal'), root / 'private/broker_baseline.json']
     before = None
     try:
         before = _metadata(paths)
@@ -113,6 +117,8 @@ def _read_operational(root: Path) -> OperationalSnapshot:
             for stream, sequence, payload, digest in connection.execute(
                 'SELECT stream, sequence, record_json, record_sha256 FROM ledger_entries ORDER BY stream, sequence'
             ):
+                if stream in NON_AUTHORITY_STREAMS:
+                    continue
                 if stream in ADDITIONAL_STREAMS:
                     streams.setdefault(stream, [])
                 if stream not in streams or sequence != len(streams[stream]) + 1:
