@@ -121,6 +121,32 @@ class MemoryRadarTests(unittest.TestCase):
         with self.assertRaises(OpportunityStateError):self.run_research()
         self.assertEqual(self.synthesized,[])
 
+    def test_stale_unavailable_pair_skips_reuse_and_fresh_discovery_continues(self):
+        import sqlite_ledger as storage
+        bound,work=self.stored_qualified(verified_minutes_ago=61)
+        storage.append_jsonl(self.root/'private/reviews.jsonl',{
+            'dossier_hash':bound['dossier_hash'],'reviews':[None,None]})
+        before=storage.read_jsonl_stream_readonly(self.root/'private/reviews.jsonl')
+        with patch.object(radar,'candidate_preflight',return_value=[]),patch.object(radar,'qualified',return_value=True):
+            self.assertIsNone(radar.reusable_fresh_candidate(self.root/'candidates.jsonl',self.root/'private/reviews.jsonl'))
+            self.assertIsNone(radar.fresh_verified_candidate(self.root/'candidates.jsonl'))
+        discovery_before=self.discovery_calls
+        result=self.run_research()
+        self.assertEqual(result['symbol'],'ACME')
+        self.assertEqual(self.synthesized,['ACME'])
+        self.assertEqual(self.discovery_calls,discovery_before+1)
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'private/reviews.jsonl'),before)
+
+    def test_fresh_unavailable_pair_reuses_exact_candidate_without_synthesis(self):
+        import sqlite_ledger as storage
+        bound,work=self.stored_qualified()
+        storage.append_jsonl(self.root/'private/reviews.jsonl',{
+            'dossier_hash':bound['dossier_hash'],'reviews':[None,None]})
+        with patch.object(radar,'candidate_preflight',return_value=[]),patch.object(radar,'qualified',return_value=True):
+            self.assertEqual(radar.reusable_fresh_candidate(self.root/'candidates.jsonl',self.root/'private/reviews.jsonl'),dict(bound))
+        self.assertEqual(dict(self.run_research()),dict(bound))
+        self.assertEqual(self.synthesized,[])
+
     def test_qualified_hit_returns_exact_dossier_without_synthesis_or_restamping(self):
         bound,work=self.stored_qualified()
         result=self.run_research()

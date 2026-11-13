@@ -75,6 +75,63 @@ class ReviewHistoryTests(unittest.TestCase):
                 dossier=f'{i:064x}';self.row([output],dossier_hash=dossier)
                 with self.assertRaises(api.ReviewHistoryError):api.dossier_status(self.root,dossier)
 
+    def test_two_reviewer_attempt_preserves_actual_null_placeholders(self):
+        api=self.api()
+        for values in ([None,None],[None,{'decision':'HOLD'}],[{'decision':'APPROVE'},None],
+                       [None,{'action':'BUY'}],[{'action':'HOLD'},None]):
+            with self.subTest(values=values):
+                row={'dossier_hash':HASH,'reviews':values}
+                matching=api.validated_reviews([row],HASH)
+                self.assertIs(matching[0],row)
+                self.assertIs(matching[0]['reviews'],values)
+                self.assertEqual(matching[0]['reviews'],values)
+
+    def test_nulls_do_not_relax_malformed_containers_or_outputs(self):
+        api=self.api()
+        for values in (None,{},(None,None),[None],[None,None,None],
+                       [None,False],[0,None],['APPROVE',None],[None,[]],
+                       [None,{'decision':None}],[None,{'decision':''}],
+                       [None,{}],[None,{'action':'UNKNOWN'}]):
+            with self.subTest(values=values),self.assertRaises(api.ReviewHistoryError):
+                api.validated_reviews([{'dossier_hash':HASH,'reviews':values}],HASH)
+
+    def test_unavailable_pair_is_unreviewed_without_rewriting_history(self):
+        self.row([None,None])
+        before=storage.read_jsonl_stream_readonly(self.root/'private/reviews.jsonl')
+        self.assertEqual(self.status(),'unreviewed')
+        self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'private/reviews.jsonl'),before)
+
+    def test_partial_completed_outputs_spend_even_with_later_markers(self):
+        for i,output in enumerate(({'decision':'HOLD'},{'decision':'DISAGREE'},
+                                   {'decision':'APPROVE'},{'action':'BUY'},{'action':'HOLD'})):
+            for j,values in enumerate(([None,output],[output,None])):
+                dossier=f'{i*2+j:064x}'
+                with self.subTest(values=values):
+                    self.row(values,dossier_hash=dossier)
+                    self.assertEqual(self.api().dossier_status(self.root,dossier),'completed')
+                    self.row([None,None],dossier_hash=dossier)
+                    for marker in ('reconciliation_blocked','execution_retryable'):
+                        self.row([{'decision':marker}],dossier_hash=dossier)
+                    self.assertEqual(self.api().dossier_status(self.root,dossier),'completed')
+
+    def test_incomplete_pair_cannot_erase_prior_dissent_with_proven_retry(self):
+        for i,output in enumerate(({'decision':'HOLD'},{'decision':'DISAGREE'},{'action':'HOLD'})):
+            dossier=f'{i:064x}'
+            with self.subTest(output=output):
+                self.row([output],dossier_hash=dossier)
+                self.row([None,None],dossier_hash=dossier)
+                self.row([{'decision':'APPROVE'},{'decision':'APPROVE'}],dossier_hash=dossier)
+                self.row([{'decision':'execution_retryable'}],dossier_hash=dossier)
+                storage.append_jsonl(self.root/'order_ledger.jsonl',{
+                    'evidence_id':'e1','status':'rejected','reason':['stale_quote']})
+                self.assertEqual(self.api().dossier_status(self.root,dossier),'completed')
+
+    def test_incomplete_attempt_does_not_hide_submission_intent(self):
+        self.row([None,None])
+        storage.append_jsonl(self.root/'private/order_intents.jsonl',{
+            'client_order_id':'synthetic-lost-ack','evidence_id':'e1','dossier_hash':HASH})
+        self.assertEqual(self.status(),'completed')
+
     def test_invalid_dossier_hash_is_not_not_reviewed(self):
         api=self.api()
         for bad in [None,'dossier-a','',False]:

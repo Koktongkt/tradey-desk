@@ -14,9 +14,14 @@ def validated_reviews(rows,dossier_hash):
     for row in rows:
         if row.get('dossier_hash')!=dossier_hash:continue
         values=row.get('reviews')
-        if not isinstance(values,list) or any(not isinstance(r,dict) for r in values):
+        if (not isinstance(values,list)
+                or (any(r is None for r in values) and len(values)!=2)
+                or any(r is not None and not isinstance(r,dict) for r in values)):
             raise ReviewHistoryError('review_history_invalid')
         for value in values:
+            # Reviewer-unavailable attempts retain both slots, including None.
+            # Never filter them: current authority still requires dual approval.
+            if value is None:continue
             if 'decision' in value:
                 decision=value['decision']
                 if not isinstance(decision,str) or not decision.strip() or decision!=decision.strip():
@@ -38,6 +43,9 @@ def dossier_status(root:Path,dossier_hash:str)->str:
         for row in matching:
             values=row['reviews']
             for value in values:
+                # Only the missing slot is incomplete; any completed output
+                # (including a lone APPROVE) conservatively spends the dossier.
+                if value is None:continue
                 decision=value.get('decision')
                 old='decision' not in value and value.get('action') in ('BUY','HOLD')
                 legacy=legacy or old

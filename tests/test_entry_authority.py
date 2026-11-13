@@ -74,6 +74,24 @@ class AuthorityTests(ExecutionCase):
         with self.assertRaises(RuntimeError):api.authorize_attempt(self.root,candidate=self.candidate,
             proposal=self.proposal,evidence_id='e1',review_ref=row)
 
+    def test_current_incomplete_pair_never_authorizes_even_one_valid_approval(self):
+        api=self.api()
+        for i,slots in enumerate(((None,None),('approve',None),(None,'approve'))):
+            with self.subTest(slots=slots):
+                evidence=f'incomplete-{i}'
+                scores={k:5 for k in autotrader.RUBRIC_WEIGHTS[self.proposal['assigned_rubric']]}
+                valid=dict(decision='APPROVE',proposal_hash=self.proposal['proposal_hash'],
+                           fatal_flags=[],reason_codes=[],component_scores=scores)
+                row=dict(dossier_hash=self.candidate['dossier_hash'],evidence_id=evidence,
+                         proposal_hash=self.proposal['proposal_hash'],
+                         research_transition_id=self.candidate['research_transition_id'],
+                         reviews=[copy.deepcopy(valid) if slot else None for slot in slots])
+                storage.append_jsonl(self.root/'private/reviews.jsonl',row)
+                with self.assertRaisesRegex(api.AuthorityError,'dual_approval_unverified'):
+                    api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,
+                                          evidence_id=evidence,review_ref=row)
+                self.assertEqual(storage.read_jsonl_stream_readonly(self.root/'private/reviews.jsonl')[-1],row)
+
     def test_new_durable_intent_invalidates_old_attempt_even_without_submission_row(self):
         api=self.api();row=self.approve()
         proof=api.authorize_attempt(self.root,candidate=self.candidate,proposal=self.proposal,evidence_id='e1',review_ref=row)
