@@ -31,6 +31,44 @@ BASELINE_SOURCE = Path.home() / '.hermes/cache/scratch/project-extraction-unpatc
 FIRECRAWL_SOURCES = [RUNTIME_SOURCE] + ([BASELINE_SOURCE] if BASELINE_SOURCE.is_dir() else [])
 
 
+class AppOwnedQuerySafetyTests(unittest.IsolatedAsyncioTestCase):
+    """Catch runtime helper deletion without replacing the application gate."""
+
+    async def test_missing_runtime_query_helper_keeps_benign_urls_eligible(self):
+        import extraction_compat as compat
+        safety = types.SimpleNamespace(normalize_url_for_request=lambda url: url,
+                                       is_safe_url=lambda url: True)
+        original = compat._module
+        def module(name):
+            return safety if name == 'tools.url_safety' else original(name)
+        with patch.object(compat, '_module', side_effect=module), \
+             patch.object(compat, '_policy', return_value=None):
+            url = 'https://example.org/article?code=blue&key=price&auth=type&session=summer&sig=sign'
+            try:
+                result = await compat.check_url(url)
+            except compat.CompatibilityError as exc:
+                self.fail(f'benign URL depends on removed runtime helper: {exc.reason}')
+            self.assertEqual(result, url)
+
+    async def test_missing_runtime_query_helper_still_refuses_encoded_secrets_before_io(self):
+        import extraction_compat as compat
+        def forbidden(url):
+            self.fail('credential URL reached DNS or website policy')
+        safety = types.SimpleNamespace(normalize_url_for_request=lambda url: url,
+                                       is_safe_url=forbidden)
+        original = compat._module
+        def module(name):
+            return safety if name == 'tools.url_safety' else original(name)
+        with patch.object(compat, '_module', side_effect=module), \
+             patch.object(compat, '_policy', side_effect=forbidden):
+            for key in ['access_token', 'password', '%61ccess%5ftoken', '%2570assword',
+                        'X-Amz-Signature', 'client_secret']:
+                with self.subTest(key=key):
+                    with self.assertRaises(compat.CompatibilityError) as caught:
+                        await compat.check_url('https://example.org/article?' + key + '=opaque')
+                    self.assertEqual(caught.exception.reason, 'secret_url')
+
+
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('extraction_compat'), 'compatibility interface is not implemented')
@@ -49,7 +87,6 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             'agent.redact': types.SimpleNamespace(_PREFIX_RE=__import__('re').compile(r'sk-secret')),
             'tools.url_safety': types.SimpleNamespace(
                 normalize_url_for_request=lambda u: u.strip().replace('ö', '%C3%B6'),
-                sensitive_query_param_name=importlib.import_module('tools.url_safety').sensitive_query_param_name,
                 is_safe_url=lambda u: '127.0.0.1' not in u),
         }
         # Actual stateless policy helpers, never the shared policy cache.

@@ -15,7 +15,35 @@ import ipaddress
 import time
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
+
+# Application-owned credential-query policy. Do not depend on private Hermes
+# helpers: upstream may remove them without knowledge of external consumers.
+_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
+    'access_token', 'api_key', 'apikey', 'auth_token', 'authorization', 'awsaccesskeyid',
+    'client_secret', 'credential', 'credentials', 'jwt', 'password', 'passwd', 'secret',
+    'session_id', 'signature', 'token', 'x_amz_security_token', 'x_amz_signature',
+    'x-amz-security-token', 'x-amz-signature',
+})
+
+
+def sensitive_query_param_name(url: str) -> str | None:
+    """First nonempty credential query key; preserve the existing narrow policy.
+
+    Ordinary facets (code/key/auth/session/sig) are not credentials by name.
+    The caller checks raw, decoded and transport URL variants before any I/O.
+    """
+    if not isinstance(url, str) or '?' not in url:
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in ('http', 'https') or not parsed.query:
+        return None
+    return next((key for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                 if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES), None)
+
 
 _RING = ('exa', 'parallel', 'firecrawl', 'keenable')
 _KEYS = {'exa': 'EXA_API_KEY', 'parallel': 'PARALLEL_API_KEY',
@@ -181,12 +209,11 @@ async def check_url(url: str) -> str:
     if not isinstance(normalized, str):
         raise CompatibilityError('provider_error')
     try:
-        # Hermes returns the first credential-named, nonempty query key or
-        # None, not a boolean. Check the callable and result contracts before
-        # safety/policy I/O; unsupported runtimes may not authorize dispatch.
+        # Apply the application-owned query gate before safety/policy I/O.
+        # Keep its result contract strict; never treat a malformed result as safe.
         variants = (url, unquote(url), normalized, unquote(normalized))
         for item in variants:
-            name = _call('tools.url_safety', 'sensitive_query_param_name', item)
+            name = sensitive_query_param_name(item)
             if name is not None:
                 if not isinstance(name, str) or not name:
                     raise CompatibilityError('provider_error')

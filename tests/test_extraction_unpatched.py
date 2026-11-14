@@ -7,6 +7,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProbeTests(unittest.TestCase):
+    def test_url_safety_update_check_reports_contract_results_without_urls(self):
+        import json
+        path = ROOT / 'scripts/check_url_safety_compatibility.py'
+        self.assertTrue(path.is_file(), 'application-owned post-update check missing')
+        spec = importlib.util.spec_from_file_location('url_safety_check', path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        def worker(urls, timeout_seconds):
+            self.assertEqual(timeout_seconds, 20)
+            return {'version': 2, 'status': 'ok', 'results': [
+                {'requested_url': url, 'eligible': index < 2,
+                 'reason': 'success' if index < 2 else 'unsafe_url'}
+                for index, url in enumerate(urls)]}
+        report = module.check(runner=worker)
+        self.assertTrue(report['passed'])
+        self.assertEqual(len(report['checks']), 5)
+        self.assertNotIn('https://', json.dumps(report))
+        self.assertNotIn('http://', json.dumps(report))
+        def broken(urls, timeout_seconds):
+            return {'version': 2, 'status': 'error', 'reason': 'worker_exit'}
+        self.assertFalse(module.check(runner=broken)['passed'])
+
     def probe(self):
         path = ROOT / 'scripts/probe_project_extraction.py'
         self.assertTrue(path.is_file(), 'bounded network-only probe is missing')
@@ -323,7 +346,7 @@ url = 'https://example.com/a?code=blue&key=price&auth=type&session=summer&sig=si
 with patch.object(safety, 'is_safe_url', return_value=True), patch.object(compat, '_policy', return_value=None):
     assert asyncio.run(compat.check_url(url)) == url
     for helper in [None, lambda: None, lambda url: False, lambda url: 3]:
-        with patch.object(safety, 'sensitive_query_param_name', helper):
+        with patch.object(compat, 'sensitive_query_param_name', helper):
             try:
                 asyncio.run(compat.check_url(url))
             except compat.CompatibilityError as exc:

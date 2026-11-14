@@ -26,6 +26,30 @@ A fail-closed, paper-first Alpaca trading desk. Submission requires `autonomy_co
 
 The preview is rendered from the source-pinned workflow HTML. It includes the independent, monitoring-only portfolio watchdog: in-session mechanical checks and post-close accounting/thesis monitoring, with visible coverage gaps and receipt-honest alert delivery. GitHub READMEs cannot run interactive HTML or JavaScript; download [the standalone HTML](docs/process-flow/tradey-desk.workflow.html) and open it in a browser for interactive exploration. The diagram pins the frozen candidate source, corrects the old DAY/$25 narrative to observed GTC/$40, and does not change trading controls. Its automated artifact/browser validation is not release approval.
 
+## Hermes-update URL-safety check
+
+The credential-query detector in `extraction_compat.py` is **Tradey-owned**.
+It preserves the previous narrow secret-key policy and encoded-key checks; it
+never imports Hermes's removed `sensitive_query_param_name` helper. SSRF,
+website policy, evidence quality and execution protections remain enforced.
+
+After a Hermes update, run from the checkout intended for scheduling:
+
+```bash
+${TRADEY_PYTHON:-$HOME/.local/share/tradey/venv-linux/bin/python} scripts/check_url_safety_compatibility.py
+```
+
+This application-owned check launches the same isolated worker bootstrap as
+research, using **validation only**. It checks two public source hosts and three
+synthetic unsafe URLs; it may read configuration and resolve DNS but never
+fetches articles, calls a model/broker, or writes application ledgers. Exit zero
+and `passed: true` establish only URL-admission compatibility, not extraction,
+model, market-data or end-to-end research health. A website-policy block or DNS
+failure can also make it fail: investigate rather than bypassing protection.
+The command is manual; it does not hook or modify the Hermes updater, cron or
+gateway. A future change to another runtime API can still require a reviewed
+adapter update. Keep scheduled recovery separate from this boundary proof.
+
 ## Codebase knowledge graph
 
 [Explore the Graphify graph, report and integrity notes](graphify-out/README.md). Consult its own revision/scope manifest for the independently refreshed source-only corpus, including the portfolio watchdog; do not infer freshness from this README. It is a structural navigation aid—not a verified runtime call graph or trading safety audit.
