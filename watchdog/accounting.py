@@ -222,7 +222,6 @@ def account_strategy(lineage: LineageResult, broker: BrokerSnapshot, baseline: d
                         or aware_timestamp(activity['transaction_time']) != aware_timestamp(fill['timestamp'])):
                     reasons.append('execution_evidence_unknown')
                     continue
-                when = aware_timestamp(fill['timestamp'])
                 if not start or not start <= when <= end:
                     reasons.append('execution_outside_baseline')
                     continue

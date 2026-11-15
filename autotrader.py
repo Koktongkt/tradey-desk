@@ -1172,7 +1172,6 @@ def research_acceptable(candidate:dict[str,Any],cfg:dict[str,Any],age_minutes:fl
             and bool(candidate.get("sources_verified_at")) and _dossier_intact(candidate))
 
 
-REVIEWED_SKIP_GRACE_MINUTES = 10
 
 
 def dossier_already_reviewed(candidate: dict[str, Any], reviews_path: Path) -> bool:

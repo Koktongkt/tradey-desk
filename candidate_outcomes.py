@@ -20,15 +20,12 @@ def measure(x:dict[str,Any])->dict[str,Any]:
 def append(row:dict[str,Any])->None:
     append_jsonl(ROOT/"candidate_outcomes.jsonl",row)
 
-def read_rows(path:Path)->list[dict[str,Any]]:
-    return read_jsonl(path)
-
 def main()->int:
     ap=argparse.ArgumentParser(); ap.add_argument("--fixture"); a=ap.parse_args()
     try:
         if a.fixture: data=json.loads(Path(a.fixture).read_text())
         else:
-            candidates=read_rows(ROOT/"candidates.jsonl"); trades=read_rows(ROOT/"trade_journal.jsonl")
+            candidates=read_jsonl(ROOT/"candidates.jsonl"); trades=read_jsonl(ROOT/"trade_journal.jsonl")
             traded_symbols={str(t.get("symbol","")).upper() for t in trades if t.get("status")=="filled"}
             for c in candidates:
                 c.setdefault("candidate_id",hashlib.sha256(f"{c.get('symbol')}|{c.get('researched_at')}".encode()).hexdigest()[:20])

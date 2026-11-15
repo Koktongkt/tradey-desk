@@ -97,7 +97,6 @@ GATEWAY_RESCUE_PROMPTS={
         "wire domains only, no landing pages, no commentary."
     ),
 }
-GATEWAY_RESCUE_PROMPT=GATEWAY_RESCUE_PROMPTS["independent"]
 
 SOURCE_REGISTRY={
     "primary":{

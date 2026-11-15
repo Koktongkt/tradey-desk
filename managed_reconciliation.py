@@ -8,7 +8,6 @@ import json
 import os
 import subprocess
 from broker_process import bridge_command, broker_executable, run_bridge
-import sys
 import entry_state
 import entry_fills
 from pathlib import Path

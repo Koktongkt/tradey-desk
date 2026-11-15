@@ -5,21 +5,12 @@ from __future__ import annotations
 import json
 import statistics
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Iterable
 from durable_jsonl import append_jsonl, read_jsonl
 
 HORIZONS = (1, 3, 5, 10, 30)
 ROOT = Path(__file__).resolve().parent
-
-
-def read_rows(path: Path) -> list[dict[str, Any]]:
-    return read_jsonl(path)
-
-
-def _append(path: Path, row: dict[str, Any]) -> None:
-    append_jsonl(path, row)
 
 
 def record_decision(
@@ -53,7 +44,7 @@ def record_decision(
         "review_result": str(aggregate.get("reason") or "unknown"),
         "would_trade": bool(aggregate.get("approved")),
     }
-    _append(path, row)
+    append_jsonl(path, row)
     return row
 
 
@@ -87,7 +78,7 @@ def measure_outcomes(
             row[f"return_{horizon}s_pct"] = round(stock_return, 6)
             row[f"spy_return_{horizon}s_pct"] = round(spy_return, 6)
             row[f"excess_{horizon}s_pct"] = round(stock_return - spy_return, 6)
-        _append(output_path, row)
+        append_jsonl(output_path, row)
         measured.append(row)
     return measured
 
@@ -124,7 +115,7 @@ def refresh(
     report_path: Path,
     broker: Any,
 ) -> int:
-    decisions = read_rows(decisions_path)
+    decisions = read_jsonl(decisions_path)
     candidates = [
         {
             "candidate_id": row["shadow_id"], "symbol": row["symbol"],
@@ -137,7 +128,7 @@ def refresh(
     if candidates:
         broker_rows = broker({"candidates": candidates})
         measure_outcomes(decisions, broker_rows, outcomes_path)
-    report = calibration_report(decisions, read_rows(outcomes_path))
+    report = calibration_report(decisions, read_jsonl(outcomes_path))
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return 0

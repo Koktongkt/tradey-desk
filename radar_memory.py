@@ -1,6 +1,5 @@
 """Small Radar adapter: exact completed bundles, not economic-event identity."""
 from dataclasses import dataclass
-import datetime as dt
 import hashlib
 import json
 from pathlib import Path
@@ -40,31 +39,6 @@ def issuer_for_pages(symbol,pages):
         if raw is not None:found.update(_subjects(symbol,raw,page['url']))
     if len(found)>1:raise IssuerConflict('conflicting_explicit_issuer')
     return next(iter(found)) if len(found)==1 else None
-
-
-def _check_bundle_issuer(issuer,pages):
-    from opportunity_identity import _Cover
-    found=set()
-    for page in pages:
-        raw=original_text(page)
-        if raw is None:continue
-        parser=_Cover();parser.feed(raw);parser.close()
-        for facts in parser.facts.values():
-            for symbol in facts.get('dei:TradingSymbol',[]):found.update(_subjects(symbol,raw,page['url']))
-    if found and found!={issuer}:raise IssuerConflict('conflicting_explicit_issuer')
-
-
-def cached_issuer(root,symbol,now):
-    try:
-        found=set();clock=memory._timestamp(now)
-        for row in memory._rows(Path(root))[-256:]:
-            if row['record_type']!='complete' or not 0<=(clock-memory._timestamp(row['completed_at'])).total_seconds()<86400:continue
-            for ref in row['capture_refs']:
-                raw=captures.read_capture(root,ref).decode('utf-8')
-                envelope=captures._read(root,ref)
-                found.update(_subjects(symbol,raw,envelope['capture']['url']))
-        return next(iter(found)) if len(found)==1 else None
-    except Exception:return None
 
 
 def resource_issuers(root,urls,now,deadline):

@@ -23,7 +23,6 @@ SEC_REQUEST_TIMEOUT_SECONDS = 8
 TRUSTED_SOURCE_TIMEOUT_SECONDS = 8
 NASDAQ_CALENDAR_REQUEST_DELAY_SECONDS = 1.0
 SEC_USER_AGENT = "TradeyDesk/1.0 automated-research"
-TRUSTED_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) automated-research"
 DEFAULT_CACHE_PATH = Path(__file__).resolve().parent / "private" / "earnings_cache.json"
 MONTH_PATTERN = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"
 SHORT_MONTH_PATTERN = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.?\s+\d{1,2},\s+\d{4}"

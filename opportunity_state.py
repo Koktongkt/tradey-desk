@@ -46,7 +46,6 @@ MIGRATION_SOURCE_STREAMS = (REVIEWS_STREAM, TRADE_JOURNAL_STREAM)
 # Single coherent read for the migration-validation path: widening the
 # requested-stream caller argument, never a second separate read (F-1).
 MIGRATION_SNAPSHOT_STREAMS = INDEX_STREAMS + (TRADE_JOURNAL_STREAM,)
-_HINT_KEY = re.compile(r'[0-9a-f]{64}')
 
 # Exact reuse of the candidate_retry completed-review vocabulary. A decision
 # outside this set (or fatal flags) is a completed dissent; reconciliation

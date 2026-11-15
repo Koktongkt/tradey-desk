@@ -11,7 +11,7 @@ import time
 import uuid
 from dashboard_process import run_owned
 from dashboard_deployment import record_attempt, classify, TOTAL_BUDGET, ATTEMPT_TIMEOUT
-from dashboard_mcp import PROJECT, TEAM, Rejected
+from dashboard_mcp import PROJECT, Rejected
 
 ROOT=Path(__file__).resolve().parent
 

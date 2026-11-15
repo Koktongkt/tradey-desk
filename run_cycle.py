@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Timezone-aware silent cron entry point."""
 from __future__ import annotations
-import argparse,datetime as dt,json,re,subprocess,sys
+import argparse,datetime as dt,re,subprocess,sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from durable_jsonl import append_jsonl, DurableAppendError

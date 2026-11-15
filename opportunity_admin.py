@@ -26,7 +26,6 @@ import sys
 import entry_state
 from opportunity_identity import EventResolution, _load_binding
 from opportunity_state import (
-    INDEX_STREAMS,
     POLICY_STREAM,
     OpportunityIndex,
     OpportunityStateError,
@@ -45,10 +44,10 @@ from opportunity_state import (
     _spends,
     _source_row,
     _gap_source_row,
+    _valid_timestamp as _valid_stamp,
     _validate_gap_record,
     CLEARANCE_REASONS,
     _unresolved_record,
-    _build,
     incomplete_history,
 )
 import sqlite_ledger as storage
@@ -94,16 +93,6 @@ def _utc_text(stamp: dt.datetime) -> str:
             or stamp.utcoffset() != dt.timedelta(0):
         raise OpportunityAdminError('aware_utc_clock_required')
     return stamp.astimezone(dt.timezone.utc).isoformat()
-
-
-def _valid_stamp(value) -> bool:
-    if not isinstance(value, str):
-        return False
-    try:
-        stamp = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError:
-        return False
-    return stamp.utcoffset() == dt.timedelta(0)
 
 
 # ---------------------------------------------------------------------------
