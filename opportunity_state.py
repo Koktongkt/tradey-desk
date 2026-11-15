@@ -292,12 +292,12 @@ class OpportunityIndex:
             for key, scope in self.unresolved_issuer_scopes.items()}))
 
 
-def _source_row(source, snapshot_rows: dict) -> dict:
-    """Exact existing manifest source boundary (UTF-8 canonical row digest)."""
+def _checked_source_row(source, snapshot_rows: dict, allowed) -> dict:
+    """Shared digest/sequence discipline; each caller supplies its own stream allowlist."""
     if (not isinstance(source, dict)
             or set(source) != {'stream', 'sequence', 'row_sha256'}
             or not isinstance(source['stream'], str)
-            or source['stream'] not in INDEX_STREAMS
+            or source['stream'] not in allowed
             or type(source['sequence']) is not int or source['sequence'] < 1
             or not isinstance(source['row_sha256'], str)
             or _DOSSIER_HASH.fullmatch(source['row_sha256']) is None):
@@ -306,11 +306,14 @@ def _source_row(source, snapshot_rows: dict) -> dict:
     if source['sequence'] > len(rows):
         raise OpportunityStateError('manifest_source_sequence_out_of_range')
     row = rows[source['sequence'] - 1]
-    digest = sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
-                              ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest()
-    if digest != source['row_sha256']:
+    if _row_digest(row) != source['row_sha256']:
         raise OpportunityStateError('manifest_source_digest_mismatch')
     return row
+
+
+def _source_row(source, snapshot_rows: dict) -> dict:
+    """Exact existing manifest source boundary (UTF-8 canonical row digest)."""
+    return _checked_source_row(source, snapshot_rows, INDEX_STREAMS)
 
 
 def _row_digest(row) -> str:
@@ -326,21 +329,7 @@ def _gap_source_row(source, snapshot_rows: dict) -> dict:
     Same digest/sequence discipline as _source_row, but only the
     MIGRATION_SOURCE_STREAMS are accepted; binding sources stay unchanged.
     """
-    if (not isinstance(source, dict)
-            or set(source) != {'stream', 'sequence', 'row_sha256'}
-            or not isinstance(source['stream'], str)
-            or source['stream'] not in MIGRATION_SOURCE_STREAMS
-            or type(source['sequence']) is not int or source['sequence'] < 1
-            or not isinstance(source['row_sha256'], str)
-            or _DOSSIER_HASH.fullmatch(source['row_sha256']) is None):
-        raise OpportunityStateError('invalid_manifest_source_reference')
-    rows = snapshot_rows.get(source['stream'], ())
-    if source['sequence'] > len(rows):
-        raise OpportunityStateError('manifest_source_sequence_out_of_range')
-    row = rows[source['sequence'] - 1]
-    if _row_digest(row) != source['row_sha256']:
-        raise OpportunityStateError('manifest_source_digest_mismatch')
-    return row
+    return _checked_source_row(source, snapshot_rows, MIGRATION_SOURCE_STREAMS)
 
 
 def extract_row_symbol(row) -> str | None:

@@ -162,21 +162,10 @@ def run_private_child(command: list[str], *, input: str, timeout: float, cwd: Pa
 
 def focused_command(command, *, wrapper=None):
     """Installed isolated runtime + dependency bootstrap + unchanged CLI tail."""
-    from runtime_paths import hermes_runtime
+    from runtime_paths import hermes_runtime, isolated_runpy_command
     python, source = hermes_runtime()
     wrapper = Path(wrapper) if wrapper is not None else Path(__file__).with_name('focused_wrapper.py')
-    bootstrap = (
-        "import os, sys, runpy; "
-        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
-        "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {str(source)!r}); "
-        "sys._hermes_pin_default_home = True; import hermes_bootstrap; "
-        "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-        "str(__import__('hermes_constants').get_default_hermes_root())); "
-        f"sys.path.insert(0, {str(wrapper.parent)!r}); "
-        f"runpy.run_path({str(wrapper)!r}, run_name='__main__')"
-    )
-    return [python, '-I', '-c', bootstrap, *command[1:]]
+    return [*isolated_runpy_command(python, source, wrapper), *command[1:]]
 
 
 def valid_request(request):

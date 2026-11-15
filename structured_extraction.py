@@ -9,7 +9,7 @@ import signal
 import subprocess
 from time import monotonic
 
-from runtime_paths import hermes_runtime
+from runtime_paths import hermes_runtime, isolated_runpy_command
 from extraction_contract import strict_json_loads
 
 MAX_REQUEST_BYTES = 8192
@@ -30,18 +30,7 @@ def worker_command():
     """Use the installed isolated runtime AND its dependency bootstrap, not raw Python."""
     python, source = hermes_runtime()
     worker = Path(__file__).with_name('extraction_worker.py')
-    bootstrap = (
-        "import os, sys, runpy; "
-        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
-        "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {str(source)!r}); "
-        "sys._hermes_pin_default_home = True; import hermes_bootstrap; "
-        "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-        "str(__import__('hermes_constants').get_default_hermes_root())); "
-        f"sys.path.insert(0, {str(worker.parent)!r}); "
-        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    return [python, '-I', '-c', bootstrap]
+    return isolated_runpy_command(python, source, worker)
 
 
 def record_attempts(rows, path):

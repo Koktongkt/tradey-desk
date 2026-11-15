@@ -443,12 +443,17 @@ def _recover_publications(candidates: list[dict], pages: list[dict], accepted: l
             cache[url] = {**entry, 'page':p}; changed = True
     if cache_path is not None and changed and not expired():
         # Persistence errors belong to the caller's existing infrastructure channel.
-        cache = dict(sorted(cache.items(),key=lambda item:str(item[1].get('checked_at',''))
-                            if isinstance(item[1],dict) else '',reverse=True)[:200])
-        cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = cache_path.with_suffix(cache_path.suffix+'.tmp')
-        with temporary.open('w', encoding='utf-8') as stream:
-            temporary.chmod(0o600)
-            json.dump(cache, stream, separators=(',', ':'), sort_keys=True)
-        temporary.replace(cache_path)
+        write_source_cache(cache_path, cache)
     return result, notes
+
+
+def write_source_cache(cache_path, cache):
+    """Shared private/source_cache.json writer: newest 200 by checked_at, 0700/0600, atomic replace."""
+    cache = dict(sorted(cache.items(),key=lambda item:str(item[1].get('checked_at',''))
+                        if isinstance(item[1],dict) else '',reverse=True)[:200])
+    cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = cache_path.with_suffix(cache_path.suffix+'.tmp')
+    with temporary.open('w', encoding='utf-8') as stream:
+        temporary.chmod(0o600)
+        json.dump(cache, stream, separators=(',', ':'), sort_keys=True)
+    temporary.replace(cache_path)

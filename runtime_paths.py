@@ -74,3 +74,20 @@ def hermes_runtime():
     if python is None or source is None or not (source / 'hermes_cli/runtime_provider.py').is_file():
         raise ValueError('hermes_runtime_unavailable')
     return python, source.absolute()
+
+
+def isolated_runpy_command(python, source, script) -> list[str]:
+    """Isolated (-I) runtime argv: scrub env, Hermes dependency bootstrap, then run script."""
+    script = Path(script)
+    bootstrap = (
+        "import os, sys, runpy; "
+        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+        "os.environ.pop('VIRTUAL_ENV', None); "
+        f"sys.path.insert(0, {str(source)!r}); "
+        "sys._hermes_pin_default_home = True; import hermes_bootstrap; "
+        "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
+        "str(__import__('hermes_constants').get_default_hermes_root())); "
+        f"sys.path.insert(0, {str(script.parent)!r}); "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    return [python, '-I', '-c', bootstrap]

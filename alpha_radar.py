@@ -32,7 +32,7 @@ SOURCE_DIAGNOSTIC_REASONS={"fetched",*RETRIEVAL_DIAGNOSTIC_REASONS,"stale_source
 MIN_EVIDENCE_BODY_CHARS=80
 GATEWAY_RESCUE_TIMEOUT_SECONDS=30
 RESEARCH_ACTIVE_BUDGET_SECONDS=960
-from publication_recovery import RecoveryState, recover_publications, RECOVERY_BUDGET_SECONDS, RECOVERY_REASONS, preserve_cached_refusal
+from publication_recovery import RecoveryState, recover_publications, RECOVERY_BUDGET_SECONDS, RECOVERY_REASONS, preserve_cached_refusal, write_source_cache
 from publication_interpreter import interpret_publications, run_publication_process
 DISCOVERY_TIMEOUT_SECONDS=165
 FOCUSED_RETRIEVAL_TIMEOUT_SECONDS=150
@@ -1284,14 +1284,7 @@ def gather_evidence(
         for page in results:
             if page and isinstance(page.get("url"),str) and page["url"] not in cached_urls and page["url"] not in reused_urls:
                 cache[page["url"]]={"checked_at":checked_times.get(page['url'],stamp),"page":page}
-        cache=dict(sorted(cache.items(),key=lambda item:str(item[1].get("checked_at", "")) if isinstance(item[1],dict) else "",reverse=True)[:200])
-        try:
-            cache_path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-            temporary=cache_path.with_suffix(cache_path.suffix+".tmp")
-            with temporary.open('w',encoding='utf-8') as stream:
-                temporary.chmod(0o600)
-                json.dump(cache,stream,separators=(",",":"),sort_keys=True)
-            temporary.replace(cache_path)
+        try:write_source_cache(cache_path,cache)
         except OSError:pass
     return [r for r in results if r]
 
