@@ -30,6 +30,39 @@ class ProbeTests(unittest.TestCase):
             return {'version': 2, 'status': 'error', 'reason': 'worker_exit'}
         self.assertFalse(module.check(runner=broken)['passed'])
 
+    def test_url_safety_scheduled_mode_is_silent_on_pass_and_one_line_on_failure(self):
+        import contextlib, io
+        path = ROOT / 'scripts/check_url_safety_compatibility.py'
+        spec = importlib.util.spec_from_file_location('url_safety_check_scheduled', path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        def healthy(urls, timeout_seconds):
+            return {'version': 2, 'status': 'ok', 'results': [
+                {'requested_url': url, 'eligible': index < 2,
+                 'reason': 'success' if index < 2 else 'unsafe_url'}
+                for index, url in enumerate(urls)]}
+        def drifted(urls, timeout_seconds):
+            # Friday 2026-11-13 signature: every URL refused with provider_error.
+            return {'version': 2, 'status': 'ok', 'results': [
+                {'requested_url': url, 'eligible': False, 'reason': 'provider_error'} for url in urls]}
+        def broken(urls, timeout_seconds):
+            return {'version': 2, 'status': 'error', 'reason': 'worker_exit'}
+        cases = ((healthy, 0, ''),
+                 (drifted, 3, 'SYSTEM_FAILURE url_safety_compatibility_failed sec_public,issuer_public,'
+                              'credential_query,encoded_credential,private_address\n'),
+                 (broken, 3, 'SYSTEM_FAILURE url_safety_compatibility_failed validation_worker_failed\n'))
+        for runner, code, text in cases:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(module.main(['--scheduled'], runner=runner), code)
+            self.assertEqual(out.getvalue(), text)
+            self.assertNotIn('://', out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(module.main([], runner=healthy), 0)
+        self.assertTrue(__import__('json').loads(out.getvalue())['passed'])
+
     def probe(self):
         path = ROOT / 'scripts/probe_project_extraction.py'
         self.assertTrue(path.is_file(), 'bounded network-only probe is missing')

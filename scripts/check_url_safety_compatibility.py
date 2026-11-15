@@ -42,12 +42,21 @@ def check(runner=None):
         return {'passed': False, 'scope': 'url_safety_only', 'reason': 'compatibility_check_failed', 'checks': []}
 
 
-def main():
+def main(argv=None, runner=None):
+    """Manual mode prints the JSON report. ``--scheduled`` is cron-shaped:
+    silent on pass; one sanitized line and exit 3 (SYSTEM_FAILURE) on failure."""
+    argv = sys.argv[1:] if argv is None else argv
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    result = check()
-    print(json.dumps(result, sort_keys=True))
-    return 0 if result['passed'] else 1
+    result = check(runner)
+    if '--scheduled' not in argv:
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result['passed'] else 1
+    if result['passed']:
+        return 0
+    detail = ','.join(row['name'] for row in result['checks'] if not row['passed']) or result.get('reason', 'unknown')
+    print(f'SYSTEM_FAILURE url_safety_compatibility_failed {detail}')
+    return 3
 
 
 if __name__ == '__main__':
