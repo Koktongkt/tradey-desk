@@ -92,6 +92,7 @@
    "test_pipeline",
    "test_dashboard_mcp",
    "test_public_dashboard",
+   "test_dashboard_redesign",
    "test_reconciliation_cli",
    "test_release_blockers",
    "test_three_runtime",
