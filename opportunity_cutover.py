@@ -9,6 +9,7 @@ import argparse
 import datetime as dt
 from hashlib import sha256
 import json
+from json_parsing import canonical_bytes as _canonical
 from pathlib import Path
 import re
 
@@ -27,9 +28,6 @@ class CutoverError(RuntimeError):
     """An explicit prospective baseline is invalid or unavailable."""
 
 
-def _canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      allow_nan=False, ensure_ascii=True).encode('utf-8')
 
 
 def manifest_digest(manifest: dict) -> str:

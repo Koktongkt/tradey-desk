@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-import json
+from json_parsing import canonical_bytes as _canonical
 import math
 import re
 from typing import Any
@@ -40,9 +40,6 @@ class EntryDecision:
             raise ValueError('invalid_entry_outcome')
 
 
-def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      allow_nan=False).encode()
 
 
 def row_digest(row: dict) -> str:

@@ -2,6 +2,11 @@
 import json
 
 
+def canonical_bytes(value):
+    """Sorted, compact, ASCII-only, finite-only JSON bytes (digest/signature input)."""
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
+
+
 def first_object(text, *, missing):
     decoder = json.JSONDecoder()
     for i, ch in enumerate(text):

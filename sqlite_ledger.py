@@ -218,6 +218,11 @@ def _connect(db: Path) -> sqlite3.Connection:
 
 
 def _parse_projection(path: Path, strict: bool = True) -> list[dict]:
+    return [row for row, _ in _parse_projection_payloads(path, strict)]
+
+
+def _parse_projection_payloads(path: Path, strict: bool = True) -> list[tuple[dict, str]]:
+    """Parsed rows paired with the canonical payload already computed to validate them."""
     if not path.exists():
         return []
     try:
@@ -240,8 +245,7 @@ def _parse_projection(path: Path, strict: bool = True) -> list[dict]:
             row = json.loads(raw)
             if not isinstance(row, dict):
                 raise ValueError("not an object")
-            _canonical(row)
-            rows.append(row)
+            rows.append((row, _canonical(row)))
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             if strict:
                 raise LedgerIntegrityError(f"invalid ledger record at line {number}") from error
@@ -280,7 +284,7 @@ def _database_rows(connection: sqlite3.Connection, stream: str) -> list[str]:
 
 def _sync_stream(connection: sqlite3.Connection, root: Path, path: Path) -> tuple[int, int]:
     stream = _stream_name(path, root)
-    projected = [_canonical(row) for row in _parse_projection(path, strict=True)]
+    projected = [payload for _, payload in _parse_projection_payloads(path, strict=True)]
     stored = _database_rows(connection, stream)
     if len(projected) < len(stored) or projected[: len(stored)] != stored:
         raise LedgerIntegrityError(f"compatibility projection diverged for {stream}")
@@ -449,8 +453,9 @@ def _snapshot_readonly_locked(root: Path, names: list[str]) -> LedgerSnapshot:
             selected = root / name
             if _stream_name(selected, root) != name:
                 raise LedgerIntegrityError('invalid ledger stream path')
-            projected = _parse_projection(selected, strict=True)
-            canonical = [_canonical(row) for row in projected]
+            pairs = _parse_projection_payloads(selected, strict=True)
+            projected = [row for row, _ in pairs]
+            canonical = [payload for _, payload in pairs]
             stored = []
             if connection is not None:
                 db_name = _stream_name(selected, storage)
@@ -538,8 +543,9 @@ def _read_jsonl_readonly(path: Path | str, *, whole_ledger: bool) -> list[dict]:
                 selected = root / name
                 if _stream_name(selected, root) != name:
                     raise LedgerIntegrityError('invalid ledger stream path')
-                projected = _parse_projection(selected, strict=True)
-                canonical = [_canonical(row) for row in projected]
+                pairs = _parse_projection_payloads(selected, strict=True)
+                projected = [row for row, _ in pairs]
+                canonical = [payload for _, payload in pairs]
                 if connection is not None:
                     stored = _database_rows(connection, name)
                     sequences = [r[0] for r in connection.execute(

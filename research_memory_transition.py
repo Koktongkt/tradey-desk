@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+from json_parsing import canonical_bytes as _canonical
 from pathlib import Path
 import re
 import entry_state
@@ -19,8 +20,6 @@ _DIGEST=re.compile(r'[0-9a-f]{64}')
 class TransitionError(RuntimeError):pass
 
 
-def _canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',', ':'),ensure_ascii=True,allow_nan=False).encode()
 
 
 def manifest_digest(manifest: dict) -> str:

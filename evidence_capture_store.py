@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+from json_parsing import canonical_bytes as _canonical
 import os
 from pathlib import Path
 import re
@@ -15,9 +16,6 @@ _DIRECTORY='research_evidence'
 _DIGEST=re.compile(r'[0-9a-f]{64}')
 
 
-def _canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',', ':'),ensure_ascii=True,
-                      allow_nan=False).encode('utf-8')
 
 
 @contextmanager

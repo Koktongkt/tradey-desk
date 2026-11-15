@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
-import json
+from json_parsing import canonical_bytes
 from pathlib import Path
 import managed_reconciliation as m
 
@@ -12,7 +12,7 @@ _SEAL = object()
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def state_digest(root):

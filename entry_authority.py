@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+from json_parsing import canonical_bytes as _canonical
 from pathlib import Path
 import secrets
 import sqlite_ledger as storage
@@ -23,8 +24,6 @@ class AuthorityError(RuntimeError):pass
 class _BoundCandidate(dict):pass
 
 
-def _canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',', ':'),allow_nan=False).encode()
 
 
 def _hash(value):return hashlib.sha256(_canonical(value)).hexdigest()

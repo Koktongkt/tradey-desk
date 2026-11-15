@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import datetime as dt
 from hashlib import sha256
 import json
+from json_parsing import canonical_bytes as _canonical
 
 MAX_IDENTITY_SOURCE_BYTES = 2_000_000
 MAX_IDENTITY_CAPTURE_BYTES = 3_000_000
@@ -18,9 +19,6 @@ _KEYS = frozenset({'kind','version','url','returned_url','content_type','source_
                    'body_b64','complete','acquired_at'})
 
 
-def _canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,
-                      allow_nan=False).encode('ascii')
 
 
 def _pairs(pairs):

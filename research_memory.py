@@ -1,15 +1,12 @@
 """Exact-document research memory. Keys are work identities, not trade authority."""
 from __future__ import annotations
 import hashlib
-import json
+from json_parsing import canonical_bytes as _canonical
 import re
 
 _DOCUMENT_KEY = re.compile(r'rm1:[0-9a-f]{64}')
 
 
-def _canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      ensure_ascii=True, allow_nan=False).encode('utf-8')
 
 
 def _label(value) -> str:

@@ -15,6 +15,7 @@ import datetime as dt
 from decimal import Decimal
 from hashlib import sha256
 import json
+from json_parsing import canonical_bytes as _canonical
 import re
 from pathlib import Path
 from types import MappingProxyType
@@ -73,9 +74,6 @@ class HistoricalDossierHashMissing(OpportunityStateError):
         self.state = state
 
 
-def _canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      ensure_ascii=True, allow_nan=False).encode('ascii')
 
 
 def allowance_identifier(event_id: str, generation: int) -> str:

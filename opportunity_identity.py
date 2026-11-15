@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 import datetime as dt
 from hashlib import sha256
 from html.parser import HTMLParser
-import json
+from json_parsing import canonical_bytes as _canonical
 import re
 from pathlib import Path
 import os
@@ -57,8 +57,6 @@ class EventResolution:
         object.__setattr__(self, 'support_refs', tuple(self.support_refs))
 
 
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
 
 
 def _event_id(cik, period):
