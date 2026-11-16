@@ -8,6 +8,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import types
 import unittest
 from runtime_paths import hermes_runtime
 from pathlib import Path
@@ -1010,16 +1011,29 @@ class AlphaRadarTests(unittest.TestCase):
 
 
     def test_live_research_applies_deterministic_earnings_resolution_before_market_data(self):
-        scout=subprocess.CompletedProcess([],0,structured_scout("XYZ"),"")
+        # Pin alpha_radar's clock to the scenario date: with a rolling clock, exit (+10 days) plus the
+        # two-session blackout reaches the fixed 2026-11-30 earnings date from 2026-11-16T05:00Z onward.
+        scenario_now=dt.datetime(2026,11,2,15,0,tzinfo=dt.timezone.utc)
+        class ScenarioDatetime(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):
+                return scenario_now.astimezone(tz) if tz is not None else scenario_now.astimezone().replace(tzinfo=None)
+        outer_dt=alpha_radar.dt
+        scenario_dt=types.SimpleNamespace(**{**vars(dt),"datetime":ScenarioDatetime})
+        scout_payload=json.loads(structured_scout("XYZ"))
+        scout_payload["candidates"][0]["event_date"]=scenario_now.date().isoformat()
+        scout=subprocess.CompletedProcess([],0,json.dumps(scout_payload),"")
         model_candidate={
             "symbol":"XYZ","instrument_type":"cash_equity",
             "sources":[{"url":"https://a.example/1"},{"url":"https://b.example/2"}],
-            "planned_exit_at":(alpha_radar.dt.datetime.now(alpha_radar.dt.timezone.utc)+alpha_radar.dt.timedelta(days=10)).isoformat(),
+            "planned_exit_at":(scenario_now+dt.timedelta(days=10)).isoformat(),
             "setup_type":"event_momentum","horizon_rationale":"Post-event continuation",
         }
+        self.assertIsNone(alpha_radar.earnings_intake_blocker(
+            {**model_candidate,"earnings_event_at":"2026-11-30"},{},now=scenario_now))
         synth=subprocess.CompletedProcess([],0,json.dumps(model_candidate),"")
         pages=_dated_pair("alpha", "beta")
-        with _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
+        with patch.object(alpha_radar,"dt",scenario_dt), _research_run(side_effect=[scout,synth]) as (td, _runs), patch.object(
             alpha_radar,"gather_evidence",return_value=pages
         ), patch.object(
             alpha_radar,"resolve_candidate_earnings",side_effect=lambda c,**kw:{**c,"earnings_event_at":"2026-11-30","earnings_date_status":"estimated"}
@@ -1028,6 +1042,7 @@ class AlphaRadarTests(unittest.TestCase):
         ):
             candidate=alpha_radar.live_research({"max_position_usd":500,"min_price_usd":1})
 
+        self.assertIs(alpha_radar.dt,outer_dt)
         resolver.assert_called_once()
         self.assertEqual(resolver.call_args.args[0]["symbol"],"XYZ")
         self.assertIn("trusted_date_loader",resolver.call_args.kwargs)
