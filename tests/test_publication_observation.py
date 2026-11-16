@@ -624,6 +624,26 @@ class DateCandidateTests(unittest.TestCase):
         refused_bare = '<meta name=saildate content=2026-10-01>'
         self.assertEqual(pub.date_candidate_text(refused_single + refused_bare), '')
 
+    def test_date_candidate_text_skips_non_publication_signals(self):
+        # Formerly reached only via the retired real-corpus probe: list-form
+        # JSON-LD with a non-article member, attribute-less meta/time tags, a
+        # publish-named meta without a date, a non-datePublished time tag, an
+        # update line and a dateline with no date are all skipped.
+        capture = (
+            '<html><head><meta charset="utf-8">'
+            '<meta name="pubdate" content="soon">'
+            '<script type="application/ld+json">[{"@type":"Organization","datePublished":"2025-01-01"},'
+            '{"@type":"NewsArticle","headline":"H","datePublished":"2025-06-10"}]</script>'
+            '</head><body><time datetime="2025-06-01">June 1</time>'
+            '<p>LONDON — June 3, 2025 — Updated with comment.</p>'
+            '<p>PARIS — No date was given here.</p>'
+            '<p>BERLIN — July 4, 2025 — Body.</p></body></html>')
+        self.assertEqual(
+            pub.date_candidate_text(capture),
+            '<p>BERLIN — July 4, 2025</p>\n<script type="application/ld+json">'
+            '{"@type": "NewsArticle", "datePublished": "2025-06-10", "headline": "H"}'
+            '</script>')
+
     def test_review_n1_standard_path_ignores_injected_capture_sha256(self):
         # N1 (final whole-branch review): `_capture_sha256` on a standard page
         # dict is attacker-controllable and must never become the provenance
