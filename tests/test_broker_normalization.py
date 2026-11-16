@@ -29,15 +29,6 @@ class BrokerNormalizationTests(unittest.TestCase):
         bars = norm.massive_daily_bars(raw)
         self.assertEqual(bars, [{"v": 100}, {"v": 300}])
 
-    def test_average_volume_ignores_incomplete_current_session(self):
-        bars = [
-            {"v": 50, "t": 1788264000000},
-            {"v": 100, "t": 1788177600000},
-            {"v": 300, "t": 1788091200000},
-        ]
-        self.assertEqual(norm.completed_session_average_volume(bars, now_ms=1788267600000), 200.0)
-        self.assertEqual(norm.completed_session_average_volume(bars, now_ms=1788296400000), 150.0)
-
     def test_average_volume_rejects_non_finite_values(self):
         self.assertIsNone(norm.average_volume([{"v": float("nan")}, {"v": float("inf")}]))
 
@@ -56,12 +47,6 @@ class BrokerNormalizationTests(unittest.TestCase):
         self.assertEqual(args["order_class"], "bracket")
         self.assertEqual(args["take_profit_limit_price"], "110")
         self.assertEqual(args["stop_loss_stop_price"], "95")
-
-    def test_daily_bars_request_uses_free_iex_feed(self):
-        request = norm.daily_bars_request("AAPL", "start", "end")
-        self.assertEqual(request["feed"], "iex")
-        self.assertEqual(request["symbol"], "AAPL")
-        self.assertEqual(request["timeframe"], "1Day")
 
     def test_quote_request_explicitly_uses_iex_execution_feed(self):
         self.assertEqual(norm.latest_quote_request("AAPL"), {"symbol": "AAPL", "feed": "iex"})

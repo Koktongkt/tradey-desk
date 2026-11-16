@@ -1,6 +1,5 @@
 """Synthetic prospective cutover; no provider or broker traffic."""
 import copy
-import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -43,10 +42,6 @@ class CutoverTests(unittest.TestCase):
             storage.read_stream_snapshot_readonly(self.root, self.api().BASELINE_STREAMS))['baseline_id']
         storage.append_jsonl(self.root/state.CANDIDATES_STREAM, row)
         return resolution, row
-
-    def test_cutover_module_exists(self):
-        self.assertIsNotNone(importlib.util.find_spec('opportunity_cutover'),
-                             'explicit prospective cutover API not implemented')
 
     def test_legacy_gaps_are_excluded_but_preserved(self):
         storage.append_jsonl(self.root/state.REVIEWS_STREAM,

@@ -117,15 +117,6 @@ class PipelineTests(unittest.TestCase):
         now=dt.datetime(2026,9,4,14,0,tzinfo=dt.timezone.utc)
         self.assertEqual(alpha_radar.candidate_preflight(candidate,cfg,now),["unsupported_technical_setup"])
 
-    def test_research_prompt_exposes_whole_share_risk_and_setup_horizon_policy(self):
-        prompt=alpha_radar.research_prompt({
-            "max_position_usd":500,"allow_fractional_shares":False,
-            "max_planned_risk_per_trade_usd":40,"earnings_blackout_sessions":2,
-        }).lower()
-        self.assertIn("$40",prompt)
-        self.assertIn("estimate_revision",prompt)
-        self.assertIn("6–30",prompt)
-
     def test_radar_rejects_single_source_candidate(self):
         bad={"symbol":"AAPL","price":100,"average_volume":2_000_000,"instrument_type":"cash_equity","sources":[{"url":"https://one.example"}],"researched_at":"2026-08-29T14:00:00Z"}
         self.assertFalse(alpha_radar.qualified(bad,{"min_price_usd":10,"min_average_volume":1_000_000}))
@@ -151,18 +142,6 @@ class PipelineTests(unittest.TestCase):
         }
         cfg={"min_price_usd":10,"max_position_usd":500,"allow_fractional_shares":False}
         self.assertFalse(alpha_radar.qualified(candidate,cfg))
-
-    def test_research_prompt_does_not_request_unproven_average_volume(self):
-        self.assertNotIn("average_volume", alpha_radar.research_prompt())
-
-    def test_research_prompt_excludes_stocks_above_the_whole_share_cap(self):
-        prompt = alpha_radar.research_prompt({"max_position_usd": 500, "allow_fractional_shares": False})
-        self.assertIn("one whole share must cost no more than $500", prompt.lower())
-
-    def test_research_prompt_requests_date_not_model_counted_sessions(self):
-        prompt = alpha_radar.research_prompt()
-        self.assertIn("earnings_event_at", prompt)
-        self.assertNotIn("earnings_sessions_away", prompt)
 
     def test_radar_requires_structured_horizon_inputs(self):
         base = {

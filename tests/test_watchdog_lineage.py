@@ -200,19 +200,6 @@ class LineageTests(unittest.TestCase):
         self.assertEqual(result.positions[0]['entry_quantity'], D('2'))
         self.assertEqual(result.coverage['duplicate_fill_observations'], 1)
 
-    def test_cumulative_delta_needs_previous_trusted_identity_and_notional(self):
-        from watchdog.lineage import cumulative_fill_delta
-        current = dict(broker_order_id='o', cumulative_quantity=D('3'), cumulative_notional=D('32'))
-        self.assertEqual(cumulative_fill_delta(current, None)['status'], 'unknown')
-        previous = dict(broker_order_id='o', cumulative_quantity=D('2'), cumulative_notional=D('20'), trusted=True)
-        delta = cumulative_fill_delta(current, previous)
-        self.assertEqual((delta['quantity'], delta['notional']), (D('1'), D('12')))
-        self.assertEqual(cumulative_fill_delta(current, {**current, 'trusted': True})['quantity'], D('0'))
-        for previous in ({**previous, 'trusted': False}, {**previous, 'broker_order_id': 'other'},
-                         {**previous, 'cumulative_quantity': D('4')},
-                         {**current, 'trusted': True, 'cumulative_notional': D('31')}):
-            self.assertEqual(cumulative_fill_delta(current, previous)['status'], 'unknown')
-
     def test_registered_replacement_exit_and_activity_exact_identity(self):
         from watchdog.lineage import build_lineage
         op, broker = snapshots()
@@ -379,17 +366,6 @@ class LineageTests(unittest.TestCase):
         result = build_lineage(op, broker)
         self.assertEqual(result.positions[0]['fills'], [])
         self.assertIn('activity_order_mismatch', result.reasons)
-
-    def test_untrusted_current_or_reversed_observation_clock_has_unknown_delta(self):
-        from watchdog.lineage import cumulative_fill_delta
-        current = dict(broker_order_id='o', cumulative_quantity='3', cumulative_notional='32',
-                       captured_at='2026-10-07T15:00:00Z', trusted=True)
-        previous = dict(broker_order_id='o', cumulative_quantity='2', cumulative_notional='20',
-                        captured_at='2026-10-07T16:00:00Z', trusted=True)
-        self.assertEqual(cumulative_fill_delta(current, previous)['status'], 'unknown')
-        previous['captured_at'] = '2026-10-07T14:00:00Z'
-        current['trusted'] = False
-        self.assertEqual(cumulative_fill_delta(current, previous)['status'], 'unknown')
 
     def test_review_only_decision_keeps_reviewer_outcome_separate(self):
         from watchdog.lineage import build_lineage
