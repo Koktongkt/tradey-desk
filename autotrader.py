@@ -901,8 +901,18 @@ def _reviewer_attempt(cmd: list[str], prompt: str, timeout: int, model: str, att
     except ValueError:
         _record_reviewer_diagnostic(model, attempt, "parse_failed", started, completed)
         return completed, None
-    _record_reviewer_diagnostic(model, attempt, "ok", started, completed)
+    _record_reviewer_diagnostic(model, attempt, "ok" if _admissible_review(parsed) else "invalid_decision", started, completed)
     return completed, parsed
+
+
+def _admissible_review(value: Any) -> bool:
+    """Only exact reviewer vocabulary may be persisted to the review history.
+
+    The strict history reader raises on malformed decisions, and radar checks
+    history before candidate age, so one malformed row would stop every later
+    scan. Anything else is recorded as reviewer-unavailable (None) instead.
+    """
+    return isinstance(value, dict) and type(value.get("decision")) is str and value["decision"] in ("APPROVE", "HOLD")
 
 
 def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeout: int = 150) -> dict[str, Any] | None:
@@ -913,7 +923,7 @@ def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeou
     try:
         completed, parsed = _reviewer_attempt(cmd, prompt, timeout, model, "initial")
         if parsed is not None:
-            return parsed
+            return parsed if _admissible_review(parsed) else None
         if completed is None or completed.returncode != 0:
             return None
         repair_prompt = (
@@ -925,7 +935,7 @@ def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeou
             "Return JSON only. Prior response:\n" + completed.stdout
         )
         _, repaired = _reviewer_attempt(cmd, repair_prompt, timeout, model, "repair")
-        return repaired
+        return repaired if _admissible_review(repaired) else None
     except Exception:
         return None
 

@@ -979,6 +979,41 @@ class TradeySafetyTests(unittest.TestCase):
             with patch("autotrader.subprocess.run", return_value=failed):
                 self.assertIsNone(autotrader._review_via_hermes({"proposal": {}}, "nous", "m"))
 
+    def test_reviewer_output_without_exact_decision_is_unavailable_not_persisted_raw(self):
+        # Anything persisted to reviews.jsonl must satisfy the strict history
+        # reader; otherwise one bad row stops every later radar reuse scan.
+        import review_history
+        good = {"proposal_hash": "abc", "decision": "HOLD", "component_scores": {}, "fatal_flags": [], "reason_codes": []}
+        variants = [dict(good, decision=None), dict(good, decision=""), dict(good, decision="HOLD "),
+                    dict(good, decision="hold"), dict(good, decision="REJECT"), dict(good, decision=1),
+                    {k: v for k, v in good.items() if k != "decision"}, {"action": "HOLD"}, {"error": "x"}]
+        for variant in variants:
+            with self.subTest(variant=variant):
+                completed = subprocess.CompletedProcess([], 0, json.dumps(variant), "")
+                with patch("autotrader.subprocess.run", return_value=completed) as run:
+                    result = autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m")
+                self.assertIsNone(result)
+                self.assertEqual(run.call_count, 1)  # no extra repair call
+                review_history.validated_reviews([{"dossier_hash": "d", "reviews": [result, good]}], "d")
+        outcomes = [r["outcome"] for r in self._reviewer_diagnostics()]
+        self.assertEqual(outcomes, ["invalid_decision"] * len(variants))
+
+    def test_reviewer_exact_decisions_pass_through_unchanged(self):
+        for decision in ("APPROVE", "HOLD"):
+            value = {"proposal_hash": "abc", "decision": decision, "component_scores": {"catalyst": 3}, "fatal_flags": [], "reason_codes": ["r"]}
+            completed = subprocess.CompletedProcess([], 0, json.dumps(value), "")
+            with patch("autotrader.subprocess.run", return_value=completed):
+                self.assertEqual(autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m"), value)
+
+    def test_repaired_reviewer_output_is_also_admitted_strictly(self):
+        malformed = subprocess.CompletedProcess([], 0, "not json", "")
+        bad_repair = subprocess.CompletedProcess([], 0, '{"decision": "REJECT"}', "")
+        with patch("autotrader.subprocess.run", side_effect=[malformed, bad_repair]) as run:
+            self.assertIsNone(autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m"))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([(r["attempt"], r["outcome"]) for r in self._reviewer_diagnostics()],
+                         [("initial", "parse_failed"), ("repair", "invalid_decision")])
+
     def test_reviewer_process_seam_passes_exact_input_and_timeout(self):
         completed = subprocess.CompletedProcess([], 0, '{"decision":"HOLD"}', "")
         with patch("autotrader.subprocess.run", return_value=completed) as launch:
