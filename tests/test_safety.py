@@ -914,13 +914,70 @@ class TradeySafetyTests(unittest.TestCase):
         self.assertEqual(cmd, [
             hermes_cli(), "chat", "-Q", "--source", "tool",
             "--provider", "nous", "-m", "model-pin", "-t", "", "--safe-mode",
-            "--max-turns", "1", "--run-budget", "120", "--query-file", "-",
+            "--max-turns", "1", "--query-file", "-",
         ])
         self.assertTrue(prompt.endswith("Evidence:\n" + json.dumps(bundle, sort_keys=True, separators=(",", ":"))))
         self.assertIn("Raw bar arrays are intentionally excluded", prompt)
         # Golden digest of the entire HEAD reviewer prompt for this fixed evidence bundle.
         self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(),
                          "73188f6c104c3fdb94f848b0843e997ef3868d930a88bb04934a838a225d68c6")
+
+    def test_safe_mode_reviewer_avoids_gateway_client_unsupported_flags(self):
+        # --safe-mode routes `hermes chat` through the gateway transport client,
+        # which refuses these flags with exit 2 before any model call.
+        cmd, _ = autotrader._review_request({"proposal": {"proposal_hash": "abc"}}, "nous", "model-pin")
+        self.assertIn("--safe-mode", cmd)
+        unsupported = {"--run-budget", "--image", "--worktree", "-w", "--no-restore-cwd", "--verbose", "-v", "--compact"}
+        self.assertFalse(unsupported & set(cmd), sorted(unsupported & set(cmd)))
+        self.assertFalse(any(token.startswith("--run-budget=") for token in cmd))
+
+    def _reviewer_diagnostics(self):
+        path = autotrader.ROOT / "private" / "reviewer_diagnostics.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_reviewer_launch_refusal_is_recorded_privately_and_fails_closed(self):
+        refused = subprocess.CompletedProcess([], 2, "", "Error: Unsupported gateway CLI options: --run-budget. No local fallback or policy changes were made.\n  --run-budget: use `agent.run_budget_seconds` in config.yaml\n")
+        with patch("autotrader.subprocess.run", return_value=refused):
+            result = autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "z-ai/glm-5.3-flash")
+        self.assertIsNone(result)
+        rows = self._reviewer_diagnostics()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["stage"], "review")
+        self.assertEqual(row["model"], "z-ai/glm-5.3-flash")
+        self.assertEqual(row["attempt"], "initial")
+        self.assertEqual(row["outcome"], "nonzero_exit")
+        self.assertEqual(row["returncode"], 2)
+        self.assertEqual(row["stderr_category"], "unsupported_cli_option")
+        self.assertTrue(row["stderr_first_line"].startswith("Error: Unsupported gateway CLI options: --run-budget"))
+        self.assertIsInstance(row["duration_ms"], int)
+        self.assertNotIn("abc", json.dumps(row))  # no evidence/prompt content
+        path = autotrader.ROOT / "private" / "reviewer_diagnostics.jsonl"
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_reviewer_timeout_launch_error_and_repair_are_classified(self):
+        with patch("autotrader.subprocess.run", side_effect=subprocess.TimeoutExpired(["hermes"], 150)):
+            self.assertIsNone(autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m-a"))
+        with patch("autotrader.subprocess.run", side_effect=FileNotFoundError("hermes")):
+            self.assertIsNone(autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m-b"))
+        malformed = subprocess.CompletedProcess([], 0, "not json", "")
+        repaired = subprocess.CompletedProcess([], 0, '{"decision":"HOLD"}', "")
+        with patch("autotrader.subprocess.run", side_effect=[malformed, repaired]):
+            self.assertEqual(autotrader._review_via_hermes({"proposal": {"proposal_hash": "abc"}}, "nous", "m-c"), {"decision": "HOLD"})
+        rows = [(r["model"], r["attempt"], r["outcome"]) for r in self._reviewer_diagnostics()]
+        self.assertEqual(rows, [("m-a", "initial", "timeout"), ("m-b", "initial", "launch_error"),
+                                ("m-c", "initial", "parse_failed"), ("m-c", "repair", "ok")])
+
+    def test_reviewer_diagnostic_write_failure_never_changes_review_result(self):
+        ok = subprocess.CompletedProcess([], 0, '{"decision":"HOLD"}', "")
+        failed = subprocess.CompletedProcess([], 1, "", "boom")
+        with patch("autotrader._append_reviewer_diagnostic_row", side_effect=OSError("disk")):
+            with patch("autotrader.subprocess.run", return_value=ok):
+                self.assertEqual(autotrader._review_via_hermes({"proposal": {}}, "nous", "m"), {"decision": "HOLD"})
+            with patch("autotrader.subprocess.run", return_value=failed):
+                self.assertIsNone(autotrader._review_via_hermes({"proposal": {}}, "nous", "m"))
 
     def test_reviewer_process_seam_passes_exact_input_and_timeout(self):
         completed = subprocess.CompletedProcess([], 0, '{"decision":"HOLD"}', "")

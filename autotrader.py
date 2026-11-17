@@ -16,6 +16,10 @@ import fcntl
 import hashlib
 import json
 import math
+import os
+import re
+import stat
+import time
 from pathlib import Path
 import subprocess
 from broker_errors import BrokerSnapshotError, snapshot_failure, transported_reason
@@ -796,12 +800,110 @@ def _review_request(bundle: dict[str, Any], provider: str, model: str) -> tuple[
     cmd = [
         hermes_cli(), "chat", "-Q", "--source", "tool",
         "--provider", provider, "-m", model, "-t", "", "--safe-mode",
-        "--max-turns", "1", "--run-budget", "120", "--query-file", "-",
+        # No --run-budget: --safe-mode launches through Hermes's gateway client,
+        # which rejects that flag (exit 2). The subprocess timeout bounds each review.
+        "--max-turns", "1", "--query-file", "-",
     ]
     return cmd, prompt
 
 def _run_reviewer_process(cmd: list[str], prompt: str, timeout: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=ROOT)
+
+_REVIEWER_DIAGNOSTICS = "reviewer_diagnostics.jsonl"
+_STDERR_LINE_CHARS = re.compile(r"[^A-Za-z0-9 .,:;_/=`'()\[\]-]")
+
+
+def _stderr_category(stderr: str) -> str:
+    """Fixed diagnostic label only; never used for control flow."""
+    text = (stderr or "").lower()
+    if not text.strip():
+        return "empty"
+    if "unsupported gateway cli options" in text or "unrecognized arguments" in text:
+        return "unsupported_cli_option"
+    if any(token in text for token in ("401", "403", "unauthorized", "credential", "oauth", "not logged in")):
+        return "auth"
+    if "429" in text or "rate limit" in text or "usage limit" in text or "quota" in text:
+        return "rate_limited"
+    if "model_not_found" in text or "404" in text:
+        return "model_not_found"
+    return "other"
+
+
+def _append_reviewer_diagnostic_row(row: dict[str, Any]) -> None:
+    """Owner-only, no-follow private telemetry file; not a ledger stream."""
+    root_fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.mkdir("private", mode=0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        directory = os.open("private", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                return
+            fd = os.open(_REVIEWER_DIAGNOSTICS, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+                    return
+                os.fchmod(fd, 0o600)
+                data = (json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+                if len(data) <= 2048:
+                    os.write(fd, data)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(root_fd)
+
+
+def _record_reviewer_diagnostic(model: str, attempt: str, outcome: str, started: float,
+                                completed: subprocess.CompletedProcess[str] | None = None) -> None:
+    """Best effort: a telemetry failure must never change a review result."""
+    try:
+        stderr = (getattr(completed, "stderr", "") or "") if completed is not None else ""
+        first = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
+        row: dict[str, Any] = {
+            "timestamp": utcnow(), "stage": "review",
+            "model": model if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9._/:-]{1,80}", model) else "invalid",
+            "attempt": attempt, "outcome": outcome,
+            "duration_ms": int(max(0.0, time.monotonic() - started) * 1000),
+            "returncode": completed.returncode if completed is not None and type(completed.returncode) is int else None,
+            "stderr_category": _stderr_category(stderr) if completed is not None else None,
+            "stdout_chars": len(completed.stdout or "") if completed is not None else None,
+        }
+        if first.startswith("Error:"):
+            row["stderr_first_line"] = _STDERR_LINE_CHARS.sub("?", first)[:200]
+        _append_reviewer_diagnostic_row(row)
+    except Exception:
+        pass
+
+
+def _reviewer_attempt(cmd: list[str], prompt: str, timeout: int, model: str, attempt: str
+                      ) -> tuple[subprocess.CompletedProcess[str] | None, dict[str, Any] | None]:
+    """Run one reviewer process; return (completed, parsed JSON or None) and record its outcome."""
+    started = time.monotonic()
+    try:
+        completed = _run_reviewer_process(cmd, prompt, timeout)
+    except subprocess.TimeoutExpired:
+        _record_reviewer_diagnostic(model, attempt, "timeout", started)
+        return None, None
+    except Exception:
+        _record_reviewer_diagnostic(model, attempt, "launch_error", started)
+        return None, None
+    if completed.returncode != 0:
+        _record_reviewer_diagnostic(model, attempt, "nonzero_exit", started, completed)
+        return completed, None
+    try:
+        parsed = _extract_json(completed.stdout)
+    except ValueError:
+        _record_reviewer_diagnostic(model, attempt, "parse_failed", started, completed)
+        return completed, None
+    _record_reviewer_diagnostic(model, attempt, "ok", started, completed)
+    return completed, parsed
+
 
 def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeout: int = 150) -> dict[str, Any] | None:
     """Run one isolated, tool-free reviewer through Hermes inference."""
@@ -809,22 +911,21 @@ def _review_via_hermes(bundle: dict[str, Any], provider: str, model: str, timeou
         return None
     cmd, prompt = _review_request(bundle, provider, model)
     try:
-        completed = _run_reviewer_process(cmd, prompt, timeout)
-        if completed.returncode != 0:
+        completed, parsed = _reviewer_attempt(cmd, prompt, timeout, model, "initial")
+        if parsed is not None:
+            return parsed
+        if completed is None or completed.returncode != 0:
             return None
-        try:
-            return _extract_json(completed.stdout)
-        except ValueError:
-            repair_prompt = (
-                "Formatting repair only. Do not reconsider, rescore, add evidence, or change any substantive judgment. "
-                "Convert the prior reviewer response into exactly one JSON object with proposal_hash, decision, "
-                "component_scores, fatal_flags, and reason_codes using the original values only. "
-                "If any required value is absent or ambiguous, fail closed with decision HOLD, zero component scores, "
-                "fatal_flags [\"original_not_machine_readable\"], and reason_codes [\"format_repair_failed_closed\"]. "
-                "Return JSON only. Prior response:\n" + completed.stdout
-            )
-            repaired = _run_reviewer_process(cmd, repair_prompt, timeout)
-            return _extract_json(repaired.stdout) if repaired.returncode == 0 else None
+        repair_prompt = (
+            "Formatting repair only. Do not reconsider, rescore, add evidence, or change any substantive judgment. "
+            "Convert the prior reviewer response into exactly one JSON object with proposal_hash, decision, "
+            "component_scores, fatal_flags, and reason_codes using the original values only. "
+            "If any required value is absent or ambiguous, fail closed with decision HOLD, zero component scores, "
+            "fatal_flags [\"original_not_machine_readable\"], and reason_codes [\"format_repair_failed_closed\"]. "
+            "Return JSON only. Prior response:\n" + completed.stdout
+        )
+        _, repaired = _reviewer_attempt(cmd, repair_prompt, timeout, model, "repair")
+        return repaired
     except Exception:
         return None
 
