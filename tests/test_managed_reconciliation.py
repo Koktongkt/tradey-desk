@@ -668,6 +668,47 @@ class ManagedReconciliationTests(unittest.TestCase):
                 self.write('order_ledger.jsonl', dict(row, client_order_id='parent'))
                 self.assert_pending_blocked_without_writes()
 
+    def test_local_partial_placement_readback_ingests_later_full_broker_fill(self):
+        # KKR 2026-11-17: placement readback saved partially_filled; the broker
+        # completed the fill 0.5s later. Maintenance must advance, not block.
+        import managed_reconciliation as m
+        for row in ({'status': 'partially_filled'},
+                    {'status': 'partially_filled', 'filled_qty': '1'}):
+            with self.subTest(row=row):
+                self.setUp()  # Fresh root: the first pass migrated JSONL into SQLite.
+                self.prepare_pending_fill()
+                self.write('order_ledger.jsonl', dict(row, client_order_id='parent'))
+                _, summary = m.reconcile_detailed(self.root, self.broker)
+                self.assertTrue(summary['verified'])
+                self.assertEqual(summary['pending'], [])
+                journal = autotrader.read_jsonl(self.root / 'trade_journal.jsonl')
+                self.assertEqual([(r['action'], r['quantity'], r['entry']) for r in journal],
+                                 [('BUY', 3, 162.70)])
+                ledger = autotrader.read_jsonl(self.root / 'order_ledger.jsonl')
+                self.assertEqual([r['status'] for r in ledger], ['partially_filled', 'filled'])
+                # Idempotent: the next pass is healthy and writes nothing.
+                before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+                m.reconcile_detailed(self.root, self.broker)
+                self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
+    def test_local_partial_placement_readback_stays_blocked_unless_broker_fully_filled(self):
+        for broker_changes in ({'status': 'partially_filled', 'filled_qty': '2'},
+                               {'status': 'filled', 'filled_qty': '2'},
+                               {'status': 'new', 'filled_qty': '0'},
+                               {'status': 'canceled', 'filled_qty': '1'}):
+            with self.subTest(broker=broker_changes):
+                self.setUp()
+                self.prepare_pending_fill()
+                self.write('order_ledger.jsonl', {'client_order_id': 'parent',
+                                                  'status': 'partially_filled'})
+                self.parent.update(broker_changes)
+                import managed_reconciliation as m
+                before = {p: p.read_bytes() for p in self.root.rglob('*.jsonl')}
+                with self.assertRaises(m.ReconciliationBlocked) as blocked:
+                    self.reconcile()
+                self.assertEqual(str(blocked.exception), 'managed_pending_entry_not_unfilled')
+                self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*.jsonl')})
+
     def test_pending_blocker_codes_are_preserved_by_cycle_diagnostics(self):
         import run_cycle
         for code in ('managed_pending_entry_invalid', 'managed_pending_entry_not_unfilled',

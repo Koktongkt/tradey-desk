@@ -410,17 +410,22 @@ def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
                     'managed_state_invalid')
             if status in PENDING_ENTRY | {'filled'}:
                 require(ref in intent_refs, 'managed_pending_entry_missing')
-            if status not in {'filled', 'closed'} and 'filled_qty' in row:
+            if status not in {'filled', 'closed', 'partially_filled'} and 'filled_qty' in row:
                 require(number(row['filled_qty'], zero=True) == 0, 'managed_pending_entry_not_unfilled')
         for row in latest.values():
             if row.get('status') == 'closed':
                 require(any(r.get('parent_client_order_id') == row['client_order_id'] and r.get('action') == 'SELL' for r in journal), 'managed_closed_without_fill')
         active = [i for i in intents if latest.get(i['client_order_id'], {}).get('status') == 'filled']
         pending = [i for i in intents if latest[i['client_order_id']].get('status') in PENDING_ENTRY | {'proposed'}]
+        # A saved partial observation (e.g. a placement readback taken mid-fill)
+        # may only advance to an exact broker full fill; partial accounting stays
+        # unsupported and a zero/partial/terminal readback can never override it.
+        partial_refs = set()
         for intent in pending:
             prior = latest[intent['client_order_id']]
-            require(prior.get('status') != 'partially_filled', 'managed_pending_entry_not_unfilled')
-            if 'filled_qty' in prior:
+            if prior.get('status') == 'partially_filled':
+                partial_refs.add(intent['client_order_id'])
+            elif 'filled_qty' in prior:
                 require(number(prior['filled_qty'], zero=True) == 0, 'managed_pending_entry_not_unfilled')
         refs = [i['client_order_id'] for i in active]
         refs += [r['protection_client_order_id'] for r in registry if r['parent_client_order_id'] in refs]
@@ -436,6 +441,13 @@ def _reconcile_detailed_locked(root: Path, broker, *, verify_only=False):
             return snapshot, orders, exact_order_lineage(orders)
 
         snapshot, orders, known_orders = read_snapshot()
+        for intent in pending:
+            if intent['client_order_id'] in partial_refs:
+                parent = orders[intent['client_order_id']]
+                require(parent.get('status') == 'filled'
+                        and number(parent.get('filled_qty')) == number(parent.get('qty'))
+                        == number(intent['plan']['quantity']),
+                        'managed_pending_entry_not_unfilled')
         # The broker snapshot spans separate reads. Retry at most once, only
         # behind an exact saved pending entry, never to adopt a symbol holding.
         refresh = any(orders[i['client_order_id']].get('status') == 'filled' for i in pending)
