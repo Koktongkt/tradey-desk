@@ -9,7 +9,7 @@ from dataclasses import asdict
 from decimal import Decimal
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from broker_normalization import tool_arguments
 from watchdog.types import BrokerSnapshot, aware_timestamp, money, snapshot_time_reasons
 from zoneinfo import ZoneInfo
@@ -269,6 +269,29 @@ def observed_fields(value):
     return value
 
 
+TIMESTAMP_ROUNDING = timedelta(microseconds=1)
+
+
+def same_observation(left, right):
+    """Exact facts, except broker timestamps that differ only by sub-microsecond
+    rounding between endpoints (get_orders vs get_order_by_client_id)."""
+    if left.keys() != right.keys():
+        return False
+    for key, value in left.items():
+        other = right[key]
+        if value == other:
+            continue
+        if not (key.endswith('_at') and isinstance(value, str) and isinstance(other, str)):
+            return False
+        try:
+            delta = abs(aware_timestamp(value) - aware_timestamp(other))
+        except (TypeError, ValueError):
+            return False
+        if delta > TIMESTAMP_ROUNDING:
+            return False
+    return True
+
+
 def reconcile_orders(rows):
     """Validate the entire identity forest, then coalesce without losing edges.
 
@@ -281,7 +304,7 @@ def reconcile_orders(rows):
         facts = observed_fields({key: value for key, value in row.items() if key != 'legs'})
         child_ids = list(dict.fromkeys(leg['id'] for leg in row['legs']))
         if (client in clients and clients[client] != identity
-                or identity in nodes and (observed_fields(nodes[identity]) != facts
+                or identity in nodes and (not same_observation(observed_fields(nodes[identity]), facts)
                                           or set(children[identity]) != set(child_ids))):
             raise ValueError('broker_order_identity_conflict')
         if identity not in nodes:

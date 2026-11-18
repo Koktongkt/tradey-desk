@@ -258,6 +258,32 @@ class BrokerSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(result.complete)
                 self.assertEqual(result.coverage['orders'], 'unknown')
 
+    async def test_cross_endpoint_microsecond_rounding_coalesces_but_real_drift_conflicts(self):
+        # KKR 2026-11-17: get_orders and get_order_by_client_id reported the same
+        # take-profit leg's submitted_at as .711552 vs .711551 (sub-microsecond rounding).
+        def bracket(tp_submitted):
+            tp = order('tp', side='sell', type='limit', status='new', order_class='bracket',
+                       qty='5', filled_qty='0', filled_avg_price=None, filled_at=None,
+                       limit_price='110.08', submitted_at=tp_submitted)
+            stop = order('sl', side='sell', type='stop', status='held', order_class='bracket',
+                         qty='5', filled_qty='0', filled_avg_price=None, filled_at=None,
+                         limit_price=None, stop_price='93.26', submitted_at='2026-10-06T14:00:00Z')
+            return tp, order(status='filled', order_class='bracket', qty='5', filled_qty='5',
+                             legs=[tp, stop])
+        for exact_submitted, complete in (('2026-10-06T14:00:26.711551Z', True),
+                                          ('2026-10-06T14:00:26.712552Z', False)):
+            open_tp, _ = bracket('2026-10-06T14:00:26.711552Z')
+            _, parent = bracket(exact_submitted)
+            data = responses()
+            data['get_orders'], data['get_order_by_client_id'] = [open_tp], parent
+            with self.subTest(exact_submitted=exact_submitted):
+                result, _ = await self.collect(data, refs=['owned'])
+                self.assertEqual(result.coverage['references'], 'complete' if complete else 'unknown')
+                if complete:
+                    self.assertEqual([row['client_order_id'] for row in result.orders], ['owned'])
+                    self.assertEqual(sorted(l['client_order_id'] for l in result.orders[0]['legs']),
+                                     ['sl', 'tp'])
+
     async def test_exact_readback_identity_and_concurrent_fill_conflict_are_unknown(self):
         for row in (order('unrequested'), order(filled_qty='3')):
             data = responses()
