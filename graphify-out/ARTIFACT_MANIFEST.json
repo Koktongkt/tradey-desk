@@ -1,66 +1,66 @@
 {
-  "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
-  "status": "offline-source-graph; committed separately; not deployed",
+  "revision": "69587777f1d7f41b76f41f686cf21d67d6a0b92b",
+  "status": "offline-source-graph; uncommitted refresh; not deployed",
   "files": {
     ".graphify_labels.json": {
-      "sha256": "75a70a32c60eb66aa4af5877792153c2a96a1acfaf3d9a5f88633d451f2f1cd0",
-      "bytes": 6512
+      "sha256": "d25e51548dee5cfa2e30093c3204bc8de0edc7584d411913c72acc1916849e80",
+      "bytes": 7833
     },
     "BENCHMARK.txt": {
-      "sha256": "d70be96e6c640d93f5c63d5a83aeec93a07b09333b297801b5c6d680727be8c5",
-      "bytes": 709
+      "sha256": "8d23ab3e5ac34a56be57c0b75d991efeaac99cc07dbea962e853bd9fca34ace9",
+      "bytes": 826
     },
     "BROWSER_VERIFICATION.json": {
-      "sha256": "c93d461a338f25fb101d22ca4922479aedb6e8ceebf03714bf1ea4bdb80cb529",
-      "bytes": 2118
+      "sha256": "351e9ec8649cdf9deeca95fa4cac3b54f3d220b505bc06fae75aa1754a43761b",
+      "bytes": 3141
     },
     "EXTRACTION_AUDIT.json": {
-      "sha256": "5043c1b04376518133235ac6df9a994a36902de6b278c64ac30e95dfbce2b780",
-      "bytes": 5331281
+      "sha256": "f20909a9c949e3c01dc1d243af4ac83cef3250811c930f1694c2b195c5886da3",
+      "bytes": 7319628
     },
     "GRAPH_HEALTH.json": {
-      "sha256": "51996548369cc9afa4f43fd3bb9f54e2f943d418d6fda5179bb6a81811f9b5ee",
+      "sha256": "2dc02cdf0f4c74ecb6c878c10f0b4585514fe5e352abd76ba2f4c4200e0a50a7",
       "bytes": 5040
     },
     "GRAPH_REPORT.md": {
-      "sha256": "b67c916aa83e9233ad03571fd9dfe678bc1fb88e1cca50ba974f6db198afa06d",
-      "bytes": 26808
+      "sha256": "2a6fc978afabd8f18cb2f82a557c6cf6928dbff5e0a7efd7a9ce992089e7a4ac",
+      "bytes": 35000
     },
     "README.md": {
-      "sha256": "1ab414978ff40ecd29115b11e46b6495434174d4ed8ea40f8ac6fe21f0c1735b",
-      "bytes": 5725
+      "sha256": "162a0563286bbf35e81ef1949c884abc465bb6ea1c0c69429a5e79db7bb6e67a",
+      "bytes": 7205
     },
     "READONLY_VERIFICATION.json": {
-      "sha256": "1c837a7264cb0d1edde4be0da9b066dd2f90d0b92ebe075fff93336902b7bdd7",
-      "bytes": 841
+      "sha256": "37f5cfc2380f55b40fc224a8a202598c7a8647d6707f837457e9bb58ff3d5088",
+      "bytes": 1753
     },
     "SOURCE_SCOPE.json": {
-      "sha256": "196fdf9180649623fb309ff6c56b5508d0ec75187a6f060362a6d6bb8495a920",
-      "bytes": 33435
+      "sha256": "de08c28610edb0183aad8567c24e67171bdd696b28a0f666fc51b928d8f8eca5",
+      "bytes": 41363
     },
     "STRUCTURAL_QUERY.txt": {
-      "sha256": "260b35a9b1997403b5c0d3400af40dc1057f4c844be64210ba3287b08ec405f1",
-      "bytes": 29194
+      "sha256": "9ff089a146549d8dbe272d9fd14949663267b1bf80e35c635b592d5342398f04",
+      "bytes": 58335
     },
     "cost.json": {
-      "sha256": "a960ea9efd9918edff45f962872f3b6b74813bd4c4bc386d3f34c1e1c7c21fd6",
+      "sha256": "636df2c8ce8fd85c7896840b0c2b79e49cce31473a0cb61992d728a562339237",
       "bytes": 209
     },
     "graph-preview.png": {
-      "sha256": "b2c1a670bf610a507ab05c8dfd4674fb986e413c679d873afdaaae8f88f4ec70",
-      "bytes": 1379629
+      "sha256": "c59662d1b3f56219771ae38e350675582443d5c643ce8246cf5e788d782d8f6b",
+      "bytes": 1455659
     },
     "graph.html": {
-      "sha256": "e5c05664e5995c65afd1477f440a66891fde2d690b1157171b9284e3b5318633",
-      "bytes": 4895157
+      "sha256": "3a661da78bca6b44dc543f92c2e9601a6aa6f4d220933b77f636a8cd7c964e10",
+      "bytes": 6652195
     },
     "graph.json": {
-      "sha256": "9366d762087f8b7582be52eaf1baee610e0ec98b22af5e2d61e1a909aba0e050",
-      "bytes": 6039839
+      "sha256": "b952bf7e7ffe7b2556bcc0c68b143871e782d7219a3c6834b29a8c8142188714",
+      "bytes": 8265765
     },
     "manifest.json": {
-      "sha256": "001ca2611e8a3ab4bebbb818a8404dd88ab3bb9e6221e852a8b14023e82cab75",
-      "bytes": 30832
+      "sha256": "edf673653ce631b0843ed55697cf2329c215f97b49278fc984c1d0deae6647f5",
+      "bytes": 38082
     },
     "rebuild.py": {
       "sha256": "bc9fcd01493ff1135b7f2814acf22587ddaff3135ec2ca5ec69738340dbe1123",

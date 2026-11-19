@@ -1,21 +1,25 @@
 {
   "title": "graphify - graphify-out/graph.html",
-  "nodes": 4269,
-  "edges": 10541,
-  "loaded_nodes": 4269,
+  "nodes": 5649,
+  "edges": 14592,
+  "loaded_nodes": 5649,
+  "network_nodes": 5649,
+  "communities_in_legend": 228,
   "canvas": {
+    "width": 960,
+    "height": 980
+  },
+  "viewport": {
     "width": 1240,
     "height": 980
   },
-  "legend": 180,
   "external_scripts": [
     {
       "src": "https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js",
       "integrity": "sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
     }
   ],
-  "network_nodes": 4269,
-  "renderer": "Playwright Chromium",
+  "renderer": "Playwright 1.65.2 driving Chromium (ms-playwright chromium-1248)",
   "chromium_version": "156.0.8078.4",
   "page_errors": [],
   "console_errors": [],
@@ -33,26 +37,32 @@
       ".test_gather_evidence_retries_connection_reset_once()",
       ".test_gather_evidence_falls_back_on_timeout_after_retry()"
     ],
+    "authorize_attempt": [
+      "authorize_attempt()"
+    ],
+    "resolve_event": [
+      "resolve_event()"
+    ],
+    "research_memory": [
+      "research_memory_for_bundle()",
+      "_research_memory_for_bundle()",
+      "research_memory.py",
+      "research_memory_transition.py",
+      "test_research_memory_keys.py",
+      "test_research_memory_radar.py",
+      "test_research_memory_store.py",
+      "test_research_memory_transition.py"
+    ],
     "scheduled_slot": [
       "scheduled_slot()"
-    ],
-    "run_cycle": [
-      "run_cycle.py",
-      ".test_research_envelope_pins_stage_constants_and_run_cycle_timeout()",
-      ".test_run_cycle_parses_already_reviewed_skip()"
-    ],
-    "focused_retrieval": [
-      "focused_retrieval_command()",
-      "focused_retrieval_prompt()",
-      "parse_focused_retrieval()",
-      "focused_retrieval()",
-      ".test_live_research_does_not_rescue_when_focused_retrieval_supplies_second_domain()",
-      ".test_focused_retrieval_prompt_searches_all_three_lanes_for_all_candidates()",
-      ".test_parse_focused_retrieval_symbol_filtering_and_merge_contract()"
     ]
   },
-  "html_sha256": "e5c05664e5995c65afd1477f440a66891fde2d690b1157171b9284e3b5318633",
-  "preview_sha256": "b2c1a670bf610a507ab05c8dfd4674fb986e413c679d873afdaaae8f88f4ec70",
-  "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+  "search_method": "typed into #search via keyboard input events; results read from #search-results",
+  "visual_inspection": "graph-preview.png inspected with vision: network drawn; sidebar search box, NODE INFO, community legend names (e.g. \"Shared Test Imports\", \"Autotrader Order Proposals\", \"Entry Authority Execution Tests\") and footer \"5649 nodes · 14592 edges · 228 communities\" render legibly; no missing glyphs (DejaVu fonts present on host).",
+  "viz_node_limit_override": "graph has 5649 nodes > graphify default 5000 HTML limit; rendered full-node view with GRAPHIFY_VIZ_NODE_LIMIT=6000 (documented env knob). Browser loaded all nodes without page errors; layout is dense — use search/filters.",
+  "environment": "missing Chromium shared libs (atk, atk-bridge, atspi, cups, asound, Xdamage, XRes, avahi) provisioned by apt-get download + dpkg -x into isolated scratch via LD_LIBRARY_PATH; no system or app dependency changes. Page served from a scratch copy over 127.0.0.1 http (empty favicon supplied so the local server adds no 404).",
+  "html_sha256": "3a661da78bca6b44dc543f92c2e9601a6aa6f4d220933b77f636a8cd7c964e10",
+  "preview_sha256": "c59662d1b3f56219771ae38e350675582443d5c643ce8246cf5e788d782d8f6b",
+  "revision": "69587777f1d7f41b76f41f686cf21d67d6a0b92b",
   "navigation": "local artifact file; no runtime app requested"
 }

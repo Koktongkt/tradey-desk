@@ -1,22 +1,62 @@
 {
-  "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
-  "selected_files_verified": 172,
+  "revision": "69587777f1d7f41b76f41f686cf21d67d6a0b92b",
+  "checkout_head_at_verification": "69587777f1d7f41b76f41f686cf21d67d6a0b92b",
+  "selected_files_verified": 212,
   "git_tree_sha256_match": true,
-  "worktree_source_bytes_match": true,
   "analysis_snapshot_bytes_match": true,
-  "source_word_count": 177327,
-  "independent_second_build": "raw extraction and all community memberships identical",
+  "worktree_source_bytes_match": true,
+  "scope_partition_matches_git_tree": true,
+  "tracked_paths_at_revision": 331,
+  "excluded_tracked_paths": 119,
+  "source_word_count": 228858,
+  "independent_second_build": "fresh copy of snapshot re-extracted and re-clustered in separate scratch dir: raw extraction and all 228 community memberships identical",
   "graph_counts": {
-    "nodes": 4269,
-    "edges": 10541,
-    "communities": 180
+    "nodes": 5649,
+    "edges": 14592,
+    "communities": 228
+  },
+  "raw_counts": {
+    "nodes": 5586,
+    "edges": 15177
   },
   "raw_confidence_counts": {
-    "EXTRACTED": 10269,
-    "INFERRED": 700
+    "EXTRACTED": 14242,
+    "INFERRED": 935
   },
-  "browser_hash_bindings_verified": true,
   "required_static_edges_verified": true,
+  "required_static_edges": [
+    [
+      "alpha_radar_live_research",
+      "alpha_radar_focused_retrieval",
+      "L2234"
+    ],
+    [
+      "alpha_radar_live_research",
+      "alpha_radar_gather_evidence",
+      "L2263"
+    ],
+    [
+      "alpha_radar_live_research",
+      "alpha_radar_synthesize_candidate",
+      "L2543"
+    ],
+    [
+      "run_cycle_main",
+      "run_cycle_scheduled_slot",
+      "L273"
+    ],
+    [
+      "run_cycle_main",
+      "run_cycle_in_window",
+      "L275"
+    ],
+    [
+      "run_cycle_main",
+      "run_cycle_execute",
+      "L278"
+    ]
+  ],
+  "browser_hash_bindings_verified": true,
   "private_or_operational_state_read": false,
   "source_execution": false,
   "runtime_tests_run": false,
