@@ -8,7 +8,7 @@
     "output": "docs/process-flow/tradey-desk.workflow.html",
     "repository": {
       "url": "https://github.com/Koktongkt/tradey-desk.git",
-      "revision": "237b8251e027c5469263a4afbb6688a0789388fd",
+      "revision": "69587777f1d7f41b76f41f686cf21d67d6a0b92b",
       "link_mode": "local-only"
     }
   },
@@ -40,48 +40,27 @@
     }
   ],
   "mainPath": [
-    "schedule",
     "scout",
     "evidence",
+    "admission",
     "synthesis",
     "qualify",
     "dossier"
   ],
   "nodes": [
     {
-      "id": "schedule",
+      "id": "scout",
       "lane": "research",
       "col": 0,
-      "type": "messagebus",
-      "label": "NY-time scheduler",
-      "sublabel": "Premarket + radar",
+      "type": "backend",
+      "label": "Scheduled discovery",
+      "sublabel": "Six lanes; NY-time slots",
       "width": 144,
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 223,
-          "end_line": 247
-        },
-        {
-          "path": "cron/autotrader.schedule",
-          "line": 1,
-          "end_line": 1
-        }
-      ]
-    },
-    {
-      "id": "scout",
-      "lane": "research",
-      "col": 1,
-      "type": "backend",
-      "label": "Six-lane discovery",
-      "sublabel": "Search + fixed selector",
-      "width": 144,
-      "sources": [
-        {
-          "path": "discovery_collection.py",
-          "line": 12,
-          "end_line": 33
+          "line": 261,
+          "end_line": 285
         },
         {
           "path": "discovery_pipeline.py",
@@ -90,8 +69,8 @@
         },
         {
           "path": "alpha_radar.py",
-          "line": 1837,
-          "end_line": 1859
+          "line": 2191,
+          "end_line": 2213
         }
       ],
       "tag": "up to 5 ideas"
@@ -99,7 +78,7 @@
     {
       "id": "evidence",
       "lane": "research",
-      "col": 2,
+      "col": 1,
       "type": "cloud",
       "label": "Retrieve + rank",
       "sublabel": "Focused + bounded rescue",
@@ -112,16 +91,43 @@
         },
         {
           "path": "alpha_radar.py",
-          "line": 1289,
-          "end_line": 1348
+          "line": 1340,
+          "end_line": 1399
         },
         {
           "path": "alpha_radar.py",
-          "line": 1890,
-          "end_line": 2037
+          "line": 2346,
+          "end_line": 2430
         }
       ],
       "tag": ">=2 publisher domains"
+    },
+    {
+      "id": "admission",
+      "lane": "research",
+      "col": 2,
+      "type": "security",
+      "label": "Admission gate",
+      "sublabel": "Acquisition: private lead",
+      "width": 144,
+      "sources": [
+        {
+          "path": "alpha_radar.py",
+          "line": 2010,
+          "end_line": 2036
+        },
+        {
+          "path": "alpha_radar.py",
+          "line": 2459,
+          "end_line": 2519
+        },
+        {
+          "path": "radar_memory.py",
+          "line": 133,
+          "end_line": 190
+        }
+      ],
+      "tag": "policy if activated"
     },
     {
       "id": "synthesis",
@@ -134,18 +140,18 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 2038,
-          "end_line": 2096
+          "line": 2520,
+          "end_line": 2597
         },
         {
           "path": "alpha_radar.py",
-          "line": 2099,
-          "end_line": 2138
+          "line": 2600,
+          "end_line": 2640
         },
         {
           "path": "alpha_radar.py",
-          "line": 1513,
-          "end_line": 1527
+          "line": 1564,
+          "end_line": 1576
         }
       ],
       "tag": "up to 5 distinct"
@@ -161,13 +167,13 @@
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 2140,
-          "end_line": 2175
+          "line": 2642,
+          "end_line": 2681
         },
         {
           "path": "alpha_radar.py",
-          "line": 1802,
-          "end_line": 1817
+          "line": 2139,
+          "end_line": 2159
         },
         {
           "path": "alpha_radar.py",
@@ -183,18 +189,18 @@
       "col": 5,
       "type": "database",
       "label": "Hashed dossier",
-      "sublabel": "Verified research, age <=60m",
+      "sublabel": "Verified; age ≤60m",
       "width": 144,
       "sources": [
         {
           "path": "alpha_radar.py",
-          "line": 2301,
-          "end_line": 2307
+          "line": 2876,
+          "end_line": 2889
         },
         {
           "path": "autotrader.py",
-          "line": 1253,
-          "end_line": 1274
+          "line": 1254,
+          "end_line": 1283
         }
       ]
     },
@@ -203,53 +209,54 @@
       "lane": "decision",
       "col": 0,
       "type": "security",
-      "label": "Observe pending first",
-      "sublabel": "Observe; then candidate",
+      "label": "Reconcile first",
+      "sublabel": "Full fills journaled",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1428,
-          "end_line": 1474
+          "line": 1561,
+          "end_line": 1595
         },
         {
           "path": "managed_reconciliation.py",
-          "line": 365,
-          "end_line": 488
+          "line": 420,
+          "end_line": 529
         },
         {
           "path": "sqlite_ledger.py",
-          "line": 323,
-          "end_line": 382
+          "line": 507,
+          "end_line": 567
         }
       ],
-      "tag": "operational import"
+      "tag": "partial: no accounting"
     },
     {
-      "id": "truth",
+      "id": "authority",
       "lane": "decision",
       "col": 1,
       "type": "cloud",
-      "label": "Broker + market truth",
-      "sublabel": "IEX + Massive REST",
+      "label": "Entry authority",
+      "sublabel": "Broker truth; no add-on",
       "width": 144,
       "sources": [
         {
+          "path": "autotrader.py",
+          "line": 1596,
+          "end_line": 1663
+        },
+        {
+          "path": "entry_eligibility.py",
+          "line": 180,
+          "end_line": 230
+        },
+        {
           "path": "broker_mcp_bridge.py",
-          "line": 230,
-          "end_line": 323
-        },
-        {
-          "path": "market_data.py",
-          "line": 18,
-          "end_line": 40
-        },
-        {
-          "path": "market_data.py",
-          "line": 98,
-          "end_line": 131
+          "line": 222,
+          "end_line": 330
         }
-      ]
+      ],
+      "tag": "if activated"
     },
     {
       "id": "proposal",
@@ -262,8 +269,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 314,
-          "end_line": 364
+          "line": 320,
+          "end_line": 370
         },
         {
           "path": "pending_policy.py",
@@ -289,15 +296,21 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 891,
-          "end_line": 964
+          "line": 908,
+          "end_line": 960
         },
         {
           "path": "autotrader.py",
-          "line": 1506,
-          "end_line": 1509
+          "line": 1699,
+          "end_line": 1707
+        },
+        {
+          "path": "review_history.py",
+          "line": 11,
+          "end_line": 63
         }
-      ]
+      ],
+      "tag": "APPROVE/HOLD stored"
     },
     {
       "id": "consensus",
@@ -310,8 +323,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 374,
-          "end_line": 393
+          "line": 380,
+          "end_line": 399
         }
       ],
       "tag": "score >=0.55"
@@ -327,13 +340,13 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1374,
-          "end_line": 1410
+          "line": 1499,
+          "end_line": 1525
         },
         {
           "path": "autotrader.py",
-          "line": 1520,
-          "end_line": 1568
+          "line": 1726,
+          "end_line": 1776
         },
         {
           "path": "entry_state.py",
@@ -374,19 +387,19 @@
       "lane": "execution",
       "col": 3,
       "type": "cloud",
-      "label": "Exact broker readback",
+      "label": "Broker readback",
       "sublabel": "Unknown: no resubmit",
       "width": 144,
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 1568,
-          "end_line": 1583
+          "line": 1776,
+          "end_line": 1791
         },
         {
           "path": "autotrader.py",
-          "line": 1205,
-          "end_line": 1230
+          "line": 1201,
+          "end_line": 1231
         }
       ]
     },
@@ -396,23 +409,23 @@
       "col": 2,
       "type": "database",
       "label": "Durable journals",
-      "sublabel": "Lifecycle ≠ confirmed fill",
+      "sublabel": "Lifecycle ≠ fill",
       "width": 144,
       "sources": [
         {
-          "path": "autotrader.py",
-          "line": 696,
-          "end_line": 713
+          "path": "entry_fills.py",
+          "line": 99,
+          "end_line": 110
         },
         {
           "path": "sqlite_ledger.py",
-          "line": 282,
-          "end_line": 320
+          "line": 334,
+          "end_line": 377
         },
         {
           "path": "managed_reconciliation.py",
-          "line": 464,
-          "end_line": 469
+          "line": 559,
+          "end_line": 564
         }
       ]
     },
@@ -428,12 +441,12 @@
         {
           "path": "candidate_outcomes.py",
           "line": 11,
-          "end_line": 39
+          "end_line": 36
         },
         {
           "path": "run_cycle.py",
-          "line": 242,
-          "end_line": 246
+          "line": 280,
+          "end_line": 284
         }
       ]
     },
@@ -448,13 +461,13 @@
       "sources": [
         {
           "path": "shadow_calibration.py",
-          "line": 25,
-          "end_line": 57
+          "line": 16,
+          "end_line": 48
         },
         {
           "path": "shadow_calibration.py",
-          "line": 95,
-          "end_line": 118
+          "line": 86,
+          "end_line": 109
         }
       ]
     },
@@ -463,19 +476,19 @@
       "lane": "reporting",
       "col": 4,
       "type": "frontend",
-      "label": "Sanitized dashboard",
-      "sublabel": "Allowlisted public metrics",
+      "label": "Public dashboard",
+      "sublabel": "Allowlisted; dark/light UI",
       "width": 144,
       "sources": [
         {
           "path": "public_dashboard.py",
-          "line": 14,
-          "end_line": 26
+          "line": 176,
+          "end_line": 214
         },
         {
           "path": "public_dashboard.py",
-          "line": 176,
-          "end_line": 214
+          "line": 14,
+          "end_line": 26
         }
       ]
     },
@@ -484,14 +497,14 @@
       "lane": "reporting",
       "col": 5,
       "type": "cloud",
-      "label": "Dashboard deployment",
+      "label": "Dashboard deploy",
       "sublabel": "Separate scheduled mode",
       "width": 144,
       "sources": [
         {
           "path": "run_cycle.py",
-          "line": 242,
-          "end_line": 248
+          "line": 280,
+          "end_line": 286
         }
       ]
     },
@@ -506,8 +519,8 @@
       "sources": [
         {
           "path": "autotrader.py",
-          "line": 472,
-          "end_line": 640
+          "line": 478,
+          "end_line": 646
         },
         {
           "path": "pending_policy.py",
@@ -518,6 +531,32 @@
           "path": "managed_reconciliation.py",
           "line": 227,
           "end_line": 290
+        }
+      ]
+    },
+    {
+      "id": "noentry",
+      "lane": "exceptions",
+      "col": 1,
+      "type": "security",
+      "label": "No new entry",
+      "sublabel": "Held / spent / reviewed",
+      "width": 144,
+      "sources": [
+        {
+          "path": "autotrader.py",
+          "line": 1449,
+          "end_line": 1462
+        },
+        {
+          "path": "autotrader.py",
+          "line": 1636,
+          "end_line": 1638
+        },
+        {
+          "path": "entry_eligibility.py",
+          "line": 222,
+          "end_line": 230
         }
       ]
     },
@@ -549,7 +588,7 @@
       "col": 1,
       "type": "cloud",
       "label": "Broker + ledger reads",
-      "sublabel": "Paper, exact refs; no repair",
+      "sublabel": "Exact refs; no repair",
       "width": 144,
       "sources": [
         {
@@ -571,7 +610,7 @@
       "col": 2,
       "type": "security",
       "label": "Protection + horizon",
-      "sublabel": "Quantity, exits + exposure",
+      "sublabel": "Qty, exits + exposure",
       "width": 144,
       "sources": [
         {
@@ -712,7 +751,7 @@
       "lane": "watchdog",
       "col": 2,
       "type": "cloud",
-      "label": "Thesis source workers",
+      "label": "Thesis sources",
       "sublabel": "SEC / issuer / earnings",
       "width": 144,
       "sources": [
@@ -788,8 +827,8 @@
       "lane": "watchdog",
       "col": 5,
       "type": "cloud",
-      "label": "Daily summary + alerts",
-      "sublabel": "Emission != acknowledgment",
+      "label": "Daily summary/alerts",
+      "sublabel": "Emitted ≠ acknowledged",
       "width": 144,
       "sources": [
         {
@@ -815,7 +854,7 @@
       "lane": "exceptions",
       "col": 0,
       "type": "security",
-      "label": "Deadline observation",
+      "label": "Deadline observer",
       "sublabel": "Forward only; no cancel",
       "width": 144,
       "sources": [
@@ -834,13 +873,6 @@
   ],
   "edges": [
     {
-      "id": "schedule-scout",
-      "to": "scout",
-      "variant": "default",
-      "role": "main",
-      "from": "schedule"
-    },
-    {
       "id": "scout-evidence",
       "to": "evidence",
       "variant": "default",
@@ -849,12 +881,19 @@
       "label": "ideas"
     },
     {
-      "id": "evidence-synthesis",
-      "to": "synthesis",
+      "id": "evidence-admission",
+      "to": "admission",
       "variant": "default",
       "role": "main",
-      "from": "evidence",
-      "label": "ranked"
+      "from": "evidence"
+    },
+    {
+      "id": "admission-synthesis",
+      "to": "synthesis",
+      "variant": "security",
+      "role": "main",
+      "from": "admission",
+      "label": "admitted"
     },
     {
       "id": "synthesis-qualify",
@@ -880,20 +919,28 @@
       "label": "next trader slot"
     },
     {
-      "id": "reconcile-truth",
-      "to": "truth",
+      "id": "reconcile-authority",
+      "to": "authority",
       "variant": "default",
       "role": "main",
       "from": "reconcile",
       "label": "continue"
     },
     {
-      "id": "truth-proposal",
+      "id": "authority-noentry",
+      "to": "noentry",
+      "variant": "security",
+      "role": "error",
+      "from": "authority",
+      "label": "held / spent"
+    },
+    {
+      "id": "authority-proposal",
       "to": "proposal",
       "variant": "default",
       "role": "main",
-      "from": "truth",
-      "label": "proof"
+      "from": "authority",
+      "label": "clear"
     },
     {
       "id": "proposal-reviews",
@@ -1074,18 +1121,27 @@
       "dot": "cyan",
       "title": "Discovery and focused evidence • no trading authority",
       "items": [
-        "Six code-owned search lanes: broad, SEC, issuer IR, reporting, undercovered wire and rotating sector. A one-turn tool-free selector admits at most five source-bound company/event pairs; private history supports selection. Discovery does not require a two-source bundle.",
+        "Six code-owned search lanes: broad, SEC, issuer IR, reporting, undercovered wire and rotating sector. A one-turn tool-free selector admits at most five source-bound company/event pairs; policy skips never admit a sixth lead. Discovery does not require a two-source bundle.",
         "Focused search, safety validation and fair allocation admit up to five URLs per candidate / 25 unique URLs; at most three singleton extraction supervisors run concurrently under one original deadline. Actual extraction envelopes, not search/model prose, establish page content; accepted focused pages can be reused.",
         "Ordinary fetch/cache, SEC dates and publication recovery precede ranking. At least two distinct accepted publisher domains are required. Evidence score uses provenance, independent/primary corroboration, completeness and freshness; scout order breaks ties."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Admission gate • activation-gated opportunity policy and research memory",
+      "items": [
+        "No activation record keeps the legacy floor: exact-dossier review protection, no event allowance. Activated v1/v2 resolves trusted SEC issuer/event identity and skips spent generations, held symbols and same-symbol pending entries; unknown or conflicting identity fails closed. v2 binds candidates to one approved prospective baseline.",
+        "Activated v3 retires event admission: exact-document research memory keyed by verified issuer, representation, content digest and rules. Completed work is reusable for under 24 hours, failed resources cool down 20 minutes, and a memory hit reuses a still-fresh unreviewed dossier or skips a duplicate bundle. Cache damage runs uncached; it never relaxes history or execution checks.",
+        "Outside v3 memory mode, acquisition-hinted leads are retained privately as research-only records and never become candidates. SEC identity capture uses bounded exact-URL fetches inside the remaining evidence deadline; no model, broker or new allowance. Activation needs an explicit approved-digest admin apply and was not inspected."
       ]
     },
     {
       "dot": "amber",
       "title": "Rescue, sequential alternatives and distinct failure paths",
       "items": [
-        "Thin-bundle rescue preserves accepted evidence and resumes bounded operation turns across up to three candidates: retained alternatives, SEC primary lookup, then missing independent/wire lane searches. Gap retrieval consumes actual result URLs; accepted publishers and attempted URLs are excluded.",
-        "If no initial eligible bundle exists, rescue precedes synthesis. Otherwise eligible candidates run first; only after their local rejections can deferred rescue/recovery rerank unattempted symbols under the original deadlines. Rescue does not reset recovery or evidence budgets.",
-        "Up to five distinct evidence-eligible symbols receive sequential tool-free synthesis plus the same deterministic intake. Explicit none / candidate-local policy rejection continues; first intake pass returns immediately. Infrastructure, parse, containment, market-data ambiguity and persistence failures abort rather than trying another candidate."
+        "Thin-bundle rescue preserves accepted evidence and resumes bounded operation turns across up to three candidates: retained alternatives, SEC primary lookup, then missing independent/wire lane searches. Proven spent/held facts can prune rescue; unknown thin bundles still receive it. Rescue does not reset recovery or evidence budgets.",
+        "Up to five distinct evidence-eligible symbols receive sequential tool-free synthesis plus the same deterministic intake. Explicit none / candidate-local rejection continues; first intake pass returns immediately. Infrastructure, parse, containment, market-data ambiguity and persistence failures abort rather than trying another candidate.",
+        "When every remaining lead is policy-skipped or retained as research-only, Radar reports no_new_eligible_opportunity (exit 0). A mixed run whose last attempt ends in an ordinary none keeps the no_fresh_setup class."
       ]
     },
     {
@@ -1094,16 +1150,16 @@
       "items": [
         "Synthesis: 270 cumulative seconds across all candidates, no per-candidate cap. Enrichment: separate 90 cumulative seconds. Enrichment pauses synthesis charging but still consumes the 960-second absolute active deadline; outer research wrapper is 990 seconds. Minimum viable launch/reserve checks still apply.",
         "Prompt anchors actual UTC and New York as-of times and requires a future timezone-aware UTC ISO exit with 1–30 entry-inclusive holding sessions. No date repair. Intake checks exit-aware earnings through planned exit plus weekday blackout; the unchanged broker actual-session earnings gate remains authoritative.",
-        "Enrichment resolves trusted earnings and synchronized completed stock/SPY prices. market_data.py calls Massive REST with a credential read from Massive MCP configuration; broker bridge also reads Massive completed daily technical bars/volume. Alpaca MCP supplies account/order/calendar and IEX quote truth. FRED is not integrated into this candidate flow."
+        "Enrichment resolves trusted earnings and synchronized completed stock/SPY prices via Massive REST (credential read from Massive MCP configuration). Alpaca MCP supplies account/order/calendar and IEX quote truth. FRED is not integrated. Radar CLI runs also write a private best-effort enrichment trace (max 124 rows per attempt); it changes no budget, routing or gate."
       ]
     },
     {
       "dot": "cyan",
       "title": "Producer / consumer cadence • New York time",
       "items": [
-        "Premarket 09:00 ET; radar 10:00–15:40 at :00/:20/:40. Autotrader UTC grid: 18,38,58 13-20 * * 1-5; NY slot AND weekday 09:30–16:00 fence accept 09:38/09:58, then 10:18–15:58 at :18/:38/:58.",
-        "09:18, obsolete :15/:35/:40/:55 and off-window fires do not execute. Cheap launch fences do not infer holidays/early closes; broker regular-session validation remains authoritative. Code-defined schedule is not installed-job readback.",
-        "Radar-to-consumer spacing is 18 minutes; 990-second wrapper leaves nominal 90 seconds, not guaranteed non-overlap. Reconciliation uses a separate shifted :02/:12/:22/:32/:42/:52 grid and shared nonblocking entry lock. Dossiers remain subject to freshness/review gates."
+        "Premarket 09:00 ET; radar 10:00–15:40 at :00/:20/:40. Autotrader UTC grid: 18,38,58 13-20 * * 1-5; NY slot AND weekday 09:30–16:00 fence accept 09:38/09:58, then 10:18–15:58 at :18/:38/:58. 09:18 and off-window fires do not execute; broker regular-session validation remains authoritative.",
+        "Radar-to-consumer spacing is 18 minutes; 990-second wrapper leaves nominal 90 seconds, not guaranteed non-overlap. Reconciliation uses a separate :02/:12/:22/:32/:42/:52 grid and the shared nonblocking entry lock. Code-defined schedules are not installed-job readback.",
+        "A cron-shaped pre-open URL-admission check wrapper is validation-only (config/DNS reads; no fetch, model, broker or ledger write): silent on pass, one SYSTEM_FAILURE line and exit 3 on failure. No committed schedule time; it does not prove research health."
       ]
     },
     {
@@ -1119,8 +1175,8 @@
       "dot": "violet",
       "title": "Independent decision, not model-selected order fields",
       "items": [
-        "Initial sealed exact-snapshot/local-state proof feeds sizing and pre-review checks; post-review checks revalidate it; fresh broker-review snapshot is independently requalified before durable intent, all under canonical cross-process .entry_state.lock.",
-        "Python fixes ask, completed-bar levels, shares and entry metadata before hashing. Both independent tool-free reviewers receive that immutable proposal and effective pending capacity; they cannot change order fields. Lower score >=0.55; R/R >=1.6.",
+        "Under an activated policy, any positive broker position blocks a new BUY (no add-on) before sizing and paid review; bounded broker observations must be under 120 seconds old and read within 120 seconds. The exact approved attempt is re-proven and rechecked under the entry lock before intent.",
+        "Python fixes ask, completed-bar levels, shares and entry metadata before hashing. Both independent tool-free reviewers receive that immutable proposal; only exact APPROVE/HOLD outputs are persisted, anything else is recorded as reviewer-unavailable. Both must approve; lower score >=0.55; R/R >=1.6.",
         "New short 1–5-session intents expire at placement-session regular close; swing 6–30 at the next actual session close. Authoritative New York calendar handles early closes, DST and holidays. Entry deadline is not the investment holding deadline."
       ]
     },
@@ -1128,10 +1184,10 @@
       "dot": "amber",
       "title": "Source pin, not operational or deployment evidence",
       "items": [
-        "Frozen committed source: 237b825. This documentation refresh does not deploy, activate schedules, inspect accounts, call models or execute broker actions. Artifact checks establish diagram integrity, not runtime acceptance or release approval.",
-        "Expiry is OBSERVATION ONLY: SAFE_PARENT_CANCEL_VERIFIED=False. Legacy intents without metadata, including legacy UBER, are never retrofitted. Passing a deadline never frees a slot, cash/exposure reservation or daily quota; exact confirmed lifecycle reconciliation is required.",
-        "Operational reconciliation explicitly imports projections when an existing database is present. verify_only qualification preserves business JSONL/SQLite bytes; typed repair-required or pending WAL/recovery fails closed. Coordination lock files may be created.",
-        "Stable outer Linux subreaper owns inner supervisor, wrapper and detached orphans. Caller pidfd and inherited entry-lock descriptions preserve authority until owned descendants are reaped, including caller death. External custodian SIGKILL/OOM, container death and uninterruptible tasks remain outside the internally controlled guarantee; no sandbox or broker rollback."
+        "Frozen committed source: 6958777. This documentation refresh does not deploy, activate policies or schedules, inspect accounts, call models or execute broker actions. Artifact checks establish diagram integrity, not runtime acceptance or release approval.",
+        "Expiry is OBSERVATION ONLY: SAFE_PARENT_CANCEL_VERIFIED=False. Legacy intents without metadata are never retrofitted. Passing a deadline never frees a slot, cash/exposure reservation or daily quota; exact confirmed lifecycle reconciliation is required.",
+        "Reconciliation journals a saved pending entry only on an exact broker full fill (journal before lifecycle row; idempotent fill key). A saved partial readback may advance only to that exact full fill; partial accounting stays unsupported. verify_only reports managed_repair_required instead of writing.",
+        "Stable outer Linux subreaper owns inner supervisor, wrapper and detached orphans. Caller pidfd and inherited entry-lock descriptions preserve authority until owned descendants are reaped. External custodian SIGKILL/OOM, container death and uninterruptible tasks remain outside the guarantee; no sandbox or broker rollback."
       ]
     },
     {
@@ -1140,7 +1196,7 @@
       "items": [
         "Mechanical: UTC 5 14-21 * * 1-5, only :05 inside a verified session; protection, quantity, exit horizon and exposure. Hard bound: 120 seconds.",
         "Daily: UTC 15,45 17-22 * * 1-5, only close+15 / close+45. Adds managed-strategy versus account accounting, benchmark coverage and versioned-thesis monitoring. Hard bound: 900 seconds.",
-        "Both read broker and operational ledgers and write only monitoring outputs. A separate monitoring lock cannot block the trader. No order placement, cancellation, liquidation, journal repair or kill-switch changes."
+        "Both read broker and operational ledgers and write only monitoring outputs. Research memory is excluded from operational authority, so an absent cache cannot disable monitoring; order coalescing tolerates only sub-microsecond timestamp rounding. No order placement, cancellation, liquidation, journal repair or kill-switch changes."
       ]
     },
     {
@@ -1158,7 +1214,7 @@
       "items": [
         "The later daily slot retries report installation, pending-outbox delivery and completion marker only after an observation is already committed; it does not repeat thesis retrieval or claim fresh all-clear.",
         "Mechanical runs without exceptions are silent; daily successful runs emit a report/coverage summary. Out-of-slot launches are silent no-ops, not completed observations.",
-        "Hermes cron relays sanitized stdout, not a provider receipt. Schema 1 retains legacy receiptless replay. Explicitly activated schema 2 keeps historical outbox evidence but separately records suppression/prepared/emitted/failed; current urgent conditions remind after 24h and one daily summary follows installation. Emitted is not delivered; crashes may lose messages and raised transports may duplicate. Activation was not inspected."
+        "Hermes cron relays sanitized stdout, not a provider receipt. Schema 1 retains legacy receiptless replay. Explicitly activated schema 2 separately records suppression/prepared/emitted/failed; urgent conditions remind after 24h and one daily summary follows installation. Emitted is not delivered. Activation was not inspected."
       ]
     }
   ]

@@ -459,76 +459,76 @@ rect.c-bg-rect { fill: var(--bg); }
 
 
         <!-- Edge paths -->
-        <path data-edge-from="consensus" data-edge-to="final" data-edge-label="both approve" data-edge-key="0" data-edge-id="consensus-final" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,246;1070,246" d="M 994.4 246 L 1070 246" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="consensus" data-edge-to="stop" data-edge-label="veto / invalid" data-edge-key="1" data-edge-id="consensus-stop" data-edge-role="error" data-composition-points="922.4,280;922.4,345" d="M 922.4 280 L 922.4 345" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="dashboard" data-edge-to="publish" data-edge-key="2" data-edge-id="dashboard-publish" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,837;1070,837" d="M 994.4 837 L 1070 837" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="dossier" data-edge-to="reconcile" data-edge-label="next trader slot" data-edge-key="3" data-edge-id="dossier-reconcile" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="1142,94;1142,36;32,36;32,246;48,246" d="M 1142 94 L 1142 36 L 32 36 L 32 246 L 48 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="evidence" data-edge-to="synthesis" data-edge-label="ranked" data-edge-key="4" data-edge-id="evidence-synthesis" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,120;668.4,120" d="M 578.4 120 L 668.4 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="final" data-edge-to="submit" data-edge-label="fresh gates + lock" data-edge-key="5" data-edge-id="final-submit" data-edge-role="main" data-composition-points="1142,280;1142,469" d="M 1142 280 L 1142 469" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="qualify" data-edge-to="synthesis" data-edge-label="next" data-edge-key="6" data-edge-id="intake-next-candidate" data-edge-role="return" data-composition-points="922.4,86;922.4,70;740.4,70;740.4,86" d="M 922.4 86 L 922.4 70 L 740.4 70 L 740.4 86" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="journal" data-edge-to="outcomes" data-edge-label="post-close" data-edge-key="7" data-edge-id="journal-outcomes" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="434.4,495;20,495;20,837;434.4,837" d="M 434.4 495 L 20 495 L 20 837 L 434.4 837" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="journal" data-edge-to="wm-snapshot" data-edge-label="read only" data-edge-key="8" data-edge-id="journal-watchdog-read" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="506.4,521;506.4,542;320.4,542;320.4,586" d="M 506.4 521 L 506.4 542 L 320.4 542 L 320.4 586" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="outcomes" data-edge-to="shadow" data-edge-key="9" data-edge-id="outcomes-shadow" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,837;668.4,837" d="M 578.4 837 L 668.4 837" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="proposal" data-edge-to="reviews" data-edge-label="precheck passes" data-edge-key="10" data-edge-id="proposal-reviews" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,246;668.4,246" d="M 578.4 246 L 668.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="qualify" data-edge-to="dossier" data-edge-label="first pass" data-edge-key="11" data-edge-id="qualify-dossier" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,120;1070,120" d="M 994.4 120 L 1070 120" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="readback" data-edge-to="journal" data-edge-label="exact state" data-edge-key="12" data-edge-id="readback-journal" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="668.4,495;578.4,495" d="M 668.4 495 L 578.4 495" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="reconcile" data-edge-to="expiry" data-edge-label="observe" data-edge-key="13" data-edge-id="reconcile-expiry" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="48,258;32,258;32,424;120,424;120,397" d="M 48 258 L 32 258 L 32 424 L 120 424 L 120 397" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="reconcile" data-edge-to="truth" data-edge-label="continue" data-edge-key="14" data-edge-id="reconcile-truth" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,246;248.39999999999998,246" d="M 192 246 L 248.39999999999998 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="reviews" data-edge-to="consensus" data-edge-key="15" data-edge-id="reviews-consensus" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,246;850.4,246" d="M 812.4 246 L 850.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="schedule" data-edge-to="scout" data-edge-key="16" data-edge-id="schedule-scout" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,120;248.39999999999998,120" d="M 192 120 L 248.39999999999998 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="scout" data-edge-to="evidence" data-edge-label="ideas" data-edge-key="17" data-edge-id="scout-evidence" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,120;434.4,120" d="M 392.4 120 L 434.4 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="shadow" data-edge-to="dashboard" data-edge-key="18" data-edge-id="shadow-dashboard" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,837;850.4,837" d="M 812.4 837 L 850.4 837" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="submit" data-edge-to="readback" data-edge-key="19" data-edge-id="submit-readback" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="1070,495;812.4,495" d="M 1070 495 L 812.4 495" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="synthesis" data-edge-to="qualify" data-edge-key="20" data-edge-id="synthesis-qualify" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,120;850.4,120" d="M 812.4 120 L 850.4 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="truth" data-edge-to="proposal" data-edge-label="proof" data-edge-key="21" data-edge-id="truth-proposal" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,246;434.4,246" d="M 392.4 246 L 434.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wd-account" data-edge-to="wd-source" data-edge-key="22" data-edge-id="wd-account-wd-source" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,720;434.4,720" d="M 392.4 720 L 434.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wd-classify" data-edge-to="wd-store" data-edge-key="23" data-edge-id="wd-classify-wd-store" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,720;850.4,720" d="M 812.4 720 L 850.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wd-clock" data-edge-to="wd-account" data-edge-key="24" data-edge-id="wd-clock-wd-account" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,720;248.39999999999998,720" d="M 192 720 L 248.39999999999998 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wd-source" data-edge-to="wd-classify" data-edge-key="25" data-edge-id="wd-source-wd-classify" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,720;668.4,720" d="M 578.4 720 L 668.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wd-store" data-edge-to="wd-relay" data-edge-key="26" data-edge-id="wd-store-wd-relay" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,720;1070,720" d="M 994.4 720 L 1070 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wm-checks" data-edge-to="wm-coverage" data-edge-key="27" data-edge-id="wm-checks-wm-coverage" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,612;668.4,612" d="M 578.4 612 L 668.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wm-clock" data-edge-to="wm-snapshot" data-edge-key="28" data-edge-id="wm-clock-wm-snapshot" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,612;248.39999999999998,612" d="M 192 612 L 248.39999999999998 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wm-coverage" data-edge-to="wm-store" data-edge-key="29" data-edge-id="wm-coverage-wm-store" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,612;850.4,612" d="M 812.4 612 L 850.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wm-snapshot" data-edge-to="wm-checks" data-edge-key="30" data-edge-id="wm-snapshot-wm-checks" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,612;434.4,612" d="M 392.4 612 L 434.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="wm-store" data-edge-to="wm-relay" data-edge-key="31" data-edge-id="wm-store-wm-relay" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,612;1070,612" d="M 994.4 612 L 1070 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="admission" data-edge-to="synthesis" data-edge-label="admitted" data-edge-key="0" data-edge-id="admission-synthesis" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,120;668.4,120" d="M 578.4 120 L 668.4 120" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="authority" data-edge-to="noentry" data-edge-label="held / spent" data-edge-key="1" data-edge-id="authority-noentry" data-composition-routing="workflow-v2-auto" data-edge-role="error" data-composition-points="320.4,280;320.4,345" d="M 320.4 280 L 320.4 345" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="authority" data-edge-to="proposal" data-edge-label="clear" data-edge-key="2" data-edge-id="authority-proposal" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,246;434.4,246" d="M 392.4 246 L 434.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="consensus" data-edge-to="final" data-edge-label="both approve" data-edge-key="3" data-edge-id="consensus-final" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,246;1070,246" d="M 994.4 246 L 1070 246" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="consensus" data-edge-to="stop" data-edge-label="veto / invalid" data-edge-key="4" data-edge-id="consensus-stop" data-edge-role="error" data-composition-points="922.4,280;922.4,345" d="M 922.4 280 L 922.4 345" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="dashboard" data-edge-to="publish" data-edge-key="5" data-edge-id="dashboard-publish" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,837;1070,837" d="M 994.4 837 L 1070 837" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="dossier" data-edge-to="reconcile" data-edge-label="next trader slot" data-edge-key="6" data-edge-id="dossier-reconcile" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="1142,94;1142,36;32,36;32,246;48,246" d="M 1142 94 L 1142 36 L 32 36 L 32 246 L 48 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="evidence" data-edge-to="admission" data-edge-key="7" data-edge-id="evidence-admission" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,120;434.4,120" d="M 392.4 120 L 434.4 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="final" data-edge-to="submit" data-edge-label="fresh gates + lock" data-edge-key="8" data-edge-id="final-submit" data-edge-role="main" data-composition-points="1142,280;1142,469" d="M 1142 280 L 1142 469" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="qualify" data-edge-to="synthesis" data-edge-label="next" data-edge-key="9" data-edge-id="intake-next-candidate" data-edge-role="return" data-composition-points="922.4,86;922.4,70;740.4,70;740.4,86" d="M 922.4 86 L 922.4 70 L 740.4 70 L 740.4 86" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="journal" data-edge-to="outcomes" data-edge-label="post-close" data-edge-key="10" data-edge-id="journal-outcomes" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="434.4,495;20,495;20,837;434.4,837" d="M 434.4 495 L 20 495 L 20 837 L 434.4 837" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="journal" data-edge-to="wm-snapshot" data-edge-label="read only" data-edge-key="11" data-edge-id="journal-watchdog-read" data-composition-routing="workflow-v2-auto" data-edge-role="async" data-composition-points="506.4,521;506.4,542;320.4,542;320.4,586" d="M 506.4 521 L 506.4 542 L 320.4 542 L 320.4 586" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="outcomes" data-edge-to="shadow" data-edge-key="12" data-edge-id="outcomes-shadow" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,837;668.4,837" d="M 578.4 837 L 668.4 837" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="proposal" data-edge-to="reviews" data-edge-label="precheck passes" data-edge-key="13" data-edge-id="proposal-reviews" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,246;668.4,246" d="M 578.4 246 L 668.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="qualify" data-edge-to="dossier" data-edge-label="first pass" data-edge-key="14" data-edge-id="qualify-dossier" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,120;1070,120" d="M 994.4 120 L 1070 120" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="readback" data-edge-to="journal" data-edge-label="exact state" data-edge-key="15" data-edge-id="readback-journal" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="668.4,495;578.4,495" d="M 668.4 495 L 578.4 495" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="reconcile" data-edge-to="authority" data-edge-label="continue" data-edge-key="16" data-edge-id="reconcile-authority" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,246;248.39999999999998,246" d="M 192 246 L 248.39999999999998 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="reconcile" data-edge-to="expiry" data-edge-label="observe" data-edge-key="17" data-edge-id="reconcile-expiry" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="48,258;32,258;32,424;120,424;120,397" d="M 48 258 L 32 258 L 32 424 L 120 424 L 120 397" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="reviews" data-edge-to="consensus" data-edge-key="18" data-edge-id="reviews-consensus" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,246;850.4,246" d="M 812.4 246 L 850.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="scout" data-edge-to="evidence" data-edge-label="ideas" data-edge-key="19" data-edge-id="scout-evidence" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,120;248.39999999999998,120" d="M 192 120 L 248.39999999999998 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="shadow" data-edge-to="dashboard" data-edge-key="20" data-edge-id="shadow-dashboard" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,837;850.4,837" d="M 812.4 837 L 850.4 837" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="submit" data-edge-to="readback" data-edge-key="21" data-edge-id="submit-readback" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="1070,495;812.4,495" d="M 1070 495 L 812.4 495" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="synthesis" data-edge-to="qualify" data-edge-key="22" data-edge-id="synthesis-qualify" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,120;850.4,120" d="M 812.4 120 L 850.4 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wd-account" data-edge-to="wd-source" data-edge-key="23" data-edge-id="wd-account-wd-source" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,720;434.4,720" d="M 392.4 720 L 434.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wd-classify" data-edge-to="wd-store" data-edge-key="24" data-edge-id="wd-classify-wd-store" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,720;850.4,720" d="M 812.4 720 L 850.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wd-clock" data-edge-to="wd-account" data-edge-key="25" data-edge-id="wd-clock-wd-account" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,720;248.39999999999998,720" d="M 192 720 L 248.39999999999998 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wd-source" data-edge-to="wd-classify" data-edge-key="26" data-edge-id="wd-source-wd-classify" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,720;668.4,720" d="M 578.4 720 L 668.4 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wd-store" data-edge-to="wd-relay" data-edge-key="27" data-edge-id="wd-store-wd-relay" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,720;1070,720" d="M 994.4 720 L 1070 720" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wm-checks" data-edge-to="wm-coverage" data-edge-key="28" data-edge-id="wm-checks-wm-coverage" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="578.4,612;668.4,612" d="M 578.4 612 L 668.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wm-clock" data-edge-to="wm-snapshot" data-edge-key="29" data-edge-id="wm-clock-wm-snapshot" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="192,612;248.39999999999998,612" d="M 192 612 L 248.39999999999998 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wm-coverage" data-edge-to="wm-store" data-edge-key="30" data-edge-id="wm-coverage-wm-store" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="812.4,612;850.4,612" d="M 812.4 612 L 850.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wm-snapshot" data-edge-to="wm-checks" data-edge-key="31" data-edge-id="wm-snapshot-wm-checks" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="392.4,612;434.4,612" d="M 392.4 612 L 434.4 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="wm-store" data-edge-to="wm-relay" data-edge-key="32" data-edge-id="wm-store-wm-relay" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="994.4,612;1070,612" d="M 994.4 612 L 1070 612" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
 
         <!-- Nodes -->
-        <g id="node-schedule" data-node-id="schedule" data-node-label="NY-time scheduler" tabindex="0" role="button" aria-label="Focus NY-time scheduler, Premarket + radar, 1  Research only" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="Premarket + radar" data-node-context="1  Research only">
-          <title>NY-time scheduler · Premarket + radar · 1  Research only</title>
-          <rect x="48" y="94" width="144" height="52" rx="6" class="c-mask"/>
-          <rect x="48" y="94" width="144" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(54 100) scale(0.6875)">
-            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
-            <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
-            <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
-            <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
-          </g>
-          <text data-node-label="" x="120" y="126" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">NY-time scheduler</text>
-          <text x="120" y="138.3" class="t-muted" font-size="8" text-anchor="middle">Premarket + radar</text>
-        </g>
-
-        <g id="node-scout" data-node-id="scout" data-node-label="Six-lane discovery" tabindex="0" role="button" aria-label="Focus Six-lane discovery, Search + fixed selector, 1  Research only" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Search + fixed selector" data-node-tag="up to 5 ideas" data-node-context="1  Research only">
-          <title>Six-lane discovery · Search + fixed selector · 1  Research only · up to 5 ideas</title>
-          <rect x="248.39999999999998" y="86" width="144" height="68" rx="6" class="c-mask"/>
-          <rect x="248.39999999999998" y="86" width="144" height="68" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(254.39999999999998 92) scale(0.6875)">
+        <g id="node-scout" data-node-id="scout" data-node-label="Scheduled discovery" tabindex="0" role="button" aria-label="Focus Scheduled discovery, Six lanes; NY-time slots, 1  Research only" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Six lanes; NY-time slots" data-node-tag="up to 5 ideas" data-node-context="1  Research only">
+          <title>Scheduled discovery · Six lanes; NY-time slots · 1  Research only · up to 5 ideas</title>
+          <rect x="48" y="86" width="144" height="68" rx="6" class="c-mask"/>
+          <rect x="48" y="86" width="144" height="68" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(54 92) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="320.4" y="120.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Six-lane discovery</text>
-          <text x="320.4" y="135.1" class="t-muted" font-size="8" text-anchor="middle">Search + fixed selector</text>
-        <text x="320.4" y="147.9" class="t-backend" font-size="7" text-anchor="middle">up to 5 ideas</text>
+          <text data-node-label="" x="120" y="120.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Scheduled discovery</text>
+          <text x="120" y="135.1" class="t-muted" font-size="8" text-anchor="middle">Six lanes; NY-time slots</text>
+        <text x="120" y="147.9" class="t-backend" font-size="7" text-anchor="middle">up to 5 ideas</text>
         </g>
 
         <g id="node-evidence" data-node-id="evidence" data-node-label="Retrieve + rank" tabindex="0" role="button" aria-label="Focus Retrieve + rank, Focused + bounded rescue, 1  Research only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Focused + bounded rescue" data-node-tag="&gt;=2 publisher domains" data-node-context="1  Research only">
           <title>Retrieve + rank · Focused + bounded rescue · 1  Research only · &gt;=2 publisher domains</title>
-          <rect x="434.4" y="86" width="144" height="68" rx="6" class="c-mask"/>
-          <rect x="434.4" y="86" width="144" height="68" rx="6" class="c-cloud" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(440.4 92) scale(0.6875)">
+          <rect x="248.39999999999998" y="86" width="144" height="68" rx="6" class="c-mask"/>
+          <rect x="248.39999999999998" y="86" width="144" height="68" rx="6" class="c-cloud" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(254.39999999999998 92) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="506.4" y="120.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Retrieve + rank</text>
-          <text x="506.4" y="135.1" class="t-muted" font-size="8" text-anchor="middle">Focused + bounded rescue</text>
-        <text x="506.4" y="147.9" class="t-cloud" font-size="7" text-anchor="middle">&gt;=2 publisher domains</text>
+          <text data-node-label="" x="320.4" y="120.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Retrieve + rank</text>
+          <text x="320.4" y="135.1" class="t-muted" font-size="8" text-anchor="middle">Focused + bounded rescue</text>
+        <text x="320.4" y="147.9" class="t-cloud" font-size="7" text-anchor="middle">&gt;=2 publisher domains</text>
+        </g>
+
+        <g id="node-admission" data-node-id="admission" data-node-label="Admission gate" tabindex="0" role="button" aria-label="Focus Admission gate, Acquisition: private lead, 1  Research only" aria-pressed="false" data-node-kind="security" data-node-sublabel="Acquisition: private lead" data-node-tag="policy if activated" data-node-context="1  Research only">
+          <title>Admission gate · Acquisition: private lead · 1  Research only · policy if activated</title>
+          <rect x="434.4" y="86" width="144" height="68" rx="6" class="c-mask"/>
+          <rect x="434.4" y="86" width="144" height="68" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(440.4 92) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" x="506.4" y="120.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Admission gate</text>
+          <text x="506.4" y="135.1" class="t-muted" font-size="8" text-anchor="middle">Acquisition: private lead</text>
+        <text x="506.4" y="147.9" class="t-security" font-size="7" text-anchor="middle">policy if activated</text>
         </g>
 
         <g id="node-synthesis" data-node-id="synthesis" data-node-label="Sequential synthesis" tabindex="0" role="button" aria-label="Focus Sequential synthesis, Tool-free; shared 270s, 1  Research only" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Tool-free; shared 270s" data-node-tag="up to 5 distinct" data-node-context="1  Research only">
@@ -556,8 +556,8 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="922.4" y="147.9" class="t-security" font-size="7" text-anchor="middle">local reject: next</text>
         </g>
 
-        <g id="node-dossier" data-node-id="dossier" data-node-label="Hashed dossier" tabindex="0" role="button" aria-label="Focus Hashed dossier, Verified research, age &lt;=60m, 1  Research only" aria-pressed="false" data-node-kind="database" data-node-sublabel="Verified research, age &lt;=60m" data-node-context="1  Research only">
-          <title>Hashed dossier · Verified research, age &lt;=60m · 1  Research only</title>
+        <g id="node-dossier" data-node-id="dossier" data-node-label="Hashed dossier" tabindex="0" role="button" aria-label="Focus Hashed dossier, Verified; age ≤60m, 1  Research only" aria-pressed="false" data-node-kind="database" data-node-sublabel="Verified; age ≤60m" data-node-context="1  Research only">
+          <title>Hashed dossier · Verified; age ≤60m · 1  Research only</title>
           <rect x="1070" y="94" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="1070" y="94" width="144" height="52" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1076 100) scale(0.6875)">
@@ -565,31 +565,32 @@ rect.c-bg-rect { fill: var(--bg); }
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" x="1142" y="126" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Hashed dossier</text>
-          <text x="1142" y="138.3" class="t-muted" font-size="8" text-anchor="middle">Verified research, age &lt;=60m</text>
+          <text x="1142" y="138.3" class="t-muted" font-size="8" text-anchor="middle">Verified; age ≤60m</text>
         </g>
 
-        <g id="node-reconcile" data-node-id="reconcile" data-node-label="Observe pending first" tabindex="0" role="button" aria-label="Focus Observe pending first, Observe; then candidate, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="security" data-node-sublabel="Observe; then candidate" data-node-tag="operational import" data-node-context="2  Deterministic plan + review">
-          <title>Observe pending first · Observe; then candidate · 2  Deterministic plan + review · operational import</title>
+        <g id="node-reconcile" data-node-id="reconcile" data-node-label="Reconcile first" tabindex="0" role="button" aria-label="Focus Reconcile first, Full fills journaled, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="security" data-node-sublabel="Full fills journaled" data-node-tag="partial: no accounting" data-node-context="2  Deterministic plan + review">
+          <title>Reconcile first · Full fills journaled · 2  Deterministic plan + review · partial: no accounting</title>
           <rect x="48" y="212" width="144" height="68" rx="6" class="c-mask"/>
           <rect x="48" y="212" width="144" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(54 218) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" x="120" y="245.9" class="t-primary" font-size="10.7" font-weight="600" text-anchor="middle">Observe pending first</text>
-          <text x="120" y="260.8" class="t-muted" font-size="8" text-anchor="middle">Observe; then candidate</text>
-        <text x="120" y="273.6" class="t-security" font-size="7" text-anchor="middle">operational import</text>
+          <text data-node-label="" x="120" y="246.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Reconcile first</text>
+          <text x="120" y="261.1" class="t-muted" font-size="8" text-anchor="middle">Full fills journaled</text>
+        <text x="120" y="273.9" class="t-security" font-size="7" text-anchor="middle">partial: no accounting</text>
         </g>
 
-        <g id="node-truth" data-node-id="truth" data-node-label="Broker + market truth" tabindex="0" role="button" aria-label="Focus Broker + market truth, IEX + Massive REST, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="IEX + Massive REST" data-node-context="2  Deterministic plan + review">
-          <title>Broker + market truth · IEX + Massive REST · 2  Deterministic plan + review</title>
-          <rect x="248.39999999999998" y="220" width="144" height="52" rx="6" class="c-mask"/>
-          <rect x="248.39999999999998" y="220" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(254.39999999999998 226) scale(0.6875)">
+        <g id="node-authority" data-node-id="authority" data-node-label="Entry authority" tabindex="0" role="button" aria-label="Focus Entry authority, Broker truth; no add-on, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Broker truth; no add-on" data-node-tag="if activated" data-node-context="2  Deterministic plan + review">
+          <title>Entry authority · Broker truth; no add-on · 2  Deterministic plan + review · if activated</title>
+          <rect x="248.39999999999998" y="212" width="144" height="68" rx="6" class="c-mask"/>
+          <rect x="248.39999999999998" y="212" width="144" height="68" rx="6" class="c-cloud" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(254.39999999999998 218) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="320.4" y="251.7" class="t-primary" font-size="10.7" font-weight="600" text-anchor="middle">Broker + market truth</text>
-          <text x="320.4" y="264" class="t-muted" font-size="8" text-anchor="middle">IEX + Massive REST</text>
+          <text data-node-label="" x="320.4" y="246.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Entry authority</text>
+          <text x="320.4" y="261.1" class="t-muted" font-size="8" text-anchor="middle">Broker truth; no add-on</text>
+        <text x="320.4" y="273.9" class="t-cloud" font-size="7" text-anchor="middle">if activated</text>
         </g>
 
         <g id="node-proposal" data-node-id="proposal" data-node-label="Canonical BUY plan" tabindex="0" role="button" aria-label="Focus Canonical BUY plan, Sealed proof; pending 3, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Sealed proof; pending 3" data-node-tag="new deadline hashed" data-node-context="2  Deterministic plan + review">
@@ -604,15 +605,16 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="506.4" y="273.9" class="t-backend" font-size="7" text-anchor="middle">new deadline hashed</text>
         </g>
 
-        <g id="node-reviews" data-node-id="reviews" data-node-label="Parallel reviewers" tabindex="0" role="button" aria-label="Focus Parallel reviewers, DeepSeek + GLM; no tools, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="backend" data-node-sublabel="DeepSeek + GLM; no tools" data-node-context="2  Deterministic plan + review">
-          <title>Parallel reviewers · DeepSeek + GLM; no tools · 2  Deterministic plan + review</title>
-          <rect x="668.4" y="220" width="144" height="52" rx="6" class="c-mask"/>
-          <rect x="668.4" y="220" width="144" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(674.4 226) scale(0.6875)">
+        <g id="node-reviews" data-node-id="reviews" data-node-label="Parallel reviewers" tabindex="0" role="button" aria-label="Focus Parallel reviewers, DeepSeek + GLM; no tools, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="backend" data-node-sublabel="DeepSeek + GLM; no tools" data-node-tag="APPROVE/HOLD stored" data-node-context="2  Deterministic plan + review">
+          <title>Parallel reviewers · DeepSeek + GLM; no tools · 2  Deterministic plan + review · APPROVE/HOLD stored</title>
+          <rect x="668.4" y="212" width="144" height="68" rx="6" class="c-mask"/>
+          <rect x="668.4" y="212" width="144" height="68" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(674.4 218) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="740.4" y="252" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Parallel reviewers</text>
-          <text x="740.4" y="264.3" class="t-muted" font-size="8" text-anchor="middle">DeepSeek + GLM; no tools</text>
+          <text data-node-label="" x="740.4" y="246.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Parallel reviewers</text>
+          <text x="740.4" y="261.1" class="t-muted" font-size="8" text-anchor="middle">DeepSeek + GLM; no tools</text>
+        <text x="740.4" y="273.9" class="t-backend" font-size="7" text-anchor="middle">APPROVE/HOLD stored</text>
         </g>
 
         <g id="node-consensus" data-node-id="consensus" data-node-label="Consensus gate" tabindex="0" role="button" aria-label="Focus Consensus gate, Both approve; lower score, 2  Deterministic plan + review" aria-pressed="false" data-node-kind="security" data-node-sublabel="Both approve; lower score" data-node-tag="score &gt;=0.55" data-node-context="2  Deterministic plan + review">
@@ -641,16 +643,28 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="1142" y="273.9" class="t-security" font-size="7" text-anchor="middle">daily 3; pending 3</text>
         </g>
 
-        <g id="node-expiry" data-node-id="expiry" data-node-label="Deadline observation" tabindex="0" role="button" aria-label="Focus Deadline observation, Forward only; no cancel, Exception  No new order" aria-pressed="false" data-node-kind="security" data-node-sublabel="Forward only; no cancel" data-node-context="Exception  No new order">
-          <title>Deadline observation · Forward only; no cancel · Exception  No new order</title>
+        <g id="node-expiry" data-node-id="expiry" data-node-label="Deadline observer" tabindex="0" role="button" aria-label="Focus Deadline observer, Forward only; no cancel, Exception  No new order" aria-pressed="false" data-node-kind="security" data-node-sublabel="Forward only; no cancel" data-node-context="Exception  No new order">
+          <title>Deadline observer · Forward only; no cancel · Exception  No new order</title>
           <rect x="48" y="345" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="48" y="345" width="144" height="52" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(54 351) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" x="120" y="377" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Deadline observation</text>
+          <text data-node-label="" x="120" y="377" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Deadline observer</text>
           <text x="120" y="389.3" class="t-muted" font-size="8" text-anchor="middle">Forward only; no cancel</text>
+        </g>
+
+        <g id="node-noentry" data-node-id="noentry" data-node-label="No new entry" tabindex="0" role="button" aria-label="Focus No new entry, Held / spent / reviewed, Exception  No new order" aria-pressed="false" data-node-kind="security" data-node-sublabel="Held / spent / reviewed" data-node-context="Exception  No new order">
+          <title>No new entry · Held / spent / reviewed · Exception  No new order</title>
+          <rect x="248.39999999999998" y="345" width="144" height="52" rx="6" class="c-mask"/>
+          <rect x="248.39999999999998" y="345" width="144" height="52" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(254.39999999999998 351) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" x="310.79999999999995" y="366" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">No new entry</text>
+          <text x="320.4" y="383" class="t-muted" font-size="8" text-anchor="middle">Held / spent / reviewed</text>
         </g>
 
         <g id="node-stop" data-node-id="stop" data-node-label="Fail closed / HOLD" tabindex="0" role="button" aria-label="Focus Fail closed / HOLD, Unknown / partial block, Exception  No new order" aria-pressed="false" data-node-kind="security" data-node-sublabel="Unknown / partial block" data-node-context="Exception  No new order">
@@ -665,8 +679,8 @@ rect.c-bg-rect { fill: var(--bg); }
           <text x="922.4" y="389.3" class="t-muted" font-size="8" text-anchor="middle">Unknown / partial block</text>
         </g>
 
-        <g id="node-journal" data-node-id="journal" data-node-label="Durable journals" tabindex="0" role="button" aria-label="Focus Durable journals, Lifecycle ≠ confirmed fill, 3  Paper execution + broker truth" aria-pressed="false" data-node-kind="database" data-node-sublabel="Lifecycle ≠ confirmed fill" data-node-context="3  Paper execution + broker truth">
-          <title>Durable journals · Lifecycle ≠ confirmed fill · 3  Paper execution + broker truth</title>
+        <g id="node-journal" data-node-id="journal" data-node-label="Durable journals" tabindex="0" role="button" aria-label="Focus Durable journals, Lifecycle ≠ fill, 3  Paper execution + broker truth" aria-pressed="false" data-node-kind="database" data-node-sublabel="Lifecycle ≠ fill" data-node-context="3  Paper execution + broker truth">
+          <title>Durable journals · Lifecycle ≠ fill · 3  Paper execution + broker truth</title>
           <rect x="434.4" y="469" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="434.4" y="469" width="144" height="52" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(440.4 475) scale(0.6875)">
@@ -674,18 +688,18 @@ rect.c-bg-rect { fill: var(--bg); }
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" x="506.4" y="501" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Durable journals</text>
-          <text x="506.4" y="513.3" class="t-muted" font-size="8" text-anchor="middle">Lifecycle ≠ confirmed fill</text>
+          <text x="506.4" y="513.3" class="t-muted" font-size="8" text-anchor="middle">Lifecycle ≠ fill</text>
         </g>
 
-        <g id="node-readback" data-node-id="readback" data-node-label="Exact broker readback" tabindex="0" role="button" aria-label="Focus Exact broker readback, Unknown: no resubmit, 3  Paper execution + broker truth" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Unknown: no resubmit" data-node-context="3  Paper execution + broker truth">
-          <title>Exact broker readback · Unknown: no resubmit · 3  Paper execution + broker truth</title>
+        <g id="node-readback" data-node-id="readback" data-node-label="Broker readback" tabindex="0" role="button" aria-label="Focus Broker readback, Unknown: no resubmit, 3  Paper execution + broker truth" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Unknown: no resubmit" data-node-context="3  Paper execution + broker truth">
+          <title>Broker readback · Unknown: no resubmit · 3  Paper execution + broker truth</title>
           <rect x="668.4" y="469" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="668.4" y="469" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(674.4 475) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="740.4" y="500.7" class="t-primary" font-size="10.7" font-weight="600" text-anchor="middle">Exact broker readback</text>
-          <text x="740.4" y="513" class="t-muted" font-size="8" text-anchor="middle">Unknown: no resubmit</text>
+          <text data-node-label="" x="740.4" y="501" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Broker readback</text>
+          <text x="740.4" y="513.3" class="t-muted" font-size="8" text-anchor="middle">Unknown: no resubmit</text>
         </g>
 
         <g id="node-submit" data-node-id="submit" data-node-label="Paper GTC bracket" tabindex="0" role="button" aria-label="Focus Paper GTC bracket, Outer custodian + inner, 3  Paper execution + broker truth" aria-pressed="false" data-node-kind="security" data-node-sublabel="Outer custodian + inner" data-node-context="3  Paper execution + broker truth">
@@ -739,30 +753,30 @@ rect.c-bg-rect { fill: var(--bg); }
           <text x="320.4" y="738.3" class="t-muted" font-size="8" text-anchor="middle">Ledger/broker vs SPY</text>
         </g>
 
-        <g id="node-wm-snapshot" data-node-id="wm-snapshot" data-node-label="Broker + ledger reads" tabindex="0" role="button" aria-label="Focus Broker + ledger reads, Paper, exact refs; no repair, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Paper, exact refs; no repair" data-node-context="4  Portfolio watchdog • read-only">
-          <title>Broker + ledger reads · Paper, exact refs; no repair · 4  Portfolio watchdog • read-only</title>
+        <g id="node-wm-snapshot" data-node-id="wm-snapshot" data-node-label="Broker + ledger reads" tabindex="0" role="button" aria-label="Focus Broker + ledger reads, Exact refs; no repair, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Exact refs; no repair" data-node-context="4  Portfolio watchdog • read-only">
+          <title>Broker + ledger reads · Exact refs; no repair · 4  Portfolio watchdog • read-only</title>
           <rect x="248.39999999999998" y="586" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="248.39999999999998" y="586" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(254.39999999999998 592) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
           <text data-node-label="" x="320.4" y="617.7" class="t-primary" font-size="10.7" font-weight="600" text-anchor="middle">Broker + ledger reads</text>
-          <text x="320.4" y="630" class="t-muted" font-size="8" text-anchor="middle">Paper, exact refs; no repair</text>
+          <text x="320.4" y="630" class="t-muted" font-size="8" text-anchor="middle">Exact refs; no repair</text>
         </g>
 
-        <g id="node-wd-source" data-node-id="wd-source" data-node-label="Thesis source workers" tabindex="0" role="button" aria-label="Focus Thesis source workers, SEC / issuer / earnings, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="SEC / issuer / earnings" data-node-context="4  Portfolio watchdog • read-only">
-          <title>Thesis source workers · SEC / issuer / earnings · 4  Portfolio watchdog • read-only</title>
+        <g id="node-wd-source" data-node-id="wd-source" data-node-label="Thesis sources" tabindex="0" role="button" aria-label="Focus Thesis sources, SEC / issuer / earnings, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="SEC / issuer / earnings" data-node-context="4  Portfolio watchdog • read-only">
+          <title>Thesis sources · SEC / issuer / earnings · 4  Portfolio watchdog • read-only</title>
           <rect x="434.4" y="694" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="434.4" y="694" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(440.4 700) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="506.4" y="725.7" class="t-primary" font-size="10.7" font-weight="600" text-anchor="middle">Thesis source workers</text>
-          <text x="506.4" y="738" class="t-muted" font-size="8" text-anchor="middle">SEC / issuer / earnings</text>
+          <text data-node-label="" x="506.4" y="726" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Thesis sources</text>
+          <text x="506.4" y="738.3" class="t-muted" font-size="8" text-anchor="middle">SEC / issuer / earnings</text>
         </g>
 
-        <g id="node-wm-checks" data-node-id="wm-checks" data-node-label="Protection + horizon" tabindex="0" role="button" aria-label="Focus Protection + horizon, Quantity, exits + exposure, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="security" data-node-sublabel="Quantity, exits + exposure" data-node-context="4  Portfolio watchdog • read-only">
-          <title>Protection + horizon · Quantity, exits + exposure · 4  Portfolio watchdog • read-only</title>
+        <g id="node-wm-checks" data-node-id="wm-checks" data-node-label="Protection + horizon" tabindex="0" role="button" aria-label="Focus Protection + horizon, Qty, exits + exposure, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="security" data-node-sublabel="Qty, exits + exposure" data-node-context="4  Portfolio watchdog • read-only">
+          <title>Protection + horizon · Qty, exits + exposure · 4  Portfolio watchdog • read-only</title>
           <rect x="434.4" y="586" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="434.4" y="586" width="144" height="52" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(440.4 592) scale(0.6875)">
@@ -770,7 +784,7 @@ rect.c-bg-rect { fill: var(--bg); }
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" x="506.4" y="618" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Protection + horizon</text>
-          <text x="506.4" y="630.3" class="t-muted" font-size="8" text-anchor="middle">Quantity, exits + exposure</text>
+          <text x="506.4" y="630.3" class="t-muted" font-size="8" text-anchor="middle">Qty, exits + exposure</text>
         </g>
 
         <g id="node-wd-classify" data-node-id="wd-classify" data-node-label="Thesis classifier" tabindex="0" role="button" aria-label="Focus Thesis classifier, Tool-free gateway, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Tool-free gateway" data-node-context="4  Portfolio watchdog • read-only">
@@ -820,15 +834,15 @@ rect.c-bg-rect { fill: var(--bg); }
           <text x="922.4" y="630.3" class="t-muted" font-size="8" text-anchor="middle">Reports + alert outbox</text>
         </g>
 
-        <g id="node-wd-relay" data-node-id="wd-relay" data-node-label="Daily summary + alerts" tabindex="0" role="button" aria-label="Focus Daily summary + alerts, Emission != acknowledgment, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Emission != acknowledgment" data-node-context="4  Portfolio watchdog • read-only">
-          <title>Daily summary + alerts · Emission != acknowledgment · 4  Portfolio watchdog • read-only</title>
+        <g id="node-wd-relay" data-node-id="wd-relay" data-node-label="Daily summary/alerts" tabindex="0" role="button" aria-label="Focus Daily summary/alerts, Emitted ≠ acknowledged, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Emitted ≠ acknowledged" data-node-context="4  Portfolio watchdog • read-only">
+          <title>Daily summary/alerts · Emitted ≠ acknowledged · 4  Portfolio watchdog • read-only</title>
           <rect x="1070" y="694" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="1070" y="694" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(1076 700) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="1142" y="725.3" class="t-primary" font-size="10.3" font-weight="600" text-anchor="middle">Daily summary + alerts</text>
-          <text x="1142" y="737.4" class="t-muted" font-size="8" text-anchor="middle">Emission != acknowledgment</text>
+          <text data-node-label="" x="1142" y="726" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Daily summary/alerts</text>
+          <text x="1142" y="738.3" class="t-muted" font-size="8" text-anchor="middle">Emitted ≠ acknowledged</text>
         </g>
 
         <g id="node-wm-relay" data-node-id="wm-relay" data-node-label="Exception alerts" tabindex="0" role="button" aria-label="Focus Exception alerts, Policy-gated; no receipt, 4  Portfolio watchdog • read-only" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Policy-gated; no receipt" data-node-context="4  Portfolio watchdog • read-only">
@@ -865,8 +879,8 @@ rect.c-bg-rect { fill: var(--bg); }
           <text x="740.4" y="855.3" class="t-muted" font-size="8" text-anchor="middle">Separate; never actual P/L</text>
         </g>
 
-        <g id="node-dashboard" data-node-id="dashboard" data-node-label="Sanitized dashboard" tabindex="0" role="button" aria-label="Focus Sanitized dashboard, Allowlisted public metrics, 5  Measurement + publication" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="Allowlisted public metrics" data-node-context="5  Measurement + publication">
-          <title>Sanitized dashboard · Allowlisted public metrics · 5  Measurement + publication</title>
+        <g id="node-dashboard" data-node-id="dashboard" data-node-label="Public dashboard" tabindex="0" role="button" aria-label="Focus Public dashboard, Allowlisted; dark/light UI, 5  Measurement + publication" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="Allowlisted; dark/light UI" data-node-context="5  Measurement + publication">
+          <title>Public dashboard · Allowlisted; dark/light UI · 5  Measurement + publication</title>
           <rect x="850.4" y="811" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="850.4" y="811" width="144" height="52" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(856.4 817) scale(0.6875)">
@@ -875,89 +889,93 @@ rect.c-bg-rect { fill: var(--bg); }
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" x="922.4" y="843" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Sanitized dashboard</text>
-          <text x="922.4" y="855.3" class="t-muted" font-size="8" text-anchor="middle">Allowlisted public metrics</text>
+          <text data-node-label="" x="922.4" y="843" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Public dashboard</text>
+          <text x="922.4" y="855.3" class="t-muted" font-size="8" text-anchor="middle">Allowlisted; dark/light UI</text>
         </g>
 
-        <g id="node-publish" data-node-id="publish" data-node-label="Dashboard deployment" tabindex="0" role="button" aria-label="Focus Dashboard deployment, Separate scheduled mode, 5  Measurement + publication" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Separate scheduled mode" data-node-context="5  Measurement + publication">
-          <title>Dashboard deployment · Separate scheduled mode · 5  Measurement + publication</title>
+        <g id="node-publish" data-node-id="publish" data-node-label="Dashboard deploy" tabindex="0" role="button" aria-label="Focus Dashboard deploy, Separate scheduled mode, 5  Measurement + publication" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="Separate scheduled mode" data-node-context="5  Measurement + publication">
+          <title>Dashboard deploy · Separate scheduled mode · 5  Measurement + publication</title>
           <rect x="1070" y="811" width="144" height="52" rx="6" class="c-mask"/>
           <rect x="1070" y="811" width="144" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(1076 817) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="1142" y="843" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Dashboard deployment</text>
+          <text data-node-label="" x="1142" y="843" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Dashboard deploy</text>
           <text x="1142" y="855.3" class="t-muted" font-size="8" text-anchor="middle">Separate scheduled mode</text>
         </g>
 
         <!-- Edge labels -->
-        <g data-edge-from="consensus" data-edge-to="final" data-edge-label="both approve" data-edge-key="0" data-edge-id="consensus-final">
+        <g data-edge-from="admission" data-edge-to="synthesis" data-edge-label="admitted" data-edge-key="0" data-edge-id="admission-synthesis">
+          <rect x="599.1999999999999" y="100" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="623.4" y="110" class="t-edge-security" font-size="8" text-anchor="middle">admitted</text>
+        </g>
+        <g data-edge-from="authority" data-edge-to="noentry" data-edge-label="held / spent" data-edge-key="1" data-edge-id="authority-noentry">
+          <rect x="286.59999999999997" y="302.5" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="320.4" y="312.5" class="t-edge-security" font-size="8" text-anchor="middle">held / spent</text>
+        </g>
+        <g data-edge-from="authority" data-edge-to="proposal" data-edge-label="clear" data-edge-key="2" data-edge-id="authority-proposal">
+          <rect x="396.4" y="226" width="34" height="14" rx="3" class="c-mask"/>
+          <text x="413.4" y="236" class="t-edge-default" font-size="8" text-anchor="middle">clear</text>
+        </g>
+        <g data-edge-from="consensus" data-edge-to="final" data-edge-label="both approve" data-edge-key="3" data-edge-id="consensus-final">
           <rect x="998.4000000000001" y="226" width="67.6" height="14" rx="3" class="c-mask"/>
           <text x="1032.2" y="236" class="t-edge-security" font-size="8" text-anchor="middle">both approve</text>
         </g>
-        <g data-edge-from="consensus" data-edge-to="stop" data-edge-label="veto / invalid" data-edge-key="1" data-edge-id="consensus-stop">
+        <g data-edge-from="consensus" data-edge-to="stop" data-edge-label="veto / invalid" data-edge-key="4" data-edge-id="consensus-stop">
           <rect x="883.8" y="302.5" width="77.2" height="14" rx="3" class="c-mask"/>
           <text x="922.4" y="312.5" class="t-edge-security" font-size="8" text-anchor="middle">veto / invalid</text>
         </g>
 
-        <g data-edge-from="dossier" data-edge-to="reconcile" data-edge-label="next trader slot" data-edge-key="3" data-edge-id="dossier-reconcile">
+        <g data-edge-from="dossier" data-edge-to="reconcile" data-edge-label="next trader slot" data-edge-key="6" data-edge-id="dossier-reconcile">
           <rect x="543.6" y="16" width="86.8" height="14" rx="3" class="c-mask"/>
           <text x="587" y="26" class="t-edge-default" font-size="8" text-anchor="middle">next trader slot</text>
         </g>
-        <g data-edge-from="evidence" data-edge-to="synthesis" data-edge-label="ranked" data-edge-key="4" data-edge-id="evidence-synthesis">
-          <rect x="604" y="100" width="38.8" height="14" rx="3" class="c-mask"/>
-          <text x="623.4" y="110" class="t-edge-default" font-size="8" text-anchor="middle">ranked</text>
-        </g>
-        <g data-edge-from="final" data-edge-to="submit" data-edge-label="fresh gates + lock" data-edge-key="5" data-edge-id="final-submit">
+
+        <g data-edge-from="final" data-edge-to="submit" data-edge-label="fresh gates + lock" data-edge-key="8" data-edge-id="final-submit">
           <rect x="1093.8" y="364.5" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
           <text x="1142" y="374.5" class="t-edge-security" font-size="8" text-anchor="middle">fresh gates + lock</text>
         </g>
-        <g data-edge-from="qualify" data-edge-to="synthesis" data-edge-label="next" data-edge-key="6" data-edge-id="intake-next-candidate">
+        <g data-edge-from="qualify" data-edge-to="synthesis" data-edge-label="next" data-edge-key="9" data-edge-id="intake-next-candidate">
           <rect x="816.4" y="50" width="30" height="14" rx="3" class="c-mask"/>
           <text x="831.4" y="60" class="t-edge-dashed" font-size="8" text-anchor="middle">next</text>
         </g>
-        <g data-edge-from="journal" data-edge-to="outcomes" data-edge-label="post-close" data-edge-key="7" data-edge-id="journal-outcomes">
+        <g data-edge-from="journal" data-edge-to="outcomes" data-edge-label="post-close" data-edge-key="10" data-edge-id="journal-outcomes">
           <rect x="198.2" y="475" width="58" height="14" rx="3" class="c-mask"/>
           <text x="227.2" y="485" class="t-edge-dashed" font-size="8" text-anchor="middle">post-close</text>
         </g>
-        <g data-edge-from="journal" data-edge-to="wm-snapshot" data-edge-label="read only" data-edge-key="8" data-edge-id="journal-watchdog-read">
+        <g data-edge-from="journal" data-edge-to="wm-snapshot" data-edge-label="read only" data-edge-key="11" data-edge-id="journal-watchdog-read">
           <rect x="386.79999999999995" y="522" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
           <text x="413.4" y="532" class="t-edge-dashed" font-size="8" text-anchor="middle">read only</text>
         </g>
 
-        <g data-edge-from="proposal" data-edge-to="reviews" data-edge-label="precheck passes" data-edge-key="10" data-edge-id="proposal-reviews">
+        <g data-edge-from="proposal" data-edge-to="reviews" data-edge-label="precheck passes" data-edge-key="13" data-edge-id="proposal-reviews">
           <rect x="582.4" y="226" width="82" height="14" rx="3" class="c-mask"/>
           <text x="623.4" y="236" class="t-edge-default" font-size="8" text-anchor="middle">precheck passes</text>
         </g>
-        <g data-edge-from="qualify" data-edge-to="dossier" data-edge-label="first pass" data-edge-key="11" data-edge-id="qualify-dossier">
+        <g data-edge-from="qualify" data-edge-to="dossier" data-edge-label="first pass" data-edge-key="14" data-edge-id="qualify-dossier">
           <rect x="1003.2" y="100" width="58" height="14" rx="3" class="c-mask"/>
           <text x="1032.2" y="110" class="t-edge-security" font-size="8" text-anchor="middle">first pass</text>
         </g>
-        <g data-edge-from="readback" data-edge-to="journal" data-edge-label="exact state" data-edge-key="12" data-edge-id="readback-journal">
+        <g data-edge-from="readback" data-edge-to="journal" data-edge-label="exact state" data-edge-key="15" data-edge-id="readback-journal">
           <rect x="592" y="475" width="62.8" height="14" rx="3" class="c-mask"/>
           <text x="623.4" y="485" class="t-edge-default" font-size="8" text-anchor="middle">exact state</text>
         </g>
-        <g data-edge-from="reconcile" data-edge-to="expiry" data-edge-label="observe" data-edge-key="13" data-edge-id="reconcile-expiry">
-          <rect x="54.2" y="404" width="43.6" height="14" rx="3" class="c-mask"/>
-          <text x="76" y="414" class="t-edge-dashed" font-size="8" text-anchor="middle">observe</text>
-        </g>
-        <g data-edge-from="reconcile" data-edge-to="truth" data-edge-label="continue" data-edge-key="14" data-edge-id="reconcile-truth">
+        <g data-edge-from="reconcile" data-edge-to="authority" data-edge-label="continue" data-edge-key="16" data-edge-id="reconcile-authority">
           <rect x="196" y="226" width="48.4" height="14" rx="3" class="c-mask"/>
           <text x="220.2" y="236" class="t-edge-default" font-size="8" text-anchor="middle">continue</text>
         </g>
+        <g data-edge-from="reconcile" data-edge-to="expiry" data-edge-label="observe" data-edge-key="17" data-edge-id="reconcile-expiry">
+          <rect x="54.2" y="404" width="43.6" height="14" rx="3" class="c-mask"/>
+          <text x="76" y="414" class="t-edge-dashed" font-size="8" text-anchor="middle">observe</text>
+        </g>
 
-
-        <g data-edge-from="scout" data-edge-to="evidence" data-edge-label="ideas" data-edge-key="17" data-edge-id="scout-evidence">
-          <rect x="396.4" y="100" width="34" height="14" rx="3" class="c-mask"/>
-          <text x="413.4" y="110" class="t-edge-default" font-size="8" text-anchor="middle">ideas</text>
+        <g data-edge-from="scout" data-edge-to="evidence" data-edge-label="ideas" data-edge-key="19" data-edge-id="scout-evidence">
+          <rect x="203.2" y="100" width="34" height="14" rx="3" class="c-mask"/>
+          <text x="220.2" y="110" class="t-edge-default" font-size="8" text-anchor="middle">ideas</text>
         </g>
 
 
 
-        <g data-edge-from="truth" data-edge-to="proposal" data-edge-label="proof" data-edge-key="21" data-edge-id="truth-proposal">
-          <rect x="396.4" y="226" width="34" height="14" rx="3" class="c-mask"/>
-          <text x="413.4" y="236" class="t-edge-default" font-size="8" text-anchor="middle">proof</text>
-        </g>
 
 
 
